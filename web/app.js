@@ -11,6 +11,8 @@
 
 import { auth, callPinLogin, callChangePin } from "./firebase.js";
 import { signInWithCustomToken, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
+import { el, friendlyError } from "./ui.js";
+import { openAdmin } from "./admin.js";
 
 const screen = document.getElementById("screen");
 const deviceBadge = document.getElementById("device-badge");
@@ -20,7 +22,7 @@ const LINE_TABLET_KEY = "cdg.lineTablet";
 const LAST_ACTIVITY_KEY = "cdg.lastActivity";
 
 const state = {
-  step: "loading", // employee | pin | currentPin | newPin | confirmPin | home
+  step: "loading", // employee | pin | currentPin | newPin | confirmPin | home | admin
   employeeNumber: "",
   typed: "",
   knownPin: "", // the PIN just used to log in, kept in memory only so a temp PIN can be swapped without retyping
@@ -92,21 +94,6 @@ function toggleLineTablet() {
 // Small helpers
 // ---------------------------------------------------------------------------
 
-// Builds an element. Text is always set as text (never HTML), so names can't break the page.
-function el(tag, props = {}, ...children) {
-  const node = document.createElement(tag);
-  for (const [key, value] of Object.entries(props)) {
-    if (key === "class") node.className = value;
-    else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
-    else if (value === true) node.setAttribute(key, "");
-    else if (value !== false && value != null) node.setAttribute(key, value);
-  }
-  for (const child of children.flat()) {
-    if (child != null) node.append(child.nodeType ? child : document.createTextNode(String(child)));
-  }
-  return node;
-}
-
 function go(step, message = "", messageKind = "") {
   Object.assign(state, { step, typed: "", message, messageKind });
   render();
@@ -115,16 +102,6 @@ function go(step, message = "", messageKind = "") {
 function showError(message) {
   Object.assign(state, { typed: "", message, messageKind: "error", busy: false });
   render();
-}
-
-// Turns server and network errors into plain words.
-function friendlyError(err) {
-  const code = err?.code || "";
-  if (code.endsWith("unavailable") || code.endsWith("internal") || code.endsWith("deadline-exceeded") || code === "auth/network-request-failed") {
-    return "Can't reach the server. Check Wi-Fi and try again.";
-  }
-  // The server's message is already plain English; drop the technical code Firebase tacks on, e.g. " [403]".
-  return (err?.message || "").replace(/\s*\[\d+\]$/, "") || "Something went wrong. Try again.";
 }
 
 // ---------------------------------------------------------------------------
@@ -202,9 +179,19 @@ function renderPinStep() {
     { class: "dots", "aria-label": `${state.typed.length} of 6 digits entered` },
     Array.from({ length: 6 }, (_, i) => el("span", { class: i < state.typed.length ? "dot filled" : "dot" }))
   );
+  // On the PIN step, make it obvious whose PIN this is, with a quick way out if it isn't yours.
+  const who =
+    state.step === "pin"
+      ? el(
+          "div",
+          { class: "who" },
+          el("span", {}, "Employee ", el("strong", {}, state.employeeNumber)),
+          el("button", { class: "link-btn", type: "button", onclick: () => go("employee"), disabled: state.busy }, "Not you?")
+        )
+      : el("p", { class: "hint" }, hint);
   return [
     el("h1", {}, title),
-    el("p", { class: "hint" }, state.step === "pin" ? `Employee ${state.employeeNumber}` : hint),
+    who,
     el("div", { class: "entry" }, dots),
     messageBox(),
     state.busy ? el("p", { class: "hint" }, "Checking…") : null,
@@ -220,14 +207,25 @@ function renderHome() {
     roles ? el("p", { class: "roles" }, `Employee ${state.claims.emp} · ${roles}`) : null,
     messageBox(),
     el("div", { class: "card" }, "You're signed in. Your daily screen — what's due, what's new, and what needs your signature — is coming next."),
+    isAdmin() ? el("button", { class: "btn", type: "button", onclick: openPeople }, "People") : null,
     deviceCard(),
     el("button", { class: "btn secondary", type: "button", onclick: () => signOut(auth) }, "Sign out"),
   ];
 }
 
+function isAdmin() {
+  return (state.claims.roles || []).includes("admin");
+}
+
+// Admin People screens live in admin.js and draw into the same area until "← Home".
+function openPeople() {
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  openAdmin(screen, { myEmployeeNumber: state.claims.emp, onExit: () => go("home") });
+}
+
 // Admins only: mark this device as a shared line tablet (or back to a personal device).
 function deviceCard() {
-  if (!(state.claims.roles || []).includes("admin")) return null;
+  if (!isAdmin()) return null;
   const tablet = isLineTablet();
   return el(
     "div",
@@ -249,13 +247,14 @@ function deviceCard() {
 }
 
 function render() {
+  deviceBadge.hidden = !isLineTablet();
+  if (state.step === "admin") return; // admin.js draws its own screens
   let content;
   if (state.step === "loading") content = [el("p", { class: "loading" }, "Loading…")];
   else if (state.step === "employee") content = renderEmployee();
   else if (state.step === "home") content = renderHome();
   else content = renderPinStep();
   screen.replaceChildren(...content.filter(Boolean));
-  deviceBadge.hidden = !isLineTablet();
 }
 
 // ---------------------------------------------------------------------------
@@ -335,7 +334,8 @@ async function loadClaims() {
 
 // Physical keyboards work too (tablets with keyboards, testing on a PC).
 document.addEventListener("keydown", (e) => {
-  if (state.step === "loading" || state.step === "home") return;
+  if (state.step === "loading" || state.step === "home" || state.step === "admin") return;
+  if (e.target.closest?.("input, textarea, select")) return;
   if (/^\d$/.test(e.key)) press(e.key);
   else if (e.key === "Backspace") backspace();
   else if (e.key === "Enter" && state.step === "employee") submit();

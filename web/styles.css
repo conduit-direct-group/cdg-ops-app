@@ -132,4 +132,91 @@ h1 { font-size: 1.7rem; margin: 8px 0 6px; text-align: center; }
 .card-note { color: var(--muted); margin: 6px 0 0; font-size: 1rem; }
 .roles { color: var(--muted); text-align: center; margin: 0 0 8px; font-size: 1.05rem; }
 
+/* "Employee 1001 · Not you?" on the PIN screen */
+.who {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 14px;
+  margin: 0 0 16px;
+  font-size: 1.3rem;
+}
+.who strong { color: var(--orange); font-size: 1.5rem; }
+
+.link-btn {
+  background: none;
+  border: 0;
+  color: var(--orange);
+  font-size: 1.15rem;
+  font-weight: bold;
+  padding: 10px 4px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.btn.danger { background: transparent; color: var(--error); border: 2px solid var(--error); }
+
+/* Admin: People */
+.person-list { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+.person-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+  min-height: 64px;
+  padding: 12px 14px;
+  border: 0;
+  border-left: 5px solid var(--orange);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.person-row:active { background: var(--key-press); }
+.person-name { font-size: 1.25rem; font-weight: bold; }
+.person-meta { color: var(--muted); font-size: 1rem; }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.tags.center { justify-content: center; margin: 0 0 8px; }
+.tag { background: #333; color: var(--text); border-radius: 999px; padding: 3px 10px; font-size: 0.9rem; }
+.tag.warn { background: var(--orange); color: #111; font-weight: bold; }
+.tag.off { background: var(--error-bg); color: var(--error); font-weight: bold; }
+
+.field-label { display: block; margin: 16px 0 6px; font-size: 1.1rem; color: var(--muted); }
+.field {
+  width: 100%;
+  min-height: 56px;
+  padding: 10px 14px;
+  border: 2px solid #444;
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 1.3rem;
+}
+.field:focus { border-color: var(--orange); outline: none; }
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 56px;
+  padding: 0 12px;
+  margin-bottom: 8px;
+  border-radius: 12px;
+  background: var(--panel);
+  font-size: 1.15rem;
+  cursor: pointer;
+}
+.check-row input { width: 28px; height: 28px; accent-color: var(--orange); }
+
+.temp-pin {
+  margin: 10px 0 16px;
+  padding: 18px 0;
+  border: 3px solid var(--orange);
+  border-radius: 14px;
+  text-align: center;
+  font-size: 3rem;
+  font-weight: bold;
+  letter-spacing: 12px;
+}
+
 button:focus-visible { outline: 3px solid var(--orange); outline-offset: 2px; }

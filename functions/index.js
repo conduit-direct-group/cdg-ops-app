@@ -184,6 +184,30 @@ exports.changePin = onCall(async (req) => {
 // Admins
 // ---------------------------------------------------------------------------
 
+// Everyone, with status for the admin People screen. Never includes PIN hashes.
+exports.adminListEmployees = onCall(async (req) => {
+  await requireAdmin(req);
+  const [empSnaps, secretSnaps] = await Promise.all([employees.get(), pinSecrets.get()]);
+  const secrets = new Map(secretSnaps.docs.map((d) => [d.id, d.data()]));
+  const now = Date.now();
+  const list = empSnaps.docs.map((d) => {
+    const e = d.data();
+    const s = secrets.get(d.id) || {};
+    const lock = pin.lockStatus(s, now);
+    return {
+      employeeNumber: d.id,
+      name: e.name,
+      roles: e.roles || [],
+      active: e.active !== false,
+      mustChangePin: s.mustChangePin === true,
+      locked: lock.locked,
+      minutesLeft: lock.minutesLeft || 0,
+    };
+  });
+  list.sort((a, b) => a.name.localeCompare(b.name));
+  return { employees: list };
+});
+
 // Adds a person. Returns a temporary PIN for the admin to give them.
 exports.adminCreateEmployee = onCall(async (req) => {
   const adminNumber = await requireAdmin(req);
