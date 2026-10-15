@@ -321,4 +321,63 @@ details.more summary { cursor: pointer; font-size: 1.1rem; color: var(--orange);
   .qr-card { border: 2px solid #f37021; }
 }
 
+/* ---------------------------------------------------------------------------
+   Desktops and landscape tablets (760 px and wider). Phones are unaffected.
+   Sign-in/PIN screens (main[data-width="narrow"]) keep the narrow keypad column.
+   --------------------------------------------------------------------------- */
+@media (min-width: 760px) {
+  .topbar { padding-left: 32px; padding-right: 32px; }
+
+  main[data-width="wide"] { max-width: 1120px; padding: 28px 32px 56px; }
+  main[data-width="wide"] h1 { text-align: left; font-size: 2rem; }
+  main[data-width="wide"] .hint,
+  main[data-width="wide"] .roles { text-align: left; }
+  main[data-width="wide"] .tags.center { justify-content: flex-start; }
+  main[data-width="wide"] .machine-id { margin: 8px 0 0; }
+
+  /* Buttons size to their words and sit side by side instead of stretching across the monitor. */
+  main[data-width="wide"] > .btn,
+  main[data-width="wide"] > div > .btn,
+  main[data-width="wide"] form > .btn,
+  main[data-width="wide"] .card > .btn,
+  main[data-width="wide"] .sub-section > .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: auto;
+    min-width: 220px;
+    padding: 0 28px;
+    margin-right: 10px;
+    vertical-align: top;
+  }
+  main[data-width="wide"] .btn.big { min-width: 320px; }
+
+  /* Lists flow into columns. */
+  main[data-width="wide"] .person-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+  main[data-width="wide"] .related .person-list { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+
+  /* Comfortable reading and typing widths. */
+  main[data-width="wide"] form,
+  main[data-width="wide"] .field.search,
+  main[data-width="wide"] .temp-pin { max-width: 720px; }
+  main[data-width="wide"] .import-preview { max-width: 900px; }
+  main[data-width="wide"] .fix-body { max-width: 80ch; }
+
+  /* Photos and videos side by side. */
+  main[data-width="wide"] .fix-media { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); align-items: start; }
+
+  main[data-width="wide"] .qr-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+}
+
+/* Mouse users: show what's clickable. (Touch screens don't get stuck hover colors.) */
+@media (hover: hover) {
+  .btn:hover:not(:disabled) { filter: brightness(1.12); }
+  .btn.secondary:hover:not(:disabled) { border-color: var(--orange); }
+  .person-row:hover { background: #262626; }
+  .chip:hover { border-color: var(--orange); }
+  .key:hover:not(:disabled) { background: var(--key-press); }
+  .link-btn:hover { color: #ff8a3d; }
+  .check-row:hover { background: #262626; }
+}
+
 button:focus-visible { outline: 3px solid var(--orange); outline-offset: 2px; }

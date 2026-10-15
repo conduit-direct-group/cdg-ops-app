@@ -340,8 +340,13 @@ function deviceCard() {
   );
 }
 
+// Sign-in and PIN screens stay a narrow, centered column on any screen (a keypad looks right that way);
+// everything else uses the full width on desktops and tablets (styles.css).
+const NARROW_STEPS = ["loading", "employee", "pin", "currentPin", "newPin", "confirmPin"];
+
 function render() {
   deviceBadge.hidden = !isLineTablet();
+  screen.dataset.width = NARROW_STEPS.includes(state.step) ? "narrow" : "wide";
   if (state.step === "admin") return; // admin.js draws its own screens
   let content;
   if (state.step === "loading") content = [el("p", { class: "loading" }, "Loading…")];
