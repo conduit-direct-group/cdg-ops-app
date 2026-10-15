@@ -294,7 +294,7 @@ function openModule(open) {
   closeModule = open(screen, { myEmployeeNumber: state.claims.emp, onExit: () => go("adminMenu") }) || null;
 }
 
-const APPROVER_ROLES = ["maintenance", "lead", "admin"]; // Plan Decision 27
+const APPROVER_ROLES = ["admin"]; // Plan Decision 27 (updated: admins only approve fixes)
 
 function me() {
   const roles = state.claims.roles || [];

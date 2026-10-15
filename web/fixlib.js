@@ -4,17 +4,70 @@
 
 import { el, friendlyError } from "./ui.js";
 import { data, onDataChange, lineName } from "./data.js";
-import { storage, callSubmitFix, callReviewFix, callRetireFix, callVoteFix, callAdminImportOldLibrary } from "./firebase.js";
+import {
+  db, storage, callSubmitFix, callReviewFix, callRetireFix, callVoteFix, callAdminImportOldLibrary,
+  callLogSearchGap, callAdminMarkSearchGap, callAdminBulkAddFixes,
+} from "./firebase.js";
 import { ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-storage.js";
+import { collection, onSnapshot } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 
 const BODY_TEMPLATE = "Symptom:\n\nCause:\n\nFix (steps):\n1. \n";
+
+// Same Microsoft Form the old library's Maintenance Request button opened.
+const MAINTENANCE_FORM_URL =
+  "https://forms.cloud.microsoft/pages/responsepage.aspx?id=RYTjE-lToUWZ7ucD-FImerLtIR47y8VNk3kCsQnMjW1UMU9UUFlJNkRaRE9LMk9BOEk5NDQzS080RC4u&origin=QRCode&route=shorturl";
+
+// QR codes always point at the live app, even when printed from a test copy.
+const APP_URL = "https://cdg-ops.netlify.app";
+
+// Local QR code maker (no outside service sees the links). Loaded only when the QR page opens.
+const QR_LIBRARY = "https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js";
+
+// Attachment filters, like the old library's chips.
+const ATTACH_FILTERS = {
+  photo: { label: "📷 Photos", test: (f) => (f.photos || []).length > 0 },
+  video: { label: "🎥 Videos", test: (f) => (f.videos || []).length > 0 },
+  doc: { label: "📄 Documents", test: (f) => !!f.docLink },
+  needsVideo: { label: "Needs video", test: (f) => !(f.videos || []).length },
+};
+
+// Old library "bulk add" format:  ### Title / Category: / Tags: a, b / Note: … / Video: / Photo: / Doc:
+export function parseBulkFixes(raw) {
+  return raw
+    .split(/\n(?=###\s)/)
+    .map((b) => b.trim())
+    .filter((b) => b.startsWith("###"))
+    .map((block) => {
+      const lines = block.split("\n");
+      const item = { title: lines[0].replace(/^###\s*/, "").trim(), category: "", tags: [], body: [], videos: [], photos: [], docLink: "" };
+      let inNote = false;
+      for (const line of lines.slice(1)) {
+        const m = line.match(/^(Category|Tags|Note|Video|Photo|Doc):\s*(.*)$/i);
+        const key = m?.[1].toLowerCase();
+        const value = m?.[2].trim() ?? "";
+        if (key === "category") item.category = value;
+        else if (key === "tags") item.tags = value.split(",").map((t) => t.trim()).filter(Boolean);
+        else if (key === "note") item.body.push(m[2]);
+        else if (key === "video") value && item.videos.push(value);
+        else if (key === "photo") value && item.photos.push(value);
+        else if (key === "doc") item.docLink = value;
+        else if (inNote) item.body.push(line);
+        if (m) inNote = key === "note";
+      }
+      return { ...item, category: item.category || "General", body: item.body.join("\n").trim() };
+    })
+    .filter((i) => i.title);
+}
 
 // `me` = { emp, approver, admin }. `startCategory` opens the library filtered (e.g. from a QR code).
 export function openFixLibrary(container, { me, onExit, startCategory = null }) {
   const ui = {
-    view: "list", // list | fix | form
+    view: "list", // list | fix | form | gaps | qr | bulk
     search: "",
     category: startCategory || "all", // all | pending | <categoryId>
+    attach: "all", // all | photo | video | doc | needsVideo
+    gaps: null, // admins: searches with no results (live)
+    bulkText: "",
     fixId: null,
     draft: null,
     busy: false,
@@ -99,8 +152,10 @@ export function openFixLibrary(container, { me, onExit, startCategory = null }) 
       const w = ui.search.toLowerCase().split(/\s+/).filter(Boolean);
       let l = ui.category === "pending" ? pending() : data.fixes;
       if (ui.category !== "all" && ui.category !== "pending") l = l.filter((f) => f.categoryId === ui.category);
+      if (ui.attach !== "all") l = l.filter(ATTACH_FILTERS[ui.attach].test);
       if (w.length) l = l.filter((f) => matches(f, w));
       results.replaceChildren(...(l.length ? l.map(fixRow) : [el("p", { class: "hint" }, w.length ? "No fixes match. Try fewer or different words." : "No fixes here yet.")]));
+      if (w.length && !l.length) noteSearchGap(ui.search);
     };
 
     const searchBox = el("input", {
@@ -109,6 +164,9 @@ export function openFixLibrary(container, { me, onExit, startCategory = null }) 
       oninput: (e) => { ui.search = e.target.value; drawResults(); },
     });
     drawResults();
+
+    const attachChip = (id, label) =>
+      el("button", { class: ui.attach === id ? "chip on" : "chip", type: "button", onclick: () => { ui.attach = ui.attach === id ? "all" : id; render(); } }, label);
 
     const myOwn = !me.approver ? (data.myFixes || []).filter((f) => f.status !== "approved") : [];
     return [
@@ -123,12 +181,169 @@ export function openFixLibrary(container, { me, onExit, startCategory = null }) 
         me.approver && pending().length ? chip("pending", `Waiting for approval (${pending().length})`) : null,
         categories().filter((c) => counts.get(c.id)).map((c) => chip(c.id, `${c.name} (${counts.get(c.id)})`))
       ),
+      el("div", { class: "chips small" }, Object.entries(ATTACH_FILTERS).map(([id, f]) => attachChip(id, f.label))),
       el("button", { class: "btn", type: "button", onclick: () => startForm(null) }, "+ Add a fix"),
+      maintenanceRequestButton(),
       myOwn.length
         ? el("div", { class: "card" }, el("strong", {}, "Your suggestions"), myOwn.map((f) => fixRow(f)))
         : null,
       results,
-      me.admin ? importCard() : null,
+      me.admin ? adminTools() : null,
+    ];
+  }
+
+  function maintenanceRequestButton() {
+    return el("a", { class: "btn secondary link-as-btn", href: MAINTENANCE_FORM_URL, target: "_blank", rel: "noopener" }, "🛠 Maintenance Request");
+  }
+
+  // Searches with no results: sent once per search, 1.5 s after typing stops (like the old library).
+  const loggedGaps = new Set();
+  let gapTimer = null;
+  function noteSearchGap(text) {
+    clearTimeout(gapTimer);
+    const term = text.trim().toLowerCase().replace(/\s+/g, " ");
+    if (term.length < 3 || loggedGaps.has(term)) return;
+    gapTimer = setTimeout(() => {
+      if (ui.search.trim().toLowerCase().replace(/\s+/g, " ") !== term) return;
+      loggedGaps.add(term);
+      callLogSearchGap({ term }).catch(() => {}); // best effort — never bother the person searching
+    }, 1500);
+  }
+
+  // ---- admin tools ----------------------------------------------------------
+
+  function adminTools() {
+    const open = (ui.gaps || []).filter((g) => !g.done).length;
+    return el(
+      "div",
+      { class: "card" },
+      el("strong", {}, "Admin tools"),
+      el("button", { class: "btn secondary", type: "button", onclick: () => show("gaps") }, `Searches with no results (${ui.gaps ? open : "…"})`),
+      el("button", { class: "btn secondary", type: "button", onclick: () => show("qr") }, "Print QR codes"),
+      el("button", { class: "btn secondary", type: "button", onclick: downloadCsv }, "Download all fixes (CSV)"),
+      el("button", { class: "btn secondary", type: "button", onclick: () => show("bulk") }, "Bulk add fixes"),
+      importCard()
+    );
+  }
+
+  function renderGaps() {
+    const gaps = [...(ui.gaps || [])].sort((a, b) => (a.done - b.done) || ((b.lastAt?.toMillis?.() || 0) - (a.lastAt?.toMillis?.() || 0)));
+    async function mark(g, done) {
+      if (await act(() => callAdminMarkSearchGap({ id: g.id, done }))) show("gaps");
+    }
+    return [
+      back("Fix Library", () => show("list")),
+      el("h1", {}, "Searches with no results"),
+      el("p", { class: "hint" }, "What people looked for and didn't find — the fixes to write next. Tap Done once it's written."),
+      messageBox(),
+      !ui.gaps ? el("p", { class: "hint" }, "Loading…") : !gaps.length ? el("p", { class: "hint" }, "None yet.") : null,
+      el(
+        "div",
+        { class: "import-preview" },
+        gaps.map((g) =>
+          el(
+            "div",
+            { class: g.done ? "import-row skip" : "import-row" },
+            el("span", { class: "import-line" }, `×${g.count}`),
+            el("span", { class: "gap-term" }, g.term, el("small", {}, ` · last ${g.lastAt?.toDate?.().toLocaleDateString() || ""}`)),
+            el("button", { class: "link-btn", type: "button", disabled: ui.busy, onclick: () => mark(g, !g.done) }, g.done ? "Undo" : "Done")
+          )
+        )
+      ),
+    ];
+  }
+
+  // One QR code per category, printable — scanning opens the app on that category (?cat=Name).
+  function renderQr() {
+    const list = categories().filter((c) => (data.fixes || []).some((f) => f.categoryId === c.id));
+    const grid = el("div", { class: "qr-grid" }, el("p", { class: "hint" }, "Making QR codes…"));
+    loadQrLibrary().then(
+      () => {
+        grid.replaceChildren(
+          ...list.map((c) => {
+            const url = `${APP_URL}/?cat=${encodeURIComponent(c.name)}`;
+            const qr = window.qrcode(0, "M");
+            qr.addData(url);
+            qr.make();
+            const box = el("div", { class: "qr-card" });
+            box.innerHTML = qr.createSvgTag({ cellSize: 5, margin: 2, scalable: true }); // made locally from our own link
+            box.append(el("strong", {}, c.name), el("small", {}, "Scan for fixes"));
+            return box;
+          })
+        );
+      },
+      () => grid.replaceChildren(el("p", { class: "message error" }, "Couldn't load the QR code maker. Check Wi-Fi and try again."))
+    );
+    return [
+      el("div", { class: "no-print" }, back("Fix Library", () => show("list")), el("h1", {}, "QR codes"),
+        el("p", { class: "hint" }, "One per category. Scanning opens CDG Ops straight to that category's fixes."),
+        el("button", { class: "btn", type: "button", onclick: () => window.print() }, "Print")),
+      grid,
+    ];
+  }
+
+  let qrLibraryLoading = null;
+  function loadQrLibrary() {
+    if (window.qrcode) return Promise.resolve();
+    qrLibraryLoading ||= new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = QR_LIBRARY;
+      s.onload = resolve;
+      s.onerror = () => { qrLibraryLoading = null; reject(); };
+      document.head.append(s);
+    });
+    return qrLibraryLoading;
+  }
+
+  // Backup copy of every approved fix, like the old library's CSV export (opens in Excel).
+  function downloadCsv() {
+    const cell = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const rows = [["Title", "Category", "Tags", "Fix", "Photos", "Videos", "Document", "Helpful yes", "Helpful no", "Applies to", "ID"]];
+    for (const f of data.fixes || []) {
+      rows.push([
+        f.title, categoryName(f.categoryId), (f.tags || []).join(", "), f.body, (f.photos || []).join("\n"), (f.videos || []).join("\n"),
+        f.docLink || "", f.helpfulYes || 0, f.helpfulNo || 0, machinesFor(f).map((m) => m.id).join(" "), f.id,
+      ]);
+    }
+    const csv = "﻿" + rows.map((r) => r.map(cell).join(",")).join("\r\n");
+    const a = el("a", { href: URL.createObjectURL(new Blob([csv], { type: "text/csv" })), download: `cdg-fix-library-${new Date().toISOString().slice(0, 10)}.csv` });
+    document.body.append(a);
+    a.click();
+    a.remove();
+  }
+
+  function renderBulk() {
+    const preview = el("div", {});
+    const drawPreview = () => {
+      const items = parseBulkFixes(ui.bulkText);
+      preview.replaceChildren(
+        el("p", { class: "hint" }, items.length ? `${items.length} fixes ready to add` : "Nothing recognized yet — each fix starts with ### and its title."),
+        el("div", { class: "import-preview" }, items.map((i) => el("div", { class: "import-row" }, el("span", { class: "import-line" }, i.category), el("span", {}, i.title))))
+      );
+    };
+    drawPreview();
+    async function addAll() {
+      const items = parseBulkFixes(ui.bulkText);
+      if (!items.length) return;
+      if (!confirm(`Add ${items.length} fixes? They go live right away.`)) return;
+      const r = await act(() => callAdminBulkAddFixes({ items }));
+      if (r) {
+        ui.bulkText = "";
+        show("list", `Added ${r.added} fixes.${r.newCategories.length ? ` New categories: ${r.newCategories.join(", ")}.` : ""}`, "ok");
+      }
+    }
+    return [
+      back("Fix Library", () => show("list")),
+      el("h1", {}, "Bulk add fixes"),
+      el("p", { class: "hint" }, "Same format as the old library. Each fix starts with ### and its title; Note: can run several lines."),
+      messageBox(),
+      el("textarea", {
+        class: "field paste-box", rows: "12", spellcheck: "false", value: ui.bulkText,
+        placeholder: "### Die heater won't hold temp\nCategory: Die\nTags: heater, temperature\nNote: Symptom: …\nCheck the thermocouple…\nPhoto: https://…\n\n### Next fix…",
+        oninput: (e) => { ui.bulkText = e.target.value; drawPreview(); },
+      }),
+      preview,
+      el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: addAll }, ui.busy ? "Adding…" : "Add all"),
     ];
   }
 
@@ -153,7 +368,7 @@ export function openFixLibrary(container, { me, onExit, startCategory = null }) 
     const imported = (data.fixes || []).filter((f) => f.legacyId).length;
     return el(
       "div",
-      { class: "card" },
+      { class: "sub-section" },
       el("strong", {}, "Copy from the old Fix Library"),
       el(
         "p",
@@ -174,7 +389,8 @@ export function openFixLibrary(container, { me, onExit, startCategory = null }) 
     const r = await act(() => callAdminImportOldLibrary());
     if (r) {
       const problems = r.fileProblems?.length ? ` ${r.fileProblems.length} files couldn't be copied — run it again to retry.` : "";
-      show("list", `Copied ${r.fixesSaved} fixes in ${r.categories} categories. Files: ${r.filesCopied} copied, ${r.filesSkipped} already here.${problems}`, problems ? "error" : "ok");
+      const gaps = r.searchGapsCopied ? ` ${r.searchGapsCopied} no-result searches copied.` : "";
+      show("list", `Copied ${r.fixesSaved} fixes in ${r.categories} categories. Files: ${r.filesCopied} copied, ${r.filesSkipped} already here.${gaps}${problems}`, problems ? "error" : "ok");
     }
   }
 
@@ -270,7 +486,16 @@ export function openFixLibrary(container, { me, onExit, startCategory = null }) 
       me.approver && f.status === "retired"
         ? el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => retire(false) }, "Bring fix back")
         : null,
+      maintenanceRequestButton(),
+      relatedFixes(f),
     ];
+  }
+
+  // Up to 4 other fixes in the same category, like the old library's "Related problems".
+  function relatedFixes(f) {
+    const related = (data.fixes || []).filter((x) => x.id !== f.id && x.categoryId === f.categoryId).slice(0, 4);
+    if (!related.length) return null;
+    return el("div", { class: "related" }, el("h2", {}, `More ${categoryName(f.categoryId)} fixes`), el("div", { class: "person-list" }, related.map(fixRow)));
   }
 
   // ---- add / edit ---------------------------------------------------------
@@ -370,7 +595,7 @@ export function openFixLibrary(container, { me, onExit, startCategory = null }) 
     return [
       back(d.id ? "Back" : "Fix Library", () => show(d.id ? "fix" : "list")),
       el("h1", {}, d.id ? (me.approver || fix()?.status === "pending" ? "Edit fix" : "Suggest a change") : "Add a fix"),
-      me.approver ? null : el("p", { class: "hint" }, "A Maintenance tech, Production Lead, or Admin approves it before everyone sees it."),
+      me.approver ? null : el("p", { class: "hint" }, "An Admin approves it before everyone sees it."),
       messageBox(),
       ui.upload ? el("p", { class: "message ok" }, ui.upload) : null,
       el(
@@ -444,16 +669,29 @@ export function openFixLibrary(container, { me, onExit, startCategory = null }) 
   }
 
   function render() {
-    const views = { list: renderList, fix: renderFix, form: renderForm };
+    const views = { list: renderList, fix: renderFix, form: renderForm, gaps: renderGaps, qr: renderQr, bulk: renderBulk };
     container.replaceChildren(...[(views[ui.view] || renderList)()].flat(2).filter(Boolean));
   }
 
-  // Live updates redraw the screen — but not while typing in the form or search box.
-  const stop = onDataChange(() => {
-    const typing = ui.view === "form" || (ui.view === "list" && document.activeElement?.classList.contains("search"));
+  // Live updates redraw the screen — but not while typing (form, search box, bulk add) or on the QR page.
+  const redraw = () => {
+    const typing =
+      ["form", "bulk", "qr"].includes(ui.view) || (ui.view === "list" && document.activeElement?.classList.contains("search"));
     if (!ui.busy && !typing) render();
-  });
+  };
+  const stops = [onDataChange(redraw)];
+
+  // Admins: the no-results search list, live.
+  if (me.admin) {
+    stops.push(
+      onSnapshot(
+        collection(db, "searchGaps"),
+        (snap) => { ui.gaps = snap.docs.map((d) => ({ id: d.id, ...d.data() })); redraw(); },
+        () => { ui.gaps = []; redraw(); }
+      )
+    );
+  }
 
   render();
-  return stop;
+  return () => stops.forEach((s) => s());
 }

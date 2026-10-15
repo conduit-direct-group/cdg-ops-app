@@ -1,7 +1,8 @@
 // Fix Library rules (Plan Decisions 25–28). No database code here, so it can be tested on its own.
 
-// Roles that can approve fixes and edit approved ones directly (Decision 27).
-const APPROVER_ROLES = ["maintenance", "lead", "admin"];
+// Roles that can approve fixes and edit approved ones directly (Decision 27, updated: admins only,
+// like the old library). Everyone else's new fixes and edits wait for an admin.
+const APPROVER_ROLES = ["admin"];
 
 function isApprover(roles) {
   return Array.isArray(roles) && roles.some((r) => APPROVER_ROLES.includes(r));
@@ -114,7 +115,21 @@ function oldFileName(url) {
   return decodeURIComponent(encoded).split("/").pop().replace(/[^A-Za-z0-9._-]/g, "_") || "file";
 }
 
+// Searches with no results: lowercase, single spaces, 3–80 characters.
+function cleanSearchTerm(value) {
+  if (typeof value !== "string") return null;
+  const s = value.trim().toLowerCase().replace(/\s+/g, " ");
+  return s.length >= 3 && s.length <= 80 ? s : null;
+}
+
+// One record per search term: "die heater" -> "die-heater".
+function searchGapId(term) {
+  return term.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "term";
+}
+
 module.exports = {
+  cleanSearchTerm,
+  searchGapId,
   APPROVER_ROLES,
   isApprover,
   machineTypesForOldCategory,

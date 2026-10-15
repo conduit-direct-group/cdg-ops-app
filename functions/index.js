@@ -39,6 +39,7 @@ const machines = db.collection("machines");
 const counters = db.collection("meta").doc("counters");
 const fixes = db.collection("fixes");
 const fixCategories = db.collection("fixCategories");
+const searchGaps = db.collection("searchGaps");
 
 const WRONG_LOGIN = "Wrong employee number or PIN.";
 
@@ -504,7 +505,7 @@ exports.submitFix = onCall(async (req) => {
 // Approvers: { id, approve: true|false }. Approving an edit suggestion copies it onto the original.
 exports.reviewFix = onCall(async (req) => {
   const me = await requireMember(req);
-  if (!me.approver) throw new HttpsError("permission-denied", "Only Maintenance, Production Leads, and Admins can approve fixes.");
+  if (!me.approver) throw new HttpsError("permission-denied", "Only Admins can approve fixes.");
   const id = String(req.data?.id || "");
   const approve = req.data?.approve === true;
   const now = FieldValue.serverTimestamp();
@@ -537,7 +538,7 @@ exports.reviewFix = onCall(async (req) => {
 // Approvers: { id, retire: true|false }. Retired fixes are hidden, never deleted.
 exports.retireFix = onCall(async (req) => {
   const me = await requireMember(req);
-  if (!me.approver) throw new HttpsError("permission-denied", "Only Maintenance, Production Leads, and Admins can retire fixes.");
+  if (!me.approver) throw new HttpsError("permission-denied", "Only Admins can retire fixes.");
   const id = String(req.data?.id || "");
   const retire = req.data?.retire !== false;
   await db.runTransaction(async (tx) => {
@@ -668,9 +669,103 @@ exports.adminImportOldLibrary = onCall({ timeoutSeconds: 540, memory: "2GiB" }, 
     fixesSaved++;
   }
 
+  // 4. The old library's "searches with no results" log.
+  let searchGapsCopied = 0;
+  const gapsRes = await fetch(OLD_LIBRARY_DOC.replace(/library$/, "searchGaps"));
+  if (gapsRes.ok) {
+    const gapsDoc = await gapsRes.json();
+    const entries = fixesLib.plainValue({ mapValue: { fields: gapsDoc.fields || {} } }).entries || [];
+    for (const g of entries) {
+      const term = fixesLib.cleanSearchTerm(g?.term);
+      if (!term) continue;
+      const gapRef = searchGaps.doc(fixesLib.searchGapId(term));
+      if ((await gapRef.get()).exists) continue; // already copied (or already logged here) — keep ours
+      await gapRef.set({
+        term,
+        count: Number(g.count) || 1,
+        firstAt: new Date(Number(g.firstSearchedAt) || Date.now()),
+        lastAt: new Date(Number(g.lastSearchedAt) || Date.now()),
+        done: false,
+      });
+      searchGapsCopied++;
+    }
+  }
+
   await auditLog.add({
     type: "imported", kind: "fix", recordId: "old-library", by: adminNumber, at: FieldValue.serverTimestamp(),
-    fixesSaved, categories: categoryIds.size, filesCopied, filesSkipped, fileProblems: fileProblems.length,
+    fixesSaved, categories: categoryIds.size, filesCopied, filesSkipped, fileProblems: fileProblems.length, searchGapsCopied,
   });
-  return { fixesSaved, categories: categoryIds.size, filesCopied, filesSkipped, fileProblems };
+  return { fixesSaved, categories: categoryIds.size, filesCopied, filesSkipped, fileProblems, searchGapsCopied };
+});
+
+// Searches that found no fixes (like the old library): { term }. Anyone signed in; the app sends it
+// once per search, 1.5 s after typing stops. Admins read the list (firestore.rules) to see what's missing.
+exports.logSearchGap = onCall(async (req) => {
+  await requireMember(req);
+  const term = fixesLib.cleanSearchTerm(req.data?.term);
+  if (!term) return { ok: false };
+  const ref = searchGaps.doc(fixesLib.searchGapId(term));
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (snap.exists) {
+      // Searched again: count it, and bring it back if it had been marked done (the fix still isn't found).
+      tx.update(ref, { count: FieldValue.increment(1), lastAt: FieldValue.serverTimestamp(), done: false });
+    } else {
+      tx.create(ref, { term, count: 1, firstAt: FieldValue.serverTimestamp(), lastAt: FieldValue.serverTimestamp(), done: false });
+    }
+  });
+  return { ok: true };
+});
+
+// Admins: { id, done: true|false } — tick off a no-results search once the missing fix is written.
+exports.adminMarkSearchGap = onCall(async (req) => {
+  await requireAdmin(req);
+  const ref = searchGaps.doc(String(req.data?.id || ""));
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError("not-found", "That search is no longer on the list.");
+  await ref.update({ done: req.data?.done !== false });
+  return { ok: true };
+});
+
+// Admins: add many fixes at once, like the old library's bulk add ("### Title" blocks).
+// { items: [{ title, category, tags, body, photos, videos, docLink }] } — category by NAME; a new
+// category name creates the category. Everything added this way is approved. 200 per call.
+exports.adminBulkAddFixes = onCall(async (req) => {
+  const adminNumber = await requireAdmin(req);
+  const items = Array.isArray(req.data?.items) ? req.data.items : [];
+  if (!items.length || items.length > 200) throw new HttpsError("invalid-argument", "Add between 1 and 200 fixes at a time.");
+
+  // Check every fix first, so nothing is half-added because of one bad block.
+  const catDocs = (await fixCategories.get()).docs;
+  const catIdByName = new Map(catDocs.map((d) => [String(d.get("name")).toLowerCase(), d.id]));
+  const existingIds = new Set(catDocs.map((d) => d.id));
+  const prepared = items.map((it, i) => {
+    let categoryName = records.cleanName(it?.category || "General") || "General";
+    let categoryId = catIdByName.get(categoryName.toLowerCase()) || records.idFromName(categoryName);
+    // "Die!" or "die" → the existing "Die" category, never a rename of it.
+    if (existingIds.has(categoryId)) categoryName = catDocs.find((d) => d.id === categoryId).get("name");
+    if (!categoryId) throw new HttpsError("invalid-argument", `Fix ${i + 1}: category "${categoryName}" must start with a letter.`);
+    const { fix, error } = fixesLib.cleanFix({ ...it, categoryId, machineIds: [] });
+    if (error) throw new HttpsError("invalid-argument", `Fix ${i + 1} ("${String(it?.title || "").slice(0, 40)}"): ${error}`);
+    return { fix, categoryName };
+  });
+
+  const batch = db.batch();
+  const now = FieldValue.serverTimestamp();
+  const newCategories = new Set();
+  for (const { fix, categoryName } of prepared) {
+    if (!existingIds.has(fix.categoryId) && !newCategories.has(fix.categoryId)) {
+      newCategories.add(fix.categoryId);
+      batch.set(fixCategories.doc(fix.categoryId), {
+        name: categoryName, machineTypes: fixesLib.machineTypesForOldCategory(categoryName), active: true, updatedAt: now,
+      }, { merge: true });
+    }
+    batch.create(fixes.doc(), {
+      ...fix, status: "approved", editOf: null, helpfulYes: 0, helpfulNo: 0, votes: {},
+      createdBy: adminNumber, createdAt: now, updatedAt: now, approvedBy: adminNumber, approvedAt: now,
+    });
+  }
+  batch.create(auditLog.doc(), { type: "bulk-added", kind: "fix", recordId: "bulk", by: adminNumber, at: now, count: prepared.length });
+  await batch.commit();
+  return { added: prepared.length, newCategories: [...newCategories] };
 });

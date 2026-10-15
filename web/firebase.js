@@ -46,5 +46,8 @@ export const callSubmitFix = httpsCallable(functions, "submitFix");
 export const callReviewFix = httpsCallable(functions, "reviewFix");
 export const callRetireFix = httpsCallable(functions, "retireFix");
 export const callVoteFix = httpsCallable(functions, "voteFix");
+export const callLogSearchGap = httpsCallable(functions, "logSearchGap");
+export const callAdminMarkSearchGap = httpsCallable(functions, "adminMarkSearchGap");
+export const callAdminBulkAddFixes = httpsCallable(functions, "adminBulkAddFixes");
 // Copying files from the old library can take a few minutes.
 export const callAdminImportOldLibrary = httpsCallable(functions, "adminImportOldLibrary", { timeout: 540000 });

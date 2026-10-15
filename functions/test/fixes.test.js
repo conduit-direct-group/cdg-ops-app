@@ -3,10 +3,11 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const f = require("../fixes");
 
-test("Maintenance, Leads, and Admins approve; others suggest", () => {
-  assert.equal(f.isApprover(["maintenance"]), true);
-  assert.equal(f.isApprover(["operator", "lead"]), true);
+test("only Admins approve; everyone else suggests", () => {
   assert.equal(f.isApprover(["admin"]), true);
+  assert.equal(f.isApprover(["operator", "admin"]), true);
+  assert.equal(f.isApprover(["maintenance"]), false);
+  assert.equal(f.isApprover(["lead"]), false);
   assert.equal(f.isApprover(["operator"]), false);
   assert.equal(f.isApprover(["shipping"]), false);
   assert.equal(f.isApprover(undefined), false);
@@ -38,6 +39,14 @@ test("bad fixes get a plain-English reason", () => {
   assert.match(f.cleanFix({ ...good, photos: ["http://insecure.example/x.jpg"] }).error, /https/);
   assert.match(f.cleanFix({ ...good, docLink: "not a link" }).error, /Document/);
   assert.match(f.cleanFix({ ...good, machineIds: ["L1-Extruder"] }).error, /machine/);
+});
+
+test("no-result searches are tidied and get one record per term", () => {
+  assert.equal(f.cleanSearchTerm("  Die   HEATER "), "die heater");
+  assert.equal(f.cleanSearchTerm("ab"), null);
+  assert.equal(f.cleanSearchTerm("x".repeat(81)), null);
+  assert.equal(f.searchGapId("die heater"), "die-heater");
+  assert.equal(f.searchGapId("l1/l2 puller?"), "l1-l2-puller");
 });
 
 test("old library data and file links are understood", () => {

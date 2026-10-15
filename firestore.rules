@@ -11,9 +11,9 @@ service cloud.firestore {
       return request.auth != null && request.auth.token.pinTemp != true;
     }
 
-    // Maintenance, Production Lead / Supervisor, Admin (Plan Decision 27).
+    // Admins approve fixes and see admin-only lists (Plan Decision 27, updated: admins only).
     function approver() {
-      return signedIn() && request.auth.token.roles.hasAny(['maintenance', 'lead', 'admin']);
+      return signedIn() && request.auth.token.roles.hasAny(['admin']);
     }
 
     // Lines, machines, roles: everyone signed in can read (shop map, checklists, Fix Library need them).
@@ -39,6 +39,11 @@ service cloud.firestore {
         || approver()
         || resource.data.createdBy == request.auth.token.emp
       );
+    }
+
+    // Searches that found no fixes — admins only (tells you what fixes to write next).
+    match /searchGaps/{id} {
+      allow read: if approver();
     }
 
     // Everything else — employees, PIN records, audit log, counters — stays locked.
