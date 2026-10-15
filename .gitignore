@@ -6,6 +6,9 @@ node_modules/
 *.log
 .runtimeconfig.json
 
+# Project plan — internal, kept out of the public repo
+CDG_Operations_App_Plan*
+
 # Secrets — never commit these (repo is public)
 .env
 .env.*
