@@ -1,0 +1,13 @@
+# Downloaded libraries (reinstalled with npm install)
+node_modules/
+
+# Firebase tool scratch files and logs
+.firebase/
+*.log
+.runtimeconfig.json
+
+# Secrets — never commit these (repo is public)
+.env
+.env.*
+*service-account*.json
+*-firebase-adminsdk-*.json

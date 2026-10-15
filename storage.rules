@@ -1,0 +1,11 @@
+rules_version = '2';
+
+// Storage (photos/files) security rules for cdg-ops-app.
+// Starting point: everything is locked. Each feature opens only the access it needs.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
