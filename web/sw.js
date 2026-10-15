@@ -6,7 +6,7 @@
 //   - The app's own files: try the network first (so updates show up right away), fall back to the copy.
 //   - Firebase library from Google: the version is in the address and never changes, so use the copy if we have one.
 
-const CACHE = "cdg-ops-v1";
+const CACHE = "cdg-ops-v2";
 const FIREBASE_LIB = "https://www.gstatic.com/firebasejs/";
 
 const APP_FILES = [
@@ -22,6 +22,7 @@ const APP_FILES = [
   "/icons/icon-512.png",
   "/icons/apple-touch-icon.png",
   "/icons/favicon-32.png",
+  "/icons/logo-banner.png",
 ];
 
 self.addEventListener("install", (event) => {

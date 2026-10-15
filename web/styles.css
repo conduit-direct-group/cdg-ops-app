@@ -30,7 +30,8 @@ html, body {
   border-bottom: 3px solid var(--orange);
 }
 .topbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.brand { font-size: 1.3rem; font-weight: bold; letter-spacing: 0.5px; }
+.brand { display: flex; align-items: center; gap: 10px; font-size: 1.15rem; font-weight: bold; letter-spacing: 0.5px; }
+.brand-logo { display: block; height: 40px; width: auto; }
 .badge {
   background: var(--orange);
   color: #111;
