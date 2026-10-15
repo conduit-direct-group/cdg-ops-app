@@ -1,0 +1,135 @@
+/* CDG look: black / orange / white. Big targets for gloved hands, high contrast for shop lighting. */
+:root {
+  --bg: #111111;
+  --panel: #1c1c1c;
+  --key: #2a2a2a;
+  --key-press: #3a3a3a;
+  --text: #ffffff;
+  --muted: #b5b5b5;
+  --orange: #f37021;
+  --orange-press: #d85e14;
+  --error-bg: #3a1212;
+  --error: #ff8a80;
+  --ok: #7bd88f;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: Arial, Helvetica, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.topbar {
+  padding: 14px 16px;
+  padding-top: max(14px, env(safe-area-inset-top));
+  border-bottom: 3px solid var(--orange);
+}
+.topbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.brand { font-size: 1.3rem; font-weight: bold; letter-spacing: 0.5px; }
+.badge {
+  background: var(--orange);
+  color: #111;
+  font-weight: bold;
+  font-size: 0.95rem;
+  padding: 5px 10px;
+  border-radius: 999px;
+}
+.badge[hidden] { display: none; }
+.brand-accent { color: var(--orange); }
+
+main {
+  max-width: 440px;
+  margin: 0 auto;
+  padding: 20px 16px 32px;
+}
+
+.loading { text-align: center; color: var(--muted); font-size: 1.2rem; margin-top: 40vh; }
+
+h1 { font-size: 1.7rem; margin: 8px 0 6px; text-align: center; }
+.hint { color: var(--muted); font-size: 1.1rem; text-align: center; margin: 0 0 18px; }
+
+/* What's been typed so far: employee number, or dots for a PIN */
+.entry {
+  height: 64px;
+  margin: 0 0 14px;
+  border: 2px solid #444;
+  border-radius: 12px;
+  background: var(--panel);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2rem;
+  letter-spacing: 6px;
+}
+.entry.placeholder { color: #666; font-size: 1.2rem; letter-spacing: 0; }
+
+.dots { display: flex; gap: 14px; justify-content: center; }
+.dot { width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--muted); }
+.dot.filled { background: var(--orange); border-color: var(--orange); }
+
+.message {
+  min-height: 1.4em;
+  margin: 0 0 12px;
+  padding: 0;
+  font-size: 1.1rem;
+  text-align: center;
+}
+.message.error { background: var(--error-bg); color: var(--error); padding: 12px; border-radius: 10px; }
+.message.ok { color: var(--ok); }
+
+/* Number pad */
+.keypad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+.key {
+  min-height: 72px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--key);
+  color: var(--text);
+  font-size: 2rem;
+  font-weight: bold;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.key:active { background: var(--key-press); }
+.key.small { font-size: 1.1rem; }
+.key:disabled { opacity: 0.4; }
+
+.btn {
+  display: block;
+  width: 100%;
+  min-height: 64px;
+  margin-top: 14px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--orange);
+  color: #111;
+  font-size: 1.3rem;
+  font-weight: bold;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.btn:active { background: var(--orange-press); }
+.btn:disabled { opacity: 0.5; }
+.btn.secondary { background: transparent; color: var(--text); border: 2px solid #555; }
+
+.card {
+  background: var(--panel);
+  border-left: 5px solid var(--orange);
+  border-radius: 10px;
+  padding: 16px;
+  margin: 14px 0;
+  font-size: 1.1rem;
+}
+.card-note { color: var(--muted); margin: 6px 0 0; font-size: 1rem; }
+.roles { color: var(--muted); text-align: center; margin: 0 0 8px; font-size: 1.05rem; }
+
+button:focus-visible { outline: 3px solid var(--orange); outline-offset: 2px; }

@@ -1,0 +1,4 @@
+# Netlify publishes only the web folder (the screens). Server code and rules
+# in this repo go to Firebase instead and are never published by Netlify.
+[build]
+  publish = "web"
