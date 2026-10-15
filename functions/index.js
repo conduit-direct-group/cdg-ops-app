@@ -18,8 +18,6 @@ const { getAuth } = require("firebase-admin/auth");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { setGlobalOptions } = require("firebase-functions/v2");
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
-const { defineSecret } = require("firebase-functions/params");
-const crypto = require("node:crypto");
 const pin = require("./pin");
 
 initializeApp();
@@ -28,9 +26,6 @@ const auth = getAuth();
 
 // maxInstances caps how many copies can run at once — a guard against runaway cost.
 setGlobalOptions({ region: "us-central1", maxInstances: 5 });
-
-// One-time setup code for creating the first admin. Set with `firebase functions:secrets:set BOOTSTRAP_CODE`.
-const bootstrapCode = defineSecret("BOOTSTRAP_CODE");
 
 const employees = db.collection("employees");
 const pinSecrets = db.collection("pinSecrets");
@@ -270,38 +265,4 @@ exports.adminUpdateEmployee = onCall(async (req) => {
   await syncAuthUser(employeeNumber, employee, pinTemp);
   if (changes.active === false) await auth.revokeRefreshTokens(uidFor(employeeNumber));
   return { ok: true };
-});
-
-// ---------------------------------------------------------------------------
-// One-time setup
-// ---------------------------------------------------------------------------
-
-// Creates the very first admin. Needs the secret setup code, and stops working
-// for good once any admin exists.
-exports.bootstrapFirstAdmin = onCall({ secrets: [bootstrapCode] }, async (req) => {
-  const given = Buffer.from(String(req.data?.setupCode || ""));
-  const expected = Buffer.from(bootstrapCode.value());
-  if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) {
-    throw new HttpsError("permission-denied", "Wrong setup code.");
-  }
-  const employeeNumber = requireEmployeeNumber(req.data?.employeeNumber);
-  const employee = { name: requireName(req.data?.name), roles: ["admin"], active: true };
-  const tempPin = pin.randomTempPin();
-  const hashed = await pin.hashPin(tempPin);
-
-  await db.runTransaction(async (tx) => {
-    const admins = await tx.get(employees.where("roles", "array-contains", "admin").limit(1));
-    if (!admins.empty) throw new HttpsError("failed-precondition", "An admin already exists. Setup is closed.");
-    const existing = await tx.get(employees.doc(employeeNumber));
-    if (existing.exists) throw new HttpsError("already-exists", `Employee ${employeeNumber} already exists.`);
-    tx.create(employees.doc(employeeNumber), {
-      ...employee,
-      createdAt: FieldValue.serverTimestamp(),
-      updatedAt: FieldValue.serverTimestamp(),
-    });
-    tx.set(pinSecrets.doc(employeeNumber), newPinRecord(hashed, true));
-    audit(tx, "bootstrap-admin", employeeNumber, "setup");
-  });
-  await syncAuthUser(employeeNumber, employee, true);
-  return { employeeNumber, tempPin };
 });
