@@ -8,3 +8,9 @@
   for = "/sw.js"
   [headers.values]
     Cache-Control = "no-cache"
+
+# Tell phones this is the app manifest (Netlify doesn't know the .webmanifest type on its own).
+[[headers]]
+  for = "/manifest.webmanifest"
+  [headers.values]
+    Content-Type = "application/manifest+json"
