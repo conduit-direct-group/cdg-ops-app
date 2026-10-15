@@ -234,4 +234,19 @@ h1 { font-size: 1.7rem; margin: 8px 0 6px; text-align: center; }
 }
 select.field { appearance: auto; }
 
+/* Paste a list of machines */
+.paste-box { min-height: 180px; font-size: 1.1rem; line-height: 1.4; resize: vertical; }
+.import-preview { display: flex; flex-direction: column; gap: 4px; margin: 6px 0 4px; }
+.import-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--panel);
+  font-size: 1.05rem;
+}
+.import-row.skip { opacity: 0.55; }
+.import-line { color: var(--orange); font-weight: bold; min-width: 112px; }
+
 button:focus-visible { outline: 3px solid var(--orange); outline-offset: 2px; }

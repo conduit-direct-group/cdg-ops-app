@@ -68,6 +68,33 @@ function activeFirst(list) {
   return [...list.filter((r) => r.active !== false), ...list.filter((r) => r.active === false)];
 }
 
+// Reads a pasted list of machine names, one per row, e.g. copied from Odoo's Equipment list.
+// "L2-Puller" -> Line 2, name "Puller", type "Puller". "L1-Cooling Tank 2" -> type "Cooling Tank".
+// No "L<number>-" in front -> not on a line (plant equipment). Anything after a tab (other columns) is ignored.
+// Each row says whether its line exists yet and whether the machine is already in the app (so it's skipped).
+export function parseMachineList(text, lines, machines) {
+  const rows = [];
+  const seen = new Set();
+  for (const raw of text.split(/\r?\n/)) {
+    const cell = raw.split("\t")[0].trim().replace(/\s+/g, " ");
+    if (!cell) continue;
+    const match = cell.match(/^L(\d+)\s*[-–]\s*(.+)$/i);
+    const lineLabel = match ? `Line ${Number(match[1])}` : null;
+    const name = (match ? match[2] : cell).trim().slice(0, 60);
+    const type = name.replace(/\s+\d+$/, "");
+    const line = lineLabel ? lines.find((l) => l.name.toLowerCase() === lineLabel.toLowerCase()) : null;
+    const key = `${(lineLabel || "").toLowerCase()}|${name.toLowerCase()}`;
+    const inApp = machines.some(
+      (m) => (m.lineId || null) === (line?.id || null) && (lineLabel ? !!line : true) && m.name.toLowerCase() === name.toLowerCase()
+    );
+    rows.push({ lineLabel, lineId: line?.id || null, newLine: !!lineLabel && !line, name, type, skip: inApp || seen.has(key), inApp });
+    seen.add(key);
+  }
+  // Line 1 first, then Line 2, …, then plant equipment; pasted order kept within each.
+  const lineNo = (r) => (r.lineLabel ? Number(r.lineLabel.slice(5)) : Infinity);
+  return rows.map((r, i) => ({ ...r, i })).sort((a, b) => lineNo(a) - lineNo(b) || a.i - b.i);
+}
+
 // ===========================================================================
 // Lines & machines
 // ===========================================================================
@@ -97,6 +124,7 @@ export function openLines(container, { onExit }) {
       el("p", { class: "hint" }, `${data.lines.filter((l) => l.active !== false).length} lines · ${data.machines.filter((m) => m.active !== false).length} machines`),
       kit.messageBox(),
       el("button", { class: "btn", type: "button", onclick: () => startLineForm(null) }, "+ Add a line"),
+      el("button", { class: "btn secondary", type: "button", onclick: startImport }, "Paste a list of machines (e.g. from Odoo)"),
       el(
         "div",
         { class: "person-list" },
@@ -267,8 +295,105 @@ export function openLines(container, { onExit }) {
     ];
   }
 
+  // ---- Paste a list of machines (e.g. from Odoo) --------------------------
+
+  function startImport() {
+    ui.importText = ui.importText || "";
+    ui.progress = "";
+    show("importForm");
+  }
+
+  function previewRows() {
+    return parseMachineList(ui.importText, data.lines || [], data.machines || []);
+  }
+
+  function previewList() {
+    const rows = previewRows();
+    if (!rows.length) return [el("p", { class: "hint" }, "Paste names above — one machine per line.")];
+    const adding = rows.filter((r) => !r.skip);
+    const newLines = [...new Set(adding.filter((r) => r.newLine).map((r) => r.lineLabel))];
+    return [
+      el(
+        "p",
+        { class: "hint" },
+        `${adding.length} to add` +
+          (rows.length > adding.length ? ` · ${rows.length - adding.length} already in the app (skipped)` : "") +
+          (newLines.length ? ` · new: ${newLines.join(", ")}` : "")
+      ),
+      el(
+        "div",
+        { class: "import-preview" },
+        rows.map((r) =>
+          el(
+            "div",
+            { class: r.skip ? "import-row skip" : "import-row" },
+            el("span", { class: "import-line" }, r.lineLabel ? `${r.lineLabel}${r.newLine ? " (new)" : ""}` : "Not on a line"),
+            el("span", {}, r.name),
+            r.skip ? el("span", { class: "tag" }, r.inApp ? "Already in app" : "Listed twice") : null
+          )
+        )
+      ),
+    ];
+  }
+
+  async function runImport() {
+    const rows = previewRows().filter((r) => !r.skip);
+    if (!rows.length) return;
+    const lineIds = new Map(); // "Line 2" -> id, for lines created during this import
+    let done = 0;
+    const result = await kit.act(async () => {
+      for (const label of [...new Set(rows.filter((r) => r.newLine).map((r) => r.lineLabel))]) {
+        ui.progress = `Adding ${label}…`;
+        render();
+        const { data: line } = await callAdminSaveLine({ create: true, name: label });
+        lineIds.set(label, line.id);
+      }
+      for (const r of rows) {
+        ui.progress = `Adding machine ${done + 1} of ${rows.length}: ${r.name}`;
+        render();
+        await callAdminSaveMachine({ create: true, name: r.name, type: r.type, lineId: r.lineId || lineIds.get(r.lineLabel) || null });
+        done++;
+      }
+      return { data: true };
+    });
+    ui.progress = "";
+    if (result) {
+      ui.importText = "";
+      show("lines", `Added ${done} machines.`, "ok");
+    } else if (done) {
+      // Stopped part-way: the rest can be added by pasting again — what's already in is skipped.
+      kit.say(`${kit.message} ${done} were added before it stopped. Paste again to add the rest — ones already in are skipped.`, "error");
+      render();
+    }
+  }
+
+  function renderImport() {
+    const preview = el("div", {}, previewList());
+    const box = el("textarea", {
+      class: "field paste-box", id: "f-paste", rows: "8", spellcheck: "false",
+      placeholder: "L1-Extruder\nL1-Vacuum Tank\nL2-Puller\nGrinder",
+      value: ui.importText,
+      // Update only the preview while typing, so the text box keeps its place.
+      oninput: (e) => { ui.importText = e.target.value; preview.replaceChildren(...previewList()); },
+    });
+    return [
+      kit.back("Lines & machines", () => show("lines")),
+      el("h1", {}, "Paste a list of machines"),
+      el("p", { class: "hint" }, "One machine per line. \"L2-Puller\" goes on Line 2 as \"Puller\"; names without L1-, L2-… are added as Not on a line. Each gets the next M-number."),
+      kit.messageBox(),
+      ui.progress ? el("p", { class: "message ok" }, ui.progress) : null,
+      el("label", { class: "field-label", for: "f-paste" }, "Machine names"),
+      box,
+      preview,
+      el("button", { class: "btn", type: "button", onclick: runImport, disabled: kit.busy }, kit.busy ? "Adding…" : "Add all"),
+    ];
+  }
+
   function render() {
-    const views = { lines: renderLines, line: renderLine, lineForm: renderLineForm, machine: renderMachine, machineForm: renderMachineForm };
+    const views = {
+      lines: renderLines, line: renderLine, lineForm: renderLineForm,
+      machine: renderMachine, machineForm: renderMachineForm, importForm: renderImport,
+    };
     kit.draw((views[ui.view] || renderLines)());
   }
 
