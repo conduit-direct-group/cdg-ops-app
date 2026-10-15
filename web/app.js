@@ -208,9 +208,69 @@ function renderHome() {
     messageBox(),
     el("div", { class: "card" }, "You're signed in. Your daily screen — what's due, what's new, and what needs your signature — is coming next."),
     isAdmin() ? el("button", { class: "btn", type: "button", onclick: openPeople }, "People") : null,
+    installCard(),
     deviceCard(),
     el("button", { class: "btn secondary", type: "button", onclick: () => signOut(auth) }, "Sign out"),
   ];
+}
+
+// ---------------------------------------------------------------------------
+// Add to Home Screen (Decision 10) and the offline helper
+// ---------------------------------------------------------------------------
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js").catch(() => {}); // the app still works without it
+}
+
+let installPrompt = null; // Android/Chrome hands us this when the app can be installed
+
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  installPrompt = e;
+  render();
+});
+window.addEventListener("appinstalled", () => {
+  installPrompt = null;
+  render();
+});
+
+function isInstalled() {
+  return matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+}
+
+function isIPhoneOrIPad() {
+  return /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
+async function install() {
+  const prompt = installPrompt;
+  installPrompt = null;
+  prompt.prompt();
+  await prompt.userChoice;
+  render();
+}
+
+function installCard() {
+  if (isInstalled()) return null;
+  const title = el("strong", {}, "Put CDG Ops on your home screen");
+  if (installPrompt) {
+    return el(
+      "div",
+      { class: "card" },
+      title,
+      el("p", { class: "card-note" }, "Opens full screen like an app, even on bad Wi-Fi."),
+      el("button", { class: "btn", type: "button", onclick: install }, "Add to home screen")
+    );
+  }
+  if (isIPhoneOrIPad()) {
+    return el(
+      "div",
+      { class: "card" },
+      title,
+      el("p", { class: "card-note" }, "In Safari, tap the Share button (square with an arrow), then “Add to Home Screen.”")
+    );
+  }
+  return null;
 }
 
 function isAdmin() {

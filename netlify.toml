@@ -2,3 +2,9 @@
 # in this repo go to Firebase instead and are never published by Netlify.
 [build]
   publish = "web"
+
+# The offline helper must always be checked fresh, or phones could keep an old version for a long time.
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
