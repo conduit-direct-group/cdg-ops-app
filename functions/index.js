@@ -22,6 +22,12 @@ const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const pin = require("./pin");
 const records = require("./records");
 const fixesLib = require("./fixes");
+const odoo = require("./odoo");
+const { defineSecret } = require("firebase-functions/params");
+const { onSchedule } = require("firebase-functions/v2/scheduler");
+
+// Odoo API key (Google Secret Manager). Set with `firebase functions:secrets:set ODOO_API_KEY`.
+const odooKey = defineSecret("ODOO_API_KEY");
 
 initializeApp();
 const db = getFirestore();
@@ -40,6 +46,8 @@ const counters = db.collection("meta").doc("counters");
 const fixes = db.collection("fixes");
 const fixCategories = db.collection("fixCategories");
 const searchGaps = db.collection("searchGaps");
+const issues = db.collection("issues");
+const odooSyncStatus = db.collection("meta").doc("odooSync");
 
 const WRONG_LOGIN = "Wrong employee number or PIN.";
 
@@ -768,4 +776,216 @@ exports.adminBulkAddFixes = onCall(async (req) => {
   batch.create(auditLog.doc(), { type: "bulk-added", kind: "fix", recordId: "bulk", by: adminNumber, at: now, count: prepared.length });
   await batch.commit();
   return { added: prepared.length, newCategories: [...newCategories] };
+});
+
+// ---------------------------------------------------------------------------
+// Open issues + last maintenance dates, with Odoo as the source of truth (Plan Phase 2)
+//
+// - reportProblem: a problem reported in the app becomes an Odoo maintenance request (real fields,
+//   linked to the machine's Odoo equipment by its M-number), and shows on the open-issues board.
+// - markIssueFixed (Maintenance, Admin): moves the Odoo request to its "done" stage (Repaired).
+// - syncOdoo (every 5 minutes): board = all open corrective requests in Odoo; each machine's last PM /
+//   last repair = latest closed request of each kind.
+// ---------------------------------------------------------------------------
+
+const FIXER_ROLES = ["maintenance", "admin"];
+
+// "YYYY-MM-DD" in plant time (Cedar Rapids).
+function plantToday() {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago" }).format(new Date());
+}
+
+// Odoo's "2026-10-15 19:32:11" (UTC) -> Date.
+function odooDateTime(s) {
+  return s ? new Date(`${String(s).replace(" ", "T")}Z`) : null;
+}
+
+const ISSUE_FIELDS = [
+  "id", "name", "equipment_id", "priority", "description", "request_date", "create_date", "stage_id", "close_date",
+  "x_studio_downtime_related", "x_studio_unsafe_to_run", "x_studio_failure_category", "x_studio_root_cause",
+];
+
+// One Odoo request -> the app's issue record (fields owned by Odoo; app-only fields are kept on merge).
+function issueFromRequest(r) {
+  const equipmentName = Array.isArray(r.equipment_id) ? r.equipment_id[1] : "";
+  return {
+    odooId: r.id,
+    title: String(r.name || "").trim(),
+    machineId: odoo.machineIdFromEquipmentName(equipmentName),
+    equipmentName,
+    lineDown: r.x_studio_downtime_related === true || /LINE DOWN/i.test(r.name || ""),
+    unsafe: r.x_studio_unsafe_to_run === true,
+    priority: r.priority || "0",
+    description: odoo.htmlToText(r.description).slice(0, 4000),
+    failureCategory: r.x_studio_failure_category || "",
+    rootCause: r.x_studio_root_cause || "",
+    stage: Array.isArray(r.stage_id) ? r.stage_id[1] : "",
+    reportedAt: odooDateTime(r.create_date) || (r.request_date ? new Date(`${r.request_date}T12:00:00Z`) : null),
+    syncedAt: FieldValue.serverTimestamp(),
+  };
+}
+
+// Cached per server instance: the team new requests go to, and the "Repaired" stage.
+let odooRefs = null;
+async function getOdooRefs(key) {
+  if (odooRefs) return odooRefs;
+  const teams = await odoo.odooCall(key, "maintenance.team", "search_read", { domain: [], fields: ["id", "name"] });
+  const stages = await odoo.odooCall(key, "maintenance.stage", "search_read", { domain: [], fields: ["id", "name", "done", "sequence"], order: "sequence" });
+  const team = teams.find((t) => t.name === "Internal Maintenance") || teams[0];
+  const repaired = stages.find((s) => s.done && /repair/i.test(s.name)) || stages.find((s) => s.done);
+  if (!team || !repaired) throw new Error("Odoo has no maintenance team or no 'done' stage.");
+  odooRefs = { teamId: team.id, repairedStageId: repaired.id, repairedStageName: repaired.name };
+  return odooRefs;
+}
+
+async function employeeName(employeeNumber) {
+  const snap = await employees.doc(employeeNumber).get();
+  return snap.get("name") || `Employee ${employeeNumber}`;
+}
+
+// Anyone signed in: { machineId, description, lineDown, unsafe, severity, actions, failureCategory, rootCause, photos }
+exports.reportProblem = onCall({ secrets: [odooKey] }, async (req) => {
+  const me = await requireMember(req);
+  const { report, error } = odoo.cleanReport(req.data);
+  if (error) throw new HttpsError("invalid-argument", error);
+
+  const machineSnap = await machines.doc(report.machineId).get();
+  if (!machineSnap.exists || machineSnap.get("active") === false) throw new HttpsError("not-found", "That machine isn't in the app.");
+  const machine = { id: machineSnap.id, ...machineSnap.data() };
+  const lineSnap = machine.lineId ? await lines.doc(machine.lineId).get() : null;
+  const lineName = lineSnap?.exists ? lineSnap.get("name") : "";
+  const reporter = await employeeName(me.employeeNumber);
+
+  const key = odooKey.value();
+  let odooId;
+  try {
+    const refs = await getOdooRefs(key);
+    const [equipment] = await odoo.odooCall(key, "maintenance.equipment", "search_read", {
+      domain: [["name", "=like", `${machine.id} %`]], fields: ["id", "name"], limit: 1,
+    });
+    if (!equipment) {
+      throw new HttpsError("failed-precondition", `Odoo has no equipment named "${machine.id} …". Ask an admin to add it in Odoo.`);
+    }
+    const vals = odoo.requestValues({ ...report, lineName }, machine, equipment.id, equipment.name, refs.teamId, reporter, plantToday());
+    [odooId] = await odoo.odooCall(key, "maintenance.request", "create", { vals_list: [vals] });
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("reportProblem: Odoo error", err);
+    throw new HttpsError("unavailable", "Couldn't reach Odoo to create the request. Try again in a minute — if it keeps failing, use the paper/Microsoft Form and tell an admin.");
+  }
+
+  // On the board right away (the 5-minute sync keeps it in step with Odoo after that).
+  const issueRef = issues.doc(`odoo-${odooId}`);
+  await issueRef.set({
+    odooId, open: true, source: "app",
+    title: `${report.lineDown ? "⛔ LINE DOWN" : "🚨 Machine issue"} – ${machine.id} ${machine.name}`,
+    machineId: machine.id, lineDown: report.lineDown, unsafe: report.unsafe, severity: report.severity,
+    priority: odoo.SEVERITY[report.severity].priority, description: report.description, actions: report.actions,
+    failureCategory: report.failureCategory, rootCause: report.rootCause, photos: report.photos,
+    stage: "New Request", reportedBy: reporter, reportedByEmp: me.employeeNumber,
+    reportedAt: FieldValue.serverTimestamp(),
+  }, { merge: true });
+  await auditLog.add({ type: "reported", kind: "issue", recordId: issueRef.id, by: me.employeeNumber, at: FieldValue.serverTimestamp(), machineId: machine.id, lineDown: report.lineDown });
+  return { id: issueRef.id, odooId };
+});
+
+// Maintenance and Admins: { id, note? } — closes the Odoo request (stage Repaired, close date today).
+exports.markIssueFixed = onCall({ secrets: [odooKey] }, async (req) => {
+  const me = await requireMember(req);
+  if (!me.roles.some((r) => FIXER_ROLES.includes(r))) throw new HttpsError("permission-denied", "Only Maintenance and Admins can mark issues fixed.");
+  const ref = issues.doc(String(req.data?.id || ""));
+  const snap = await ref.get();
+  if (!snap.exists || snap.get("open") !== true) throw new HttpsError("failed-precondition", "That issue is already closed.");
+  const note = typeof req.data?.note === "string" ? req.data.note.trim().slice(0, 1000) : "";
+  const name = await employeeName(me.employeeNumber);
+  const today = plantToday();
+  const key = odooKey.value();
+  try {
+    const refs = await getOdooRefs(key);
+    const id = snap.get("odooId");
+    await odoo.odooCall(key, "maintenance.request", "write", { ids: [id], vals: { stage_id: refs.repairedStageId, close_date: today } });
+    // Plain text: Odoo 19 shows HTML sent through the API as literal tags.
+    const body = `Marked fixed in CDG Ops by ${name}.` + (note ? `\n${note}` : "");
+    await odoo.odooCall(key, "maintenance.request", "message_post", { ids: [id], body, message_type: "comment", subtype_xmlid: "mail.mt_note" }).catch((e) => console.warn("note not posted", e.message));
+  } catch (err) {
+    console.error("markIssueFixed: Odoo error", err);
+    throw new HttpsError("unavailable", "Couldn't reach Odoo to close the request. Try again in a minute, or close it in Odoo.");
+  }
+  await ref.update({ open: false, stage: "Repaired", closedAt: FieldValue.serverTimestamp(), closedBy: name, closedByEmp: me.employeeNumber, fixNote: note });
+  const machineId = snap.get("machineId");
+  if (machineId) await machines.doc(machineId).set({ lastRepairDate: today }, { merge: true }).catch(() => {});
+  await auditLog.add({ type: "fixed", kind: "issue", recordId: ref.id, by: me.employeeNumber, at: FieldValue.serverTimestamp(), note });
+  return { ok: true };
+});
+
+// Pulls open breakdowns and last-maintenance dates from Odoo into the app.
+async function syncFromOdoo(key) {
+  // 1. Open corrective requests = the board.
+  const open = await odoo.odooCall(key, "maintenance.request", "search_read", {
+    domain: [["maintenance_type", "=", "corrective"], ["stage_id.done", "=", false], ["archive", "=", false]],
+    fields: ISSUE_FIELDS, limit: 500,
+  });
+  const openIds = new Set(open.map((r) => `odoo-${r.id}`));
+  const writes = open.map((r) => issues.doc(`odoo-${r.id}`).set({ ...issueFromRequest(r), open: true }, { merge: true }));
+
+  // 2. Issues the app still shows as open but Odoo has closed (or deleted).
+  const stillOpen = await issues.where("open", "==", true).get();
+  const gone = stillOpen.docs.filter((d) => !openIds.has(d.id));
+  if (gone.length) {
+    const closed = await odoo.odooCall(key, "maintenance.request", "search_read", {
+      domain: [["id", "in", gone.map((d) => d.get("odooId"))]], fields: ISSUE_FIELDS,
+      context: { active_test: false },
+    });
+    const byId = new Map(closed.map((r) => [r.id, r]));
+    for (const d of gone) {
+      const r = byId.get(d.get("odooId"));
+      writes.push(d.ref.set({ ...(r ? issueFromRequest(r) : {}), open: false, closedAt: r?.close_date ? new Date(`${r.close_date}T12:00:00Z`) : FieldValue.serverTimestamp() }, { merge: true }));
+    }
+  }
+
+  // 3. Last PM / last repair for every machine.
+  const done = await odoo.odooCall(key, "maintenance.request", "search_read", {
+    domain: [["close_date", "!=", false], ["equipment_id", "!=", false]],
+    fields: ["equipment_id", "maintenance_type", "close_date"], limit: 5000,
+  });
+  const dates = odoo.lastDatesByMachine(done);
+  const machineSnaps = await machines.get();
+  for (const m of machineSnaps.docs) {
+    const d = dates[m.id];
+    if (!d) continue;
+    const update = {};
+    if (d.pm && d.pm !== m.get("lastPmDate")) update.lastPmDate = d.pm;
+    if (d.repair && d.repair !== m.get("lastRepairDate")) update.lastRepairDate = d.repair;
+    if (Object.keys(update).length) writes.push(m.ref.update(update));
+  }
+
+  await Promise.all(writes);
+  const result = { openIssues: open.length, closedSinceLastSync: gone.length, machinesWithDates: Object.keys(dates).length };
+  await odooSyncStatus.set({ ok: true, lastAt: FieldValue.serverTimestamp(), error: null, ...result });
+  return result;
+}
+
+async function syncAndRecord(key) {
+  try {
+    return await syncFromOdoo(key);
+  } catch (err) {
+    console.error("Odoo sync failed", err);
+    await odooSyncStatus.set({ ok: false, lastAt: FieldValue.serverTimestamp(), error: String(err.message || err).slice(0, 500) }, { merge: true });
+    throw err;
+  }
+}
+
+// Every 5 minutes, all day.
+exports.syncOdoo = onSchedule({ schedule: "every 5 minutes", timeZone: "America/Chicago", secrets: [odooKey], retryCount: 0 }, async () => {
+  await syncAndRecord(odooKey.value());
+});
+
+// Admins: "Sync now" — also the quickest check that the Odoo connection works.
+exports.adminSyncOdoo = onCall({ secrets: [odooKey] }, async (req) => {
+  await requireAdmin(req);
+  try {
+    return await syncAndRecord(odooKey.value());
+  } catch (err) {
+    throw new HttpsError("unavailable", `Odoo sync failed: ${String(err.message || err).slice(0, 300)}`);
+  }
 });

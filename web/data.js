@@ -8,7 +8,8 @@ const LISTS = ["roles", "lines", "machines", "fixCategories"];
 
 // null = still loading; [] = loaded and empty.
 // fixes = approved fixes; myFixes = pending suggestions I can see (approvers: everyone's; others: my own).
-export const data = { roles: null, lines: null, machines: null, fixCategories: null, fixes: null, myFixes: null };
+// openIssues = open breakdowns from Odoo (line down first, newest first).
+export const data = { roles: null, lines: null, machines: null, fixCategories: null, fixes: null, myFixes: null, openIssues: null };
 
 const listeners = new Set();
 let stopFns = [];
@@ -17,6 +18,8 @@ let stopFns = [];
 const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true });
 const byId = (a, b) => a.id.localeCompare(b.id, undefined, { numeric: true });
 const byTitle = (a, b) => a.title.localeCompare(b.title, undefined, { numeric: true });
+const time = (t) => (t?.toMillis ? t.toMillis() : 0);
+const lineDownFirst = (a, b) => (b.lineDown === true) - (a.lineDown === true) || time(b.reportedAt) - time(a.reportedAt);
 
 function changed() {
   for (const fn of listeners) fn();
@@ -51,6 +54,7 @@ export function startData(me) {
       byTitle
     )
   );
+  stopFns.push(watch("openIssues", query(collection(db, "issues"), where("open", "==", true)), lineDownFirst));
 }
 
 export function stopData() {

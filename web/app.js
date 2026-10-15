@@ -15,7 +15,8 @@ import { el, friendlyError } from "./ui.js";
 import { openAdmin } from "./admin.js";
 import { openLines, openRoles } from "./setup.js";
 import { openFixLibrary } from "./fixlib.js";
-import { startData, stopData } from "./data.js";
+import { startData, stopData, data, onDataChange } from "./data.js";
+import { openIssueBoard, openReportForm } from "./issues.js";
 
 const screen = document.getElementById("screen");
 const deviceBadge = document.getElementById("device-badge");
@@ -215,6 +216,8 @@ function renderHome() {
     el("h1", {}, `Hi, ${name}`),
     roles ? el("p", { class: "roles" }, `Employee ${state.claims.emp} · ${roles}`) : null,
     messageBox(),
+    el("button", { class: "btn big danger-fill", type: "button", onclick: () => openReport() }, "🚨 Report a problem"),
+    issuesButton(),
     el("button", { class: "btn big", type: "button", onclick: () => openFixes() }, "🔧 Fix Library"),
     el("div", { class: "card" }, "Your daily screen — what's due, what's new, and what needs your signature — is coming next."),
     isAdmin() ? el("button", { class: "btn secondary", type: "button", onclick: () => go("adminMenu") }, "Admin") : null,
@@ -296,16 +299,51 @@ function openModule(open) {
 
 const APPROVER_ROLES = ["admin"]; // Plan Decision 27 (updated: admins only approve fixes)
 
+const FIXER_ROLES = ["maintenance", "admin"]; // can mark issues fixed (moves the Odoo request to Repaired)
+
 function me() {
   const roles = state.claims.roles || [];
-  return { emp: state.claims.emp, admin: roles.includes("admin"), approver: roles.some((r) => APPROVER_ROLES.includes(r)) };
+  return {
+    emp: state.claims.emp,
+    admin: roles.includes("admin"),
+    approver: roles.some((r) => APPROVER_ROLES.includes(r)),
+    fixer: roles.some((r) => FIXER_ROLES.includes(r)),
+  };
 }
 
 // Fix Library for everyone. `category` (id or name, any case) opens it filtered, e.g. from a QR code (?cat=Die).
 function openFixes(category = null) {
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
-  closeModule = openFixLibrary(screen, { me: me(), onExit: () => go("home"), startCategory: category });
+  closeModule = openFixLibrary(screen, {
+    me: me(), onExit: () => go("home"), startCategory: category,
+    onReport: (machineTypes) => openReport(machineTypes, () => openFixes(category)),
+    onIssues: () => openIssues(),
+  });
 }
+
+// Open issues board (from Odoo).
+function openIssues() {
+  if (closeModule) closeModule();
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  closeModule = openIssueBoard(screen, { me: me(), onExit: () => go("home"), onReport: () => openReport() });
+}
+
+// Report a problem -> Odoo request. `machineTypes` narrows the machine list (from a Fix Library category).
+function openReport(machineTypes = null, back = () => go("home")) {
+  if (closeModule) closeModule();
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  closeModule = openReportForm(screen, { me: me(), machineTypes, onExit: back, onDone: () => openIssues() });
+}
+
+function issuesButton() {
+  const list = data.openIssues;
+  const down = (list || []).filter((i) => i.lineDown).length;
+  const label = !list ? "Open issues" : !list.length ? "Open issues — all clear" : `Open issues (${list.length})${down ? ` · ⛔ ${down} line${down === 1 ? "" : "s"} down` : ""}`;
+  return el("button", { class: down ? "btn big danger" : "btn big secondary", type: "button", onclick: openIssues }, label);
+}
+
+// Keep the home screen's issue count live.
+onDataChange(() => { if (state.step === "home") render(); });
 
 function renderAdminMenu() {
   return [

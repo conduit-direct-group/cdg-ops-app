@@ -10,6 +10,7 @@ import {
 } from "./firebase.js";
 import { ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-storage.js";
 import { collection, onSnapshot } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
+import { issueCard } from "./issues.js";
 
 const BODY_TEMPLATE = "Symptom:\n\nCause:\n\nFix (steps):\n1. \n";
 
@@ -60,7 +61,7 @@ export function parseBulkFixes(raw) {
 }
 
 // `me` = { emp, approver, admin }. `startCategory` opens the library filtered (e.g. from a QR code).
-export function openFixLibrary(container, { me, onExit, startCategory = null }) {
+export function openFixLibrary(container, { me, onExit, startCategory = null, onReport = null, onIssues = null }) {
   const ui = {
     view: "list", // list | fix | form | gaps | qr | bulk
     search: "",
@@ -183,7 +184,8 @@ export function openFixLibrary(container, { me, onExit, startCategory = null }) 
       ),
       el("div", { class: "chips small" }, Object.entries(ATTACH_FILTERS).map(([id, f]) => attachChip(id, f.label))),
       el("button", { class: "btn", type: "button", onclick: () => startForm(null) }, "+ Add a fix"),
-      maintenanceRequestButton(),
+      maintenanceRequestButton(data.fixCategories.find((c) => c.id === ui.category)?.machineTypes),
+      !["all", "pending"].includes(ui.category) ? maintenancePanel(machinesOfCategory(ui.category)) : null,
       myOwn.length
         ? el("div", { class: "card" }, el("strong", {}, "Your suggestions"), myOwn.map((f) => fixRow(f)))
         : null,
@@ -192,8 +194,47 @@ export function openFixLibrary(container, { me, onExit, startCategory = null }) 
     ];
   }
 
-  function maintenanceRequestButton() {
+  // In the app: opens Report a problem (creates the Odoo request), narrowed to these machine types.
+  // Without the in-app form available, falls back to the old Microsoft Form.
+  function maintenanceRequestButton(machineTypes = null) {
+    if (onReport) {
+      return el("button", { class: "btn secondary", type: "button", onclick: () => onReport(machineTypes && machineTypes.length ? machineTypes : null) }, "🛠 Maintenance Request");
+    }
     return el("a", { class: "btn secondary link-as-btn", href: MAINTENANCE_FORM_URL, target: "_blank", rel: "noopener" }, "🛠 Maintenance Request");
+  }
+
+  // Last PM / last repair (from Odoo) and open issues for a set of machines — like the old library's panel.
+  function maintenancePanel(machineList) {
+    if (!machineList.length) return null;
+    const ids = new Set(machineList.map((m) => m.id));
+    const open = (data.openIssues || []).filter((i) => ids.has(i.machineId));
+    const fmt = (d) => {
+      if (!d) return el("span", { class: "muted" }, "—");
+      const [y, mo, da] = d.split("-").map(Number);
+      const date = new Date(y, mo - 1, da);
+      const days = Math.round((new Date().setHours(0, 0, 0, 0) - date) / 86400000);
+      return [date.toLocaleDateString("en-US", { month: "short", day: "numeric", ...(y !== new Date().getFullYear() ? { year: "numeric" } : {}) }),
+        el("small", { class: "muted" }, ` ${days <= 0 ? "today" : days === 1 ? "1 day ago" : `${days} days ago`}`)];
+    };
+    return el(
+      "div",
+      { class: "card maint-panel" },
+      open.length
+        ? [el("strong", {}, `🚨 Open issues (${open.length})`), el("div", { class: "issue-grid" }, open.map((i) => issueCard(i, () => onIssues && onIssues())))]
+        : null,
+      el("strong", {}, "🔧 Last maintenance ", el("small", { class: "muted" }, "from Odoo")),
+      el(
+        "table",
+        { class: "info-table" },
+        el("tr", {}, el("th", {}, "Machine"), el("th", {}, "Last PM"), el("th", {}, "Last repair")),
+        machineList.map((m) => el("tr", {}, el("td", {}, `${m.id} · ${m.lineId ? lineName(m.lineId) : m.name}`), el("td", {}, fmt(m.lastPmDate)), el("td", {}, fmt(m.lastRepairDate))))
+      )
+    );
+  }
+
+  function machinesOfCategory(categoryId) {
+    const types = data.fixCategories?.find((c) => c.id === categoryId)?.machineTypes || [];
+    return (data.machines || []).filter((m) => m.active !== false && types.includes(m.type));
   }
 
   // Searches with no results: sent once per search, 1.5 s after typing stops (like the old library).
@@ -486,7 +527,8 @@ export function openFixLibrary(container, { me, onExit, startCategory = null }) 
       me.approver && f.status === "retired"
         ? el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => retire(false) }, "Bring fix back")
         : null,
-      maintenanceRequestButton(),
+      maintenanceRequestButton(data.fixCategories?.find((c) => c.id === f.categoryId)?.machineTypes),
+      maintenancePanel(machinesFor(f)),
       relatedFixes(f),
     ];
   }

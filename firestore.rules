@@ -41,6 +41,17 @@ service cloud.firestore {
       );
     }
 
+    // Open issues (mirrored from Odoo maintenance requests): everyone signed in can read.
+    // Changes come only from the server (reportProblem, markIssueFixed, the 5-minute Odoo sync).
+    match /issues/{id} {
+      allow read: if signedIn();
+    }
+
+    // Odoo sync status — admins only.
+    match /meta/odooSync {
+      allow read: if approver();
+    }
+
     // Searches that found no fixes — admins only (tells you what fixes to write next).
     match /searchGaps/{id} {
       allow read: if approver();
