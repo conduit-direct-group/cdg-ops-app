@@ -249,4 +249,43 @@ select.field { appearance: auto; }
 .import-row.skip { opacity: 0.55; }
 .import-line { color: var(--orange); font-weight: bold; min-width: 112px; }
 
+.btn.big { min-height: 80px; font-size: 1.5rem; }
+
+/* Fix Library */
+.field.search { font-size: 1.25rem; margin-bottom: 10px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 6px; }
+.chip {
+  min-height: 44px;
+  padding: 8px 14px;
+  border: 2px solid #444;
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: bold;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.chip.on { background: var(--orange); border-color: var(--orange); color: #111; }
+.fix-title { text-align: left; }
+.fix-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 1.15rem;
+  line-height: 1.5;
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 14px;
+  margin: 10px 0;
+}
+.fix-media { display: flex; flex-direction: column; gap: 10px; margin: 10px 0; }
+.fix-media .btn { margin-top: 0; display: flex; align-items: center; justify-content: center; text-decoration: none; }
+.fix-photo, .fix-video { width: 100%; border-radius: 10px; background: #000; display: block; }
+.helpful { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 14px 0; font-size: 1.1rem; }
+.file-btn { display: flex; align-items: center; justify-content: center; }
+.link-row { display: flex; gap: 8px; align-items: stretch; }
+.link-row .btn { width: auto; margin-top: 0; padding: 0 18px; }
+details.more { margin-top: 14px; }
+details.more summary { cursor: pointer; font-size: 1.1rem; color: var(--orange); padding: 10px 0; }
+
 button:focus-visible { outline: 3px solid var(--orange); outline-offset: 2px; }

@@ -11,6 +11,11 @@ service cloud.firestore {
       return request.auth != null && request.auth.token.pinTemp != true;
     }
 
+    // Maintenance, Production Lead / Supervisor, Admin (Plan Decision 27).
+    function approver() {
+      return signedIn() && request.auth.token.roles.hasAny(['maintenance', 'lead', 'admin']);
+    }
+
     // Lines, machines, roles: everyone signed in can read (shop map, checklists, Fix Library need them).
     // Only the server changes them (admin screens call adminSaveLine / adminSaveMachine / adminSaveRole).
     match /lines/{id} {
@@ -21,6 +26,19 @@ service cloud.firestore {
     }
     match /roles/{id} {
       allow read: if signedIn();
+    }
+
+    // Fix Library. Everyone signed in reads approved fixes and categories. Pending/rejected/retired
+    // fixes: approvers see all; others see only their own suggestions. Changes: server only (submitFix, …).
+    match /fixCategories/{id} {
+      allow read: if signedIn();
+    }
+    match /fixes/{id} {
+      allow read: if signedIn() && (
+        resource.data.status == 'approved'
+        || approver()
+        || resource.data.createdBy == request.auth.token.emp
+      );
     }
 
     // Everything else — employees, PIN records, audit log, counters — stays locked.

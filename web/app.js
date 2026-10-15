@@ -14,6 +14,7 @@ import { signInWithCustomToken, onAuthStateChanged, signOut } from "https://www.
 import { el, friendlyError } from "./ui.js";
 import { openAdmin } from "./admin.js";
 import { openLines, openRoles } from "./setup.js";
+import { openFixLibrary } from "./fixlib.js";
 import { startData, stopData } from "./data.js";
 
 const screen = document.getElementById("screen");
@@ -214,8 +215,9 @@ function renderHome() {
     el("h1", {}, `Hi, ${name}`),
     roles ? el("p", { class: "roles" }, `Employee ${state.claims.emp} · ${roles}`) : null,
     messageBox(),
-    el("div", { class: "card" }, "You're signed in. Your daily screen — what's due, what's new, and what needs your signature — is coming next."),
-    isAdmin() ? el("button", { class: "btn", type: "button", onclick: () => go("adminMenu") }, "Admin") : null,
+    el("button", { class: "btn big", type: "button", onclick: () => openFixes() }, "🔧 Fix Library"),
+    el("div", { class: "card" }, "Your daily screen — what's due, what's new, and what needs your signature — is coming next."),
+    isAdmin() ? el("button", { class: "btn secondary", type: "button", onclick: () => go("adminMenu") }, "Admin") : null,
     installCard(),
     deviceCard(),
     el("button", { class: "btn secondary", type: "button", onclick: () => signOut(auth) }, "Sign out"),
@@ -290,6 +292,19 @@ function isAdmin() {
 function openModule(open) {
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = open(screen, { myEmployeeNumber: state.claims.emp, onExit: () => go("adminMenu") }) || null;
+}
+
+const APPROVER_ROLES = ["maintenance", "lead", "admin"]; // Plan Decision 27
+
+function me() {
+  const roles = state.claims.roles || [];
+  return { emp: state.claims.emp, admin: roles.includes("admin"), approver: roles.some((r) => APPROVER_ROLES.includes(r)) };
+}
+
+// Fix Library for everyone. `category` (id or name, any case) opens it filtered, e.g. from a QR code (?cat=Die).
+function openFixes(category = null) {
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  closeModule = openFixLibrary(screen, { me: me(), onExit: () => go("home"), startCategory: category });
 }
 
 function renderAdminMenu() {
@@ -390,7 +405,7 @@ async function submit() {
       await callChangePin({ currentPin: state.knownPin, newPin: state.newPin });
       await state.user.getIdToken(true); // pick up pinTemp: false
       await loadClaims();
-      startData(); // the database only answers once the PIN is no longer temporary
+      startData(me()); // the database only answers once the PIN is no longer temporary
       Object.assign(state, { knownPin: "", newPin: "", busy: false });
       go("home", "Your PIN is set. Use it from now on.", "ok");
     } catch (err) {
@@ -453,8 +468,14 @@ onAuthStateChanged(auth, async (user) => {
   if (state.claims.pinTemp === true) {
     go(state.knownPin ? "newPin" : "currentPin", "Welcome! First, pick your own PIN.", "ok");
   } else {
-    startData();
+    startData(me());
     go("home");
+    // Opened from a QR code or link like ?cat=Die: go straight to that Fix Library category (once).
+    const cat = new URLSearchParams(location.search).get("cat");
+    if (cat) {
+      history.replaceState(null, "", location.pathname);
+      openFixes(cat);
+    }
   }
 });
 

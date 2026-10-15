@@ -10,6 +10,7 @@ import {
   persistentLocalCache,
   persistentMultipleTabManager,
 } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
+import { getStorage } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-storage.js";
 
 const app = initializeApp({
   apiKey: "AIzaSyB7Qr7gLtEZ_DKzNM3yKKnOeEHv6XsWYa0",
@@ -27,6 +28,9 @@ export const db = initializeFirestore(app, {
   localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
 });
 
+// Photos, videos, and documents attached to fixes.
+export const storage = getStorage(app);
+
 const functions = getFunctions(app, "us-central1");
 export const callPinLogin = httpsCallable(functions, "pinLogin");
 export const callChangePin = httpsCallable(functions, "changePin");
@@ -38,3 +42,9 @@ export const callAdminUpdateEmployee = httpsCallable(functions, "adminUpdateEmpl
 export const callAdminSaveRole = httpsCallable(functions, "adminSaveRole");
 export const callAdminSaveLine = httpsCallable(functions, "adminSaveLine");
 export const callAdminSaveMachine = httpsCallable(functions, "adminSaveMachine");
+export const callSubmitFix = httpsCallable(functions, "submitFix");
+export const callReviewFix = httpsCallable(functions, "reviewFix");
+export const callRetireFix = httpsCallable(functions, "retireFix");
+export const callVoteFix = httpsCallable(functions, "voteFix");
+// Copying files from the old library can take a few minutes.
+export const callAdminImportOldLibrary = httpsCallable(functions, "adminImportOldLibrary", { timeout: 540000 });

@@ -14,12 +14,14 @@
 // Rule: no secrets, PINs, or employee data in this file — ever. The repo is public.
 
 const { initializeApp } = require("firebase-admin/app");
+const { getStorage, getDownloadURL } = require("firebase-admin/storage");
 const { getAuth } = require("firebase-admin/auth");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { setGlobalOptions } = require("firebase-functions/v2");
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const pin = require("./pin");
 const records = require("./records");
+const fixesLib = require("./fixes");
 
 initializeApp();
 const db = getFirestore();
@@ -35,6 +37,8 @@ const roles = db.collection("roles");
 const lines = db.collection("lines");
 const machines = db.collection("machines");
 const counters = db.collection("meta").doc("counters");
+const fixes = db.collection("fixes");
+const fixCategories = db.collection("fixCategories");
 
 const WRONG_LOGIN = "Wrong employee number or PIN.";
 
@@ -413,4 +417,260 @@ exports.adminSaveMachine = onCall(async (req) => {
     return req.data.id;
   });
   return { id };
+});
+
+// ---------------------------------------------------------------------------
+// Fix Library (Plan Decisions 25–28)
+//
+// Each fix is its own record in `fixes`. Status: approved | pending | rejected | retired | merged.
+// Everyone signed in reads approved fixes (firestore.rules); pending ones only approvers + the author.
+// All changes come through these functions, which check the person's LIVE roles — no shared PIN.
+// ---------------------------------------------------------------------------
+
+// Signed in with their own PIN, account on. Returns { employeeNumber, roles, approver }.
+async function requireMember(req) {
+  const employeeNumber = requireSignedIn(req);
+  if (req.auth.token.pinTemp === true) throw new HttpsError("permission-denied", "Choose your own PIN first.");
+  const snap = await employees.doc(employeeNumber).get();
+  if (!snap.exists || snap.get("active") === false) throw new HttpsError("permission-denied", "Your account is turned off.");
+  const roles = snap.get("roles") || [];
+  return { employeeNumber, roles, approver: fixesLib.isApprover(roles) };
+}
+
+function requireFix(data) {
+  const { fix, error } = fixesLib.cleanFix(data);
+  if (error) throw new HttpsError("invalid-argument", error);
+  return fix;
+}
+
+// Category must exist and not be retired; pinned machines must exist.
+async function checkFixRefs(tx, fix) {
+  const cat = await tx.get(fixCategories.doc(fix.categoryId));
+  if (!cat.exists || cat.get("active") === false) throw new HttpsError("invalid-argument", "Pick a category from the list.");
+  if (fix.machineIds.length) {
+    const snaps = await tx.getAll(...fix.machineIds.map((id) => machines.doc(id)));
+    const missing = snaps.filter((s) => !s.exists).map((s) => s.id);
+    if (missing.length) throw new HttpsError("invalid-argument", `Unknown machine: ${missing.join(", ")}`);
+  }
+}
+
+const FIX_FIELDS = ["title", "body", "categoryId", "tags", "photos", "videos", "docLink", "machineIds"];
+
+// New fix:   { title, body, categoryId, tags, photos, videos, docLink, machineIds }
+// Edit:      same plus { id }.
+// Approvers' changes go live. Others: new fixes and edits become pending suggestions
+// (an edit to an approved fix is a separate pending record with editOf = the original's id).
+exports.submitFix = onCall(async (req) => {
+  const me = await requireMember(req);
+  const fix = requireFix(req.data);
+  const now = FieldValue.serverTimestamp();
+  const editId = req.data?.id ? String(req.data.id) : null;
+
+  return db.runTransaction(async (tx) => {
+    const original = editId ? await tx.get(fixes.doc(editId)) : null;
+    await checkFixRefs(tx, fix);
+
+    if (!editId) {
+      const ref = fixes.doc();
+      const status = me.approver ? "approved" : "pending";
+      tx.create(ref, {
+        ...fix, status, editOf: null, helpfulYes: 0, helpfulNo: 0, votes: {},
+        createdBy: me.employeeNumber, createdAt: now, updatedAt: now,
+        ...(status === "approved" ? { approvedBy: me.employeeNumber, approvedAt: now } : {}),
+      });
+      auditRecord(tx, "created", "fix", ref.id, me.employeeNumber, { status, title: fix.title });
+      return { id: ref.id, status };
+    }
+
+    if (!original.exists) throw new HttpsError("not-found", "That fix no longer exists.");
+    const o = original.data();
+    const ownPending = o.status === "pending" && o.createdBy === me.employeeNumber;
+    if (me.approver || ownPending) {
+      tx.update(original.ref, { ...fix, updatedBy: me.employeeNumber, updatedAt: now });
+      auditRecord(tx, "updated", "fix", editId, me.employeeNumber, { title: fix.title });
+      return { id: editId, status: o.status };
+    }
+    if (o.status !== "approved") throw new HttpsError("permission-denied", "Only approvers can change this fix.");
+    const ref = fixes.doc();
+    tx.create(ref, {
+      ...fix, status: "pending", editOf: editId, helpfulYes: 0, helpfulNo: 0, votes: {},
+      createdBy: me.employeeNumber, createdAt: now, updatedAt: now,
+    });
+    auditRecord(tx, "suggested-edit", "fix", ref.id, me.employeeNumber, { editOf: editId, title: fix.title });
+    return { id: ref.id, status: "pending", editOf: editId };
+  });
+});
+
+// Approvers: { id, approve: true|false }. Approving an edit suggestion copies it onto the original.
+exports.reviewFix = onCall(async (req) => {
+  const me = await requireMember(req);
+  if (!me.approver) throw new HttpsError("permission-denied", "Only Maintenance, Production Leads, and Admins can approve fixes.");
+  const id = String(req.data?.id || "");
+  const approve = req.data?.approve === true;
+  const now = FieldValue.serverTimestamp();
+
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(fixes.doc(id));
+    if (!snap.exists || snap.get("status") !== "pending") throw new HttpsError("failed-precondition", "That suggestion was already handled.");
+    const p = snap.data();
+    const original = p.editOf ? await tx.get(fixes.doc(p.editOf)) : null;
+
+    if (!approve) {
+      tx.update(snap.ref, { status: "rejected", reviewedBy: me.employeeNumber, reviewedAt: now });
+      auditRecord(tx, "rejected", "fix", id, me.employeeNumber, { title: p.title });
+      return { id, status: "rejected" };
+    }
+    if (p.editOf) {
+      if (!original.exists) throw new HttpsError("not-found", "The fix this edit was for no longer exists.");
+      const fields = Object.fromEntries(FIX_FIELDS.map((k) => [k, p[k]]));
+      tx.update(original.ref, { ...fields, updatedBy: p.createdBy, updatedAt: now, approvedBy: me.employeeNumber, approvedAt: now });
+      tx.update(snap.ref, { status: "merged", reviewedBy: me.employeeNumber, reviewedAt: now });
+      auditRecord(tx, "approved-edit", "fix", p.editOf, me.employeeNumber, { suggestion: id, title: p.title });
+      return { id: p.editOf, status: "approved" };
+    }
+    tx.update(snap.ref, { status: "approved", approvedBy: me.employeeNumber, approvedAt: now, updatedAt: now });
+    auditRecord(tx, "approved", "fix", id, me.employeeNumber, { title: p.title });
+    return { id, status: "approved" };
+  });
+});
+
+// Approvers: { id, retire: true|false }. Retired fixes are hidden, never deleted.
+exports.retireFix = onCall(async (req) => {
+  const me = await requireMember(req);
+  if (!me.approver) throw new HttpsError("permission-denied", "Only Maintenance, Production Leads, and Admins can retire fixes.");
+  const id = String(req.data?.id || "");
+  const retire = req.data?.retire !== false;
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(fixes.doc(id));
+    const status = snap.get("status");
+    if (!snap.exists || !(retire ? status === "approved" : status === "retired")) {
+      throw new HttpsError("failed-precondition", "That fix can't be changed that way.");
+    }
+    tx.update(snap.ref, { status: retire ? "retired" : "approved", updatedBy: me.employeeNumber, updatedAt: FieldValue.serverTimestamp() });
+    auditRecord(tx, retire ? "retired" : "restored", "fix", id, me.employeeNumber, { title: snap.get("title") });
+  });
+  return { id, status: retire ? "retired" : "approved" };
+});
+
+// "Was this helpful?" — { id, helpful: true|false }. One vote per person; voting again changes it.
+// Votes carried over from the old library (counts only, no names) are kept on top.
+exports.voteFix = onCall(async (req) => {
+  const me = await requireMember(req);
+  const id = String(req.data?.id || "");
+  const helpful = req.data?.helpful === true;
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(fixes.doc(id));
+    if (!snap.exists || snap.get("status") !== "approved") throw new HttpsError("not-found", "That fix isn't available.");
+    const votes = { ...(snap.get("votes") || {}), [me.employeeNumber]: helpful };
+    const yes = Object.values(votes).filter(Boolean).length + (snap.get("legacyHelpfulYes") || 0);
+    const no = Object.values(votes).filter((v) => !v).length + (snap.get("legacyHelpfulNo") || 0);
+    tx.update(snap.ref, { votes, helpfulYes: yes, helpfulNo: no });
+    return { helpfulYes: yes, helpfulNo: no };
+  });
+});
+
+// Admins, one-time (safe to run again): copy the old Line Fix Library into the new app (Decisions 25, 28).
+// Reads the old library (read-only — it is never changed), creates fix categories, copies photos/videos
+// stored in the old library's Storage into ours, and saves each fix as its own record ("old-<old id>").
+// Re-running updates the same records and skips files already copied.
+const OLD_LIBRARY_DOC =
+  "https://firestore.googleapis.com/v1/projects/line-library/databases/(default)/documents/problems/library";
+
+exports.adminImportOldLibrary = onCall({ timeoutSeconds: 540, memory: "2GiB" }, async (req) => {
+  const adminNumber = await requireAdmin(req);
+
+  const res = await fetch(OLD_LIBRARY_DOC);
+  if (!res.ok) throw new HttpsError("unavailable", `Couldn't read the old library (HTTP ${res.status}).`);
+  const doc = await res.json();
+  const items = (fixesLib.plainValue({ mapValue: { fields: doc.fields || {} } }).items || []).filter((i) => i && i.id && i.title);
+
+  // 1. Categories, with the machine types they cover.
+  const categoryIds = new Map();
+  for (const name of [...new Set(items.map((i) => String(i.category || "General").trim()))]) {
+    const id = records.idFromName(name) || `cat-${categoryIds.size + 1}`;
+    categoryIds.set(name, id);
+    await fixCategories.doc(id).set(
+      { name, machineTypes: fixesLib.machineTypesForOldCategory(name), active: true, updatedAt: FieldValue.serverTimestamp() },
+      { merge: true }
+    );
+  }
+
+  // 2. Files stored in the old library -> our Storage (once per file).
+  const bucket = getStorage().bucket();
+  const copied = new Map();
+  let filesCopied = 0;
+  let filesSkipped = 0;
+  const fileProblems = [];
+  async function copyFile(url) {
+    if (!fixesLib.isOldLibraryFile(url)) return url; // SharePoint, YouTube, … stay as links
+    if (copied.has(url)) return copied.get(url);
+    const file = bucket.file(`fixes/legacy/${fixesLib.oldFileName(url)}`);
+    try {
+      const [exists] = await file.exists();
+      if (exists) {
+        filesSkipped++;
+      } else {
+        const r = await fetch(url);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        await file.save(Buffer.from(await r.arrayBuffer()), {
+          contentType: r.headers.get("content-type") || undefined,
+          resumable: false,
+        });
+        filesCopied++;
+      }
+      const newUrl = await getDownloadURL(file);
+      copied.set(url, newUrl);
+      return newUrl;
+    } catch (err) {
+      fileProblems.push(`${fixesLib.oldFileName(url)}: ${err.message}`);
+      return url; // keep the old link so nothing is lost; re-run to try again
+    }
+  }
+
+  // 3. Each fix as its own record. Only the old library's approved fixes come over.
+  let fixesSaved = 0;
+  for (const it of items.filter((i) => (i.status || "approved") === "approved")) {
+    const photos = [];
+    for (const u of (it.photoLinks || []).filter(Boolean)) photos.push(await copyFile(u));
+    const videos = [];
+    for (const u of (it.videoLinks || []).filter(Boolean)) videos.push(await copyFile(u));
+    const docLink = it.docLink ? await copyFile(it.docLink) : "";
+    const added = Number(it.addedAt) || Date.now();
+    const updated = Number(it.updatedAt) || added;
+    const ref = fixes.doc(`old-${String(it.id).replace(/[^A-Za-z0-9_-]/g, "_")}`);
+    // Votes start from the old library's counts only the first time; a re-run never resets new votes.
+    const firstTime = !(await ref.get()).exists;
+    const votesStart = firstTime
+      ? { helpfulYes: Number(it.helpfulYes) || 0, helpfulNo: Number(it.helpfulNo) || 0, votes: {} }
+      : {};
+    await ref.set(
+      {
+        title: String(it.title).slice(0, 120),
+        body: String(it.body || "").slice(0, 10000),
+        categoryId: categoryIds.get(String(it.category || "General").trim()),
+        tags: (it.tags || []).map(String).slice(0, 20),
+        photos, videos, docLink,
+        machineIds: [],
+        status: "approved",
+        editOf: null,
+        legacyId: it.id,
+        legacyHelpfulYes: Number(it.helpfulYes) || 0,
+        legacyHelpfulNo: Number(it.helpfulNo) || 0,
+        ...votesStart,
+        createdBy: "old-library",
+        createdAt: new Date(added),
+        updatedAt: new Date(updated),
+        importedBy: adminNumber,
+        importedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    fixesSaved++;
+  }
+
+  await auditLog.add({
+    type: "imported", kind: "fix", recordId: "old-library", by: adminNumber, at: FieldValue.serverTimestamp(),
+    fixesSaved, categories: categoryIds.size, filesCopied, filesSkipped, fileProblems: fileProblems.length,
+  });
+  return { fixesSaved, categories: categoryIds.size, filesCopied, filesSkipped, fileProblems };
 });

@@ -1,9 +1,31 @@
 rules_version = '2';
 
-// Storage (photos/files) security rules for cdg-ops-app.
-// Starting point: everything is locked. Each feature opens only the access it needs.
+// Storage (photos/videos/documents) security rules for cdg-ops-app.
+// Default: everything is locked. Each feature opens only the access it needs.
 service firebase.storage {
   match /b/{bucket}/o {
+
+    // Signed in with employee # + PIN, and already picked their own PIN.
+    function signedIn() {
+      return request.auth != null && request.auth.token.pinTemp != true;
+    }
+
+    // Fix Library files copied from the old library (written by the server only).
+    match /fixes/{allPaths=**} {
+      allow read: if signedIn();
+    }
+
+    // Photos, videos, and PDFs people attach to fixes. Each person uploads only into their own folder.
+    // 250 MB max per file (phone videos are big).
+    match /uploads/{employeeNumber}/{fileName} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.auth.token.emp == employeeNumber
+        && request.resource.size < 250 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*|video/.*|application/pdf');
+    }
+
+    // Everything else stays locked.
     match /{allPaths=**} {
       allow read, write: if false;
     }
