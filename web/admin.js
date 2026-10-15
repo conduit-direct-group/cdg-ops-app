@@ -2,6 +2,7 @@
 // Every action is checked again on the server (admins only), so hiding buttons here is just tidiness.
 
 import { el, friendlyError } from "./ui.js";
+import { data, onDataChange } from "./data.js";
 import {
   callAdminListEmployees,
   callAdminCreateEmployee,
@@ -10,21 +11,13 @@ import {
   callAdminUpdateEmployee,
 } from "./firebase.js";
 
-// Roles are data on the server; this is the starting set shown as checkboxes (Plan §5).
-const ROLES = [
-  ["operator", "Operator"],
-  ["maintenance", "Maintenance"],
-  ["shipping", "Shipping"],
-  ["lead", "Production Lead / Supervisor"],
-  ["admin", "Admin"],
-];
-const ROLE_LABELS = new Map(ROLES);
-
+// Role names come from the live Roles list (Admin → Roles); unknown ids show as-is.
 function roleNames(roles) {
-  return roles.map((r) => ROLE_LABELS.get(r) || r).join(", ");
+  const names = new Map((data.roles || []).map((r) => [r.id, r.name]));
+  return roles.map((r) => names.get(r) || r).join(", ");
 }
 
-// Opens the People screens inside `container`. `onExit` returns to the home screen.
+// Opens the People screens inside `container`. `onExit` returns to the Admin menu.
 export function openAdmin(container, { myEmployeeNumber, onExit }) {
   const ui = {
     view: "list", // list | add | edit | person | tempPin
@@ -109,7 +102,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
             )
           );
     return [
-      backBar("Home", onExit),
+      backBar("Admin", onExit),
       el("h1", {}, "People"),
       el("p", { class: "hint" }, ui.people ? `${ui.people.length} ${ui.people.length === 1 ? "person" : "people"}` : ""),
       messageBox(),
@@ -143,17 +136,22 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
       class: "field", id: "f-name", autocomplete: "off", maxlength: "60", required: true,
       value: d.name, oninput: (e) => { d.name = e.target.value; },
     });
-    const roleBoxes = ROLES.map(([id, label]) =>
-      el(
-        "label",
-        { class: "check-row" },
-        el("input", {
-          type: "checkbox", value: id, checked: d.roles.includes(id),
-          onchange: (e) => { d.roles = e.target.checked ? [...d.roles, id] : d.roles.filter((r) => r !== id); },
-        }),
-        el("span", {}, label)
-      )
-    );
+    // Active roles, plus any retired role this person still has (so it can be unticked).
+    const roleChoices = (data.roles || []).filter((r) => r.active !== false || d.roles.includes(r.id));
+    ui.formHadRoles = roleChoices.length > 0;
+    const roleBoxes = roleChoices.length
+      ? roleChoices.map((r) =>
+          el(
+            "label",
+            { class: "check-row" },
+            el("input", {
+              type: "checkbox", value: r.id, checked: d.roles.includes(r.id),
+              onchange: (e) => { d.roles = e.target.checked ? [...d.roles, r.id] : d.roles.filter((x) => x !== r.id); },
+            }),
+            el("span", {}, r.active === false ? `${r.name} (retired)` : r.name)
+          )
+        )
+      : [el("p", { class: "message error" }, data.roles ? "No roles yet. Go to Admin → Roles and tap \"Add the starting roles\" first." : "Loading roles…")];
 
     async function save(e) {
       e.preventDefault();
@@ -265,6 +263,13 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
     container.replaceChildren(...content.flat().filter(Boolean));
   }
 
+  // Redraw when the Roles list changes (role names), but not mid-typing in a form that already has its checkboxes.
+  const stop = onDataChange(() => {
+    const editing = (ui.view === "add" || ui.view === "edit") && ui.formHadRoles;
+    if (!ui.busy && !editing) render();
+  });
+
   render();
   load();
+  return stop;
 }

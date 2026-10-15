@@ -19,6 +19,7 @@ const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { setGlobalOptions } = require("firebase-functions/v2");
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const pin = require("./pin");
+const records = require("./records");
 
 initializeApp();
 const db = getFirestore();
@@ -30,6 +31,10 @@ setGlobalOptions({ region: "us-central1", maxInstances: 5 });
 const employees = db.collection("employees");
 const pinSecrets = db.collection("pinSecrets");
 const auditLog = db.collection("auditLog");
+const roles = db.collection("roles");
+const lines = db.collection("lines");
+const machines = db.collection("machines");
+const counters = db.collection("meta").doc("counters");
 
 const WRONG_LOGIN = "Wrong employee number or PIN.";
 
@@ -131,10 +136,19 @@ function requireName(value) {
   return name;
 }
 
-function requireRoles(value) {
-  const roles = pin.normalizeRoles(value);
-  if (!roles) throw new HttpsError("invalid-argument", "Pick at least one role.");
-  return roles;
+// Roles must be on the Roles list (Admin → Roles) and not retired.
+async function requireRoles(value) {
+  const ids = pin.normalizeRoles(value);
+  if (!ids) throw new HttpsError("invalid-argument", "Pick at least one role.");
+  const snaps = await db.getAll(...ids.map((id) => roles.doc(id)));
+  const bad = snaps.filter((s) => !s.exists || s.get("active") === false).map((s) => s.id);
+  if (bad.length) {
+    throw new HttpsError(
+      "invalid-argument",
+      `Not on the Roles list: ${bad.join(", ")}. Add it in Admin → Roles (or tap "Add the starting roles" there).`
+    );
+  }
+  return ids;
 }
 
 // ---------------------------------------------------------------------------
@@ -212,7 +226,7 @@ exports.adminListEmployees = onCall(async (req) => {
 exports.adminCreateEmployee = onCall(async (req) => {
   const adminNumber = await requireAdmin(req);
   const employeeNumber = requireEmployeeNumber(req.data?.employeeNumber);
-  const employee = { name: requireName(req.data?.name), roles: requireRoles(req.data?.roles), active: true };
+  const employee = { name: requireName(req.data?.name), roles: await requireRoles(req.data?.roles), active: true };
   const tempPin = pin.randomTempPin();
   const hashed = await pin.hashPin(tempPin);
 
@@ -269,7 +283,7 @@ exports.adminUpdateEmployee = onCall(async (req) => {
   const employeeNumber = requireEmployeeNumber(req.data?.employeeNumber);
   const changes = {};
   if (req.data?.name !== undefined) changes.name = requireName(req.data.name);
-  if (req.data?.roles !== undefined) changes.roles = requireRoles(req.data.roles);
+  if (req.data?.roles !== undefined) changes.roles = await requireRoles(req.data.roles);
   if (req.data?.active !== undefined) {
     if (typeof req.data.active !== "boolean") throw new HttpsError("invalid-argument", "active must be true or false.");
     changes.active = req.data.active;
@@ -289,4 +303,114 @@ exports.adminUpdateEmployee = onCall(async (req) => {
   await syncAuthUser(employeeNumber, employee, pinTemp);
   if (changes.active === false) await auth.revokeRefreshTokens(uidFor(employeeNumber));
   return { ok: true };
+});
+
+// ---------------------------------------------------------------------------
+// Lines, machines, roles ("lines are data, not code" — Plan §5)
+//
+// Everyone signed in can READ these lists directly (see firestore.rules) — the shop map,
+// checklists, and Fix Library all need them. Only admins can CHANGE them, and only through
+// these functions, which check the data and write the audit log.
+// Nothing is deleted: records are retired (active: false) so history never points at nothing.
+// ---------------------------------------------------------------------------
+
+function auditRecord(tx, type, kind, recordId, by, extra = {}) {
+  tx.create(auditLog.doc(), { type, kind, recordId, by, at: FieldValue.serverTimestamp(), ...extra });
+}
+
+function requireText(value, label, max = 60) {
+  const text = records.cleanName(value, max);
+  if (!text) throw new HttpsError("invalid-argument", `${label} is required (${max} characters max).`);
+  return text;
+}
+
+function optionalActive(value) {
+  if (value === undefined) return undefined;
+  if (typeof value !== "boolean") throw new HttpsError("invalid-argument", "active must be true or false.");
+  return value;
+}
+
+// Shared by roles and lines: create (no id, or a new explicit id) or update (existing id).
+async function saveNamedRecord(collection, kind, req, extraCheck) {
+  const adminNumber = await requireAdmin(req);
+  const name = requireText(req.data?.name, "Name");
+  const active = optionalActive(req.data?.active);
+  const isNew = req.data?.create === true;
+  const id = req.data?.id ? String(req.data.id) : records.idFromName(name);
+  if (!records.isRecordId(id)) {
+    throw new HttpsError("invalid-argument", "Name must start with a letter (e.g. \"Line 3\", not \"3\").");
+  }
+  if (extraCheck) extraCheck(id, active);
+
+  await db.runTransaction(async (tx) => {
+    const ref = collection.doc(id);
+    const snap = await tx.get(ref);
+    if (isNew) {
+      if (snap.exists) throw new HttpsError("already-exists", `"${name}" already exists.`);
+      tx.create(ref, { name, active: active ?? true, createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+      auditRecord(tx, "created", kind, id, adminNumber, { name });
+    } else {
+      if (!snap.exists) throw new HttpsError("not-found", "That record no longer exists.");
+      const changes = { name, updatedAt: FieldValue.serverTimestamp() };
+      if (active !== undefined) changes.active = active;
+      tx.update(ref, changes);
+      auditRecord(tx, "updated", kind, id, adminNumber, { name, ...(active !== undefined ? { active } : {}) });
+    }
+  });
+  return { id };
+}
+
+// Roles: create { create: true, name, id? } or update { id, name, active? }.
+// The admin role can't be retired — someone has to be able to run the app.
+exports.adminSaveRole = onCall((req) =>
+  saveNamedRecord(roles, "role", req, (id, active) => {
+    if (id === "admin" && active === false) {
+      throw new HttpsError("failed-precondition", "The Admin role can't be retired.");
+    }
+  })
+);
+
+// Lines: create { create: true, name } or update { id, name, active? }.
+// The id comes from the first name ("Line 3" -> line-3) and never changes, even if the line is renamed.
+exports.adminSaveLine = onCall((req) => saveNamedRecord(lines, "line", req));
+
+// Machines: create { create: true, name, type?, lineId? } -> next plant-wide ID (M-001, M-002, ...),
+// or update { id, name, type?, lineId?, active? }. lineId null = not on a line (spare, shared, in storage).
+exports.adminSaveMachine = onCall(async (req) => {
+  const adminNumber = await requireAdmin(req);
+  const name = requireText(req.data?.name, "Machine name");
+  const type = records.cleanOptional(req.data?.type);
+  if (type === null) throw new HttpsError("invalid-argument", "Type is 60 characters max.");
+  const lineId = req.data?.lineId ? String(req.data.lineId) : null;
+  const active = optionalActive(req.data?.active);
+  const isNew = req.data?.create === true;
+  if (!isNew && !records.isMachineId(req.data?.id)) throw new HttpsError("invalid-argument", "Unknown machine ID.");
+
+  const id = await db.runTransaction(async (tx) => {
+    if (lineId) {
+      const line = await tx.get(lines.doc(lineId));
+      if (!line.exists) throw new HttpsError("not-found", "That line no longer exists.");
+    }
+    if (isNew) {
+      const counterSnap = await tx.get(counters);
+      const next = counterSnap.get("nextMachine") || 1;
+      const machineId = records.machineIdFor(next);
+      tx.set(counters, { nextMachine: next + 1 }, { merge: true });
+      tx.create(machines.doc(machineId), {
+        name, type, lineId, active: active ?? true,
+        createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(),
+      });
+      auditRecord(tx, "created", "machine", machineId, adminNumber, { name, lineId });
+      return machineId;
+    }
+    const ref = machines.doc(req.data.id);
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "That machine no longer exists.");
+    const changes = { name, type, lineId, updatedAt: FieldValue.serverTimestamp() };
+    if (active !== undefined) changes.active = active;
+    tx.update(ref, changes);
+    auditRecord(tx, "updated", "machine", req.data.id, adminNumber, { name, lineId, ...(active !== undefined ? { active } : {}) });
+    return req.data.id;
+  });
+  return { id };
 });

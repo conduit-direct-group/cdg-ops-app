@@ -13,6 +13,8 @@ import { auth, callPinLogin, callChangePin } from "./firebase.js";
 import { signInWithCustomToken, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
 import { el, friendlyError } from "./ui.js";
 import { openAdmin } from "./admin.js";
+import { openLines, openRoles } from "./setup.js";
+import { startData, stopData } from "./data.js";
 
 const screen = document.getElementById("screen");
 const deviceBadge = document.getElementById("device-badge");
@@ -94,7 +96,13 @@ function toggleLineTablet() {
 // Small helpers
 // ---------------------------------------------------------------------------
 
+let closeModule = null; // set while an admin screen from admin.js / setup.js is open
+
 function go(step, message = "", messageKind = "") {
+  if (closeModule) {
+    closeModule();
+    closeModule = null;
+  }
   Object.assign(state, { step, typed: "", message, messageKind });
   render();
 }
@@ -207,7 +215,7 @@ function renderHome() {
     roles ? el("p", { class: "roles" }, `Employee ${state.claims.emp} · ${roles}`) : null,
     messageBox(),
     el("div", { class: "card" }, "You're signed in. Your daily screen — what's due, what's new, and what needs your signature — is coming next."),
-    isAdmin() ? el("button", { class: "btn", type: "button", onclick: openPeople }, "People") : null,
+    isAdmin() ? el("button", { class: "btn", type: "button", onclick: () => go("adminMenu") }, "Admin") : null,
     installCard(),
     deviceCard(),
     el("button", { class: "btn secondary", type: "button", onclick: () => signOut(auth) }, "Sign out"),
@@ -277,10 +285,21 @@ function isAdmin() {
   return (state.claims.roles || []).includes("admin");
 }
 
-// Admin People screens live in admin.js and draw into the same area until "← Home".
-function openPeople() {
+// Admin screens live in admin.js (People) and setup.js (Lines & machines, Roles). They draw into the
+// same area until their "← Admin" button; leaving any other way (e.g. idle sign-out) closes them too.
+function openModule(open) {
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
-  openAdmin(screen, { myEmployeeNumber: state.claims.emp, onExit: () => go("home") });
+  closeModule = open(screen, { myEmployeeNumber: state.claims.emp, onExit: () => go("adminMenu") }) || null;
+}
+
+function renderAdminMenu() {
+  return [
+    el("button", { class: "link-btn", type: "button", onclick: () => go("home") }, "← Home"),
+    el("h1", {}, "Admin"),
+    el("button", { class: "btn", type: "button", onclick: () => openModule(openAdmin) }, "People"),
+    el("button", { class: "btn", type: "button", onclick: () => openModule(openLines) }, "Lines & machines"),
+    el("button", { class: "btn", type: "button", onclick: () => openModule(openRoles) }, "Roles"),
+  ];
 }
 
 // Admins only: mark this device as a shared line tablet (or back to a personal device).
@@ -313,6 +332,7 @@ function render() {
   if (state.step === "loading") content = [el("p", { class: "loading" }, "Loading…")];
   else if (state.step === "employee") content = renderEmployee();
   else if (state.step === "home") content = renderHome();
+  else if (state.step === "adminMenu") content = renderAdminMenu();
   else content = renderPinStep();
   screen.replaceChildren(...content.filter(Boolean));
 }
@@ -370,6 +390,7 @@ async function submit() {
       await callChangePin({ currentPin: state.knownPin, newPin: state.newPin });
       await state.user.getIdToken(true); // pick up pinTemp: false
       await loadClaims();
+      startData(); // the database only answers once the PIN is no longer temporary
       Object.assign(state, { knownPin: "", newPin: "", busy: false });
       go("home", "Your PIN is set. Use it from now on.", "ok");
     } catch (err) {
@@ -394,7 +415,7 @@ async function loadClaims() {
 
 // Physical keyboards work too (tablets with keyboards, testing on a PC).
 document.addEventListener("keydown", (e) => {
-  if (state.step === "loading" || state.step === "home" || state.step === "admin") return;
+  if (["loading", "home", "admin", "adminMenu"].includes(state.step)) return;
   if (e.target.closest?.("input, textarea, select")) return;
   if (/^\d$/.test(e.key)) press(e.key);
   else if (e.key === "Backspace") backspace();
@@ -409,6 +430,7 @@ onAuthStateChanged(auth, async (user) => {
   state.user = user;
   state.busy = false;
   if (!user) {
+    stopData();
     const why = state.idleSignOut ? "Signed out after 5 minutes of no use." : "";
     Object.assign(state, { claims: {}, knownPin: "", newPin: "", employeeNumber: "", idleSignOut: false });
     go("employee", why, why ? "ok" : "");
@@ -431,6 +453,7 @@ onAuthStateChanged(auth, async (user) => {
   if (state.claims.pinTemp === true) {
     go(state.knownPin ? "newPin" : "currentPin", "Welcome! First, pick your own PIN.", "ok");
   } else {
+    startData();
     go("home");
   }
 });

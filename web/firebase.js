@@ -5,6 +5,11 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-app.js";
 import { getAuth } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
 import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-functions.js";
+import {
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+} from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 
 const app = initializeApp({
   apiKey: "AIzaSyB7Qr7gLtEZ_DKzNM3yKKnOeEHv6XsWYa0",
@@ -17,6 +22,11 @@ const app = initializeApp({
 
 export const auth = getAuth(app);
 
+// Database reads keep a copy on the device, so lists still show on bad Wi-Fi and catch up when it's back.
+export const db = initializeFirestore(app, {
+  localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+});
+
 const functions = getFunctions(app, "us-central1");
 export const callPinLogin = httpsCallable(functions, "pinLogin");
 export const callChangePin = httpsCallable(functions, "changePin");
@@ -25,3 +35,6 @@ export const callAdminCreateEmployee = httpsCallable(functions, "adminCreateEmpl
 export const callAdminResetPin = httpsCallable(functions, "adminResetPin");
 export const callAdminUnlock = httpsCallable(functions, "adminUnlock");
 export const callAdminUpdateEmployee = httpsCallable(functions, "adminUpdateEmployee");
+export const callAdminSaveRole = httpsCallable(functions, "adminSaveRole");
+export const callAdminSaveLine = httpsCallable(functions, "adminSaveLine");
+export const callAdminSaveMachine = httpsCallable(functions, "adminSaveMachine");

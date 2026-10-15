@@ -1,10 +1,29 @@
 rules_version = '2';
 
 // Firestore (database) security rules for cdg-ops-app.
-// Starting point: everything is locked. Each feature opens only the access it needs.
-// Server code (Cloud Functions) is not limited by these rules.
+// Default: everything is locked. Each feature opens only the access it needs.
+// Server code (Cloud Functions) is not limited by these rules — all changes go through it.
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // Signed in with employee # + PIN, and already picked their own PIN (not on a temporary one).
+    function signedIn() {
+      return request.auth != null && request.auth.token.pinTemp != true;
+    }
+
+    // Lines, machines, roles: everyone signed in can read (shop map, checklists, Fix Library need them).
+    // Only the server changes them (admin screens call adminSaveLine / adminSaveMachine / adminSaveRole).
+    match /lines/{id} {
+      allow read: if signedIn();
+    }
+    match /machines/{id} {
+      allow read: if signedIn();
+    }
+    match /roles/{id} {
+      allow read: if signedIn();
+    }
+
+    // Everything else — employees, PIN records, audit log, counters — stays locked.
     match /{document=**} {
       allow read, write: if false;
     }
