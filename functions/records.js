@@ -57,4 +57,26 @@ function nextEmployeeNumber(numbers) {
   return String(n);
 }
 
-module.exports = { machineIdFor, isMachineId, cleanName, cleanOptional, cleanNotes, nextEmployeeNumber, idFromName, isRecordId };
+// A starting role from a Gusto job title — only a suggestion; Chris confirms every one.
+// Role ids: lead = Line Lead, shipping = Logistics & Distribution (renamed), training-safety = Training & Safety.
+const POSITION_RULES = [
+  [/supervisor|superintendent|plant manager|production manager|operations manager/i, "supervisor"],
+  [/line lead|lead operator|team lead|\blead\b/i, "lead"],
+  [/maintenance|mechanic|technician|electrician|millwright/i, "maintenance"],
+  [/quality|\bqc\b|\bqa\b|inspector|lab tech/i, "quality"],
+  [/training|trainer|safety|\behs\b|\bhse\b/i, "training-safety"],
+  [/logistic|distribution|shipping|receiving|warehouse|driver|forklift|material handler|inventory/i, "shipping"],
+  [/sales|account manager|business development|estimator/i, "sales"],
+  [/office|account(ing|ant)|payroll|human resources|\bhr\b|reception|clerk|purchas|buyer|controller|finance|administrative|admin assistant|customer service|bookkeep|executive assistant/i, "office"],
+  [/operator|production|extru|machine|packer|assembler|helper|laborer|general labor/i, "operator"],
+];
+
+function suggestRoles(position) {
+  const text = String(position || "");
+  const found = POSITION_RULES.filter(([re]) => re.test(text)).map(([, role]) => role);
+  // A lead or supervisor title also says "production"; keep just the most specific role.
+  if (found.includes("supervisor") || found.includes("lead")) return [found.includes("supervisor") ? "supervisor" : "lead"];
+  return found.length ? [found[0]] : [];
+}
+
+module.exports = { suggestRoles, machineIdFor, isMachineId, cleanName, cleanOptional, cleanNotes, nextEmployeeNumber, idFromName, isRecordId };

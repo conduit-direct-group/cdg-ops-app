@@ -14,9 +14,9 @@ test("starting routing matches Chris's defaults", () => {
   const by = Object.fromEntries(r.STARTING_TYPES.map((t) => [t.id, t]));
   assert.deepStrictEqual(by.tool.routeRoles, ["maintenance"]);
   assert.deepStrictEqual(by.building.routeRoles, ["maintenance"]);
-  assert.deepStrictEqual(by.safety.routeRoles, ["lead", "admin"]);
+  assert.deepStrictEqual(by.safety.routeRoles, ["supervisor", "admin"]);
   assert.strictEqual(by.safety.urgent, true);
-  assert.deepStrictEqual(by.other.routeRoles, ["lead"]);
+  assert.deepStrictEqual(by.other.routeRoles, ["supervisor"]);
   assert.strictEqual(r.startingType(by.supplies).needsRouting, true);
 });
 

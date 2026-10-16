@@ -7,14 +7,14 @@
 
 const STATUSES = ["open", "in-progress", "done"];
 
-// Chris's starting types and routing (10-16-2026). "lead" = Production Lead / Supervisor.
+// Chris's starting types and routing (10-16-2026). Supervisor is its own role (Line Lead is "lead").
 // Supplies has no restock role yet — it goes to Admin until someone is picked on the admin screen.
 const STARTING_TYPES = [
   { id: "tool", name: "Tool broken or missing", icon: "🧰", routeRoles: ["maintenance"], urgent: false, order: 1 },
   { id: "supplies", name: "Running low / out of supplies", icon: "📦", routeRoles: ["admin"], urgent: false, order: 2, needsRouting: true },
-  { id: "safety", name: "Safety concern", icon: "⚠️", routeRoles: ["lead", "admin"], urgent: true, order: 3 },
+  { id: "safety", name: "Safety concern", icon: "⚠️", routeRoles: ["supervisor", "admin"], urgent: true, order: 3 },
   { id: "building", name: "Building (lights, bathroom, heat)", icon: "🏢", routeRoles: ["maintenance"], urgent: false, order: 4 },
-  { id: "other", name: "Other", icon: "💬", routeRoles: ["lead"], urgent: false, order: 5 },
+  { id: "other", name: "Other", icon: "💬", routeRoles: ["supervisor"], urgent: false, order: 5 },
 ];
 
 function startingType(t) {

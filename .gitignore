@@ -17,3 +17,6 @@ CDG_Operations_App_Plan*
 
 # Downloaded copy of the old live Fix Library (reference only, never committed)
 reference/
+
+# Private files (employee lists, exports) — never committed. This repo is public.
+private/

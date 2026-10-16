@@ -254,6 +254,10 @@ exports.adminListEmployees = onCall(async (req) => {
       employeeNumber: d.id,
       name: e.name,
       roles: e.roles || [],
+      position: e.position || "",
+      suggestedRoles: e.suggestedRoles || [],
+      rolesConfirmed: e.rolesConfirmed !== false,
+      loginEnabled: secrets.has(d.id),
       team: e.team || null,
       shift: e.shift || null,
       homeLineId: e.homeLineId || null,
@@ -302,8 +306,9 @@ exports.adminResetPin = onCall(async (req) => {
   const hashed = await pin.hashPin(tempPin);
 
   const employee = await db.runTransaction(async (tx) => {
-    const snap = await tx.get(employees.doc(employeeNumber));
+    const [snap, secret] = await tx.getAll(employees.doc(employeeNumber), pinSecrets.doc(employeeNumber));
     if (!snap.exists) throw new HttpsError("not-found", `No employee ${employeeNumber}.`);
+    if (!secret.exists) throw new HttpsError("failed-precondition", "This person doesn't have login yet. Use Enable login.");
     tx.set(pinSecrets.doc(employeeNumber), newPinRecord(hashed, true));
     audit(tx, "pin-reset", employeeNumber, adminNumber);
     return snap.data();
@@ -332,7 +337,14 @@ exports.adminUpdateEmployee = onCall(async (req) => {
   const employeeNumber = requireEmployeeNumber(req.data?.employeeNumber);
   const changes = {};
   if (req.data?.name !== undefined) changes.name = requireName(req.data.name);
-  if (req.data?.roles !== undefined) changes.roles = await requireRoles(req.data.roles);
+  if (req.data?.roles !== undefined) {
+    changes.roles = await requireRoles(req.data.roles);
+    changes.rolesConfirmed = true;
+  }
+  if (req.data?.position !== undefined) {
+    changes.position = records.cleanOptional(req.data.position, 80);
+    if (changes.position === null) throw new HttpsError("invalid-argument", "Position is 80 characters max.");
+  }
   if (req.data?.team !== undefined) changes.team = await optionalRef(teams, req.data.team, "team");
   if (req.data?.shift !== undefined) changes.shift = await optionalRef(shifts, req.data.shift, "shift");
   if (req.data?.homeLineId !== undefined) changes.homeLineId = await optionalRef(lines, req.data.homeLineId, "line");
@@ -355,6 +367,62 @@ exports.adminUpdateEmployee = onCall(async (req) => {
   await syncAuthUser(employeeNumber, employee, pinTemp);
   if (changes.active === false) await auth.revokeRefreshTokens(uidFor(employeeNumber));
   return { ok: true };
+});
+
+// Admins: people from a payroll list (e.g. Gusto), with NO login — no PIN, nobody can sign in until an
+// admin taps Enable login. Only name and position are stored, plus a suggested role to confirm.
+// { people: [{ employeeNumber, name, position, suggestedRoles }] } — all or nothing.
+exports.adminImportEmployees = onCall(async (req) => {
+  const adminNumber = await requireAdmin(req);
+  const list = Array.isArray(req.data?.people) ? req.data.people : [];
+  if (!list.length || list.length > 300) throw new HttpsError("invalid-argument", "Import between 1 and 300 people at a time.");
+  const known = new Set((await roles.get()).docs.map((d) => d.id));
+  const people = list.map((p, i) => {
+    const employeeNumber = pin.normalizeEmployeeNumber(p?.employeeNumber);
+    const name = pin.normalizeName(p?.name);
+    const position = records.cleanOptional(p?.position, 80);
+    if (!employeeNumber || !name || position === null) throw new HttpsError("invalid-argument", `Row ${i + 1}: number, name, or position isn't valid.`);
+    const suggestedRoles = Array.isArray(p?.suggestedRoles) ? p.suggestedRoles.filter((r) => known.has(r)) : [];
+    return { employeeNumber, name, position, suggestedRoles };
+  });
+  if (new Set(people.map((p) => p.employeeNumber)).size !== people.length) throw new HttpsError("invalid-argument", "An employee number is listed twice.");
+  await db.runTransaction(async (tx) => {
+    const snaps = await tx.getAll(...people.map((p) => employees.doc(p.employeeNumber)));
+    const taken = snaps.filter((x) => x.exists).map((x) => x.id);
+    if (taken.length) throw new HttpsError("already-exists", `Already in the app: ${taken.join(", ")}. Nothing was imported.`);
+    for (const p of people) {
+      tx.create(employees.doc(p.employeeNumber), {
+        name: p.name, position: p.position, roles: [], suggestedRoles: p.suggestedRoles, rolesConfirmed: false,
+        team: null, shift: null, homeLineId: null, active: true, importedFrom: "gusto",
+        createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(),
+      });
+    }
+    tx.create(auditLog.doc(), { type: "imported", kind: "people", recordId: "gusto", by: adminNumber, at: FieldValue.serverTimestamp(), count: people.length });
+  });
+  return { imported: people.length };
+});
+
+// Admins: { employeeNumber } — turn on login for someone imported without it. Their roles must be
+// confirmed first. Returns a temporary PIN (shown once); they pick their own at first sign-in.
+exports.adminEnableLogin = onCall(async (req) => {
+  const adminNumber = await requireAdmin(req);
+  const employeeNumber = requireEmployeeNumber(req.data?.employeeNumber);
+  const tempPin = pin.randomTempPin();
+  const hashed = await pin.hashPin(tempPin);
+  const employee = await db.runTransaction(async (tx) => {
+    const [snap, secret] = await tx.getAll(employees.doc(employeeNumber), pinSecrets.doc(employeeNumber));
+    if (!snap.exists) throw new HttpsError("not-found", `No employee ${employeeNumber}.`);
+    if (secret.exists) throw new HttpsError("failed-precondition", "Login is already on. Use Reset PIN instead.");
+    if (snap.get("active") === false) throw new HttpsError("failed-precondition", "Turn the account back on first.");
+    if (snap.get("rolesConfirmed") === false || !(snap.get("roles") || []).length) {
+      throw new HttpsError("failed-precondition", "Confirm their role first (Edit → pick roles → Save).");
+    }
+    tx.set(pinSecrets.doc(employeeNumber), newPinRecord(hashed, true));
+    audit(tx, "login-enabled", employeeNumber, adminNumber);
+    return snap.data();
+  });
+  await syncAuthUser(employeeNumber, employee, true);
+  return { employeeNumber, tempPin };
 });
 
 // ---------------------------------------------------------------------------

@@ -46,3 +46,19 @@ test("machine notes keep line breaks and have a length limit", () => {
   assert.strictEqual(r.cleanNotes(undefined), "");
   assert.strictEqual(r.cleanNotes("x".repeat(1001)), null);
 });
+
+test("suggested roles from Gusto job titles", () => {
+  const s = r.suggestRoles;
+  assert.deepStrictEqual(s("Extrusion Operator"), ["operator"]);
+  assert.deepStrictEqual(s("Production Line Lead"), ["lead"]);
+  assert.deepStrictEqual(s("Production Supervisor"), ["supervisor"]);
+  assert.deepStrictEqual(s("Maintenance Technician"), ["maintenance"]);
+  assert.deepStrictEqual(s("Quality Control Inspector"), ["quality"]);
+  assert.deepStrictEqual(s("Shipping & Receiving"), ["shipping"]);
+  assert.deepStrictEqual(s("Forklift Driver"), ["shipping"]);
+  assert.deepStrictEqual(s("Inside Sales"), ["sales"]);
+  assert.deepStrictEqual(s("Office Manager"), ["office"]);
+  assert.deepStrictEqual(s("HR Generalist"), ["office"]);
+  assert.deepStrictEqual(s("Safety & Training Coordinator"), ["training-safety"]);
+  assert.deepStrictEqual(s("Owner"), []);
+});

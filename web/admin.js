@@ -9,6 +9,7 @@ import {
   callAdminResetPin,
   callAdminUnlock,
   callAdminUpdateEmployee,
+  callAdminEnableLogin,
 } from "./firebase.js";
 
 // Role names come from the live Roles list (Admin → Roles); unknown ids show as-is.
@@ -19,9 +20,9 @@ function roleNames(roles) {
 
 const teamName = (id) => (id ? data.teams?.find((t) => t.id === id)?.name || "?" : "");
 const shiftName = (id) => (id ? data.shifts?.find((t) => t.id === id)?.name || "?" : "");
-// "#1004 · Operator · Team A · Line 2"
+// "#1004 · Operator · Team A · Days shift · Line 2" (before roles are confirmed: the job title instead).
 function personLine(p) {
-  return [`#${p.employeeNumber}`, roleNames(p.roles), p.team ? `Team ${teamName(p.team)}` : "", p.shift ? `${shiftName(p.shift)} shift` : "", p.homeLineId ? lineName(p.homeLineId) : ""].filter(Boolean).join(" · ");
+  return [`#${p.employeeNumber}`, p.rolesConfirmed ? roleNames(p.roles) : p.position, p.team ? `Team ${teamName(p.team)}` : "", p.shift ? `${shiftName(p.shift)} shift` : "", p.homeLineId ? lineName(p.homeLineId) : ""].filter(Boolean).join(" · ");
 }
 
 // Opens the People screens inside `container`. `onExit` returns to the Admin menu.
@@ -33,6 +34,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
     tempPin: null, // { name, pin } — shown once, never stored
     justAdded: [], // [{ name, number, pin }] — PINs from "Save & add another", shown on the form until you leave it
     nextNumber: "",
+    filter: "all", // all | unconfirmed | noTeam | noLogin
     draft: null, // what's typed in the add/edit form, so a failed save doesn't wipe it
     message: "",
     messageKind: "",
@@ -95,6 +97,10 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
 
   function tags(p) {
     return [
+      !p.rolesConfirmed
+        ? el("span", { class: "tag warn" }, `Suggested: ${p.suggestedRoles.length ? roleNames(p.suggestedRoles) : "no match"} — needs Chris to confirm`)
+        : null,
+      p.active && !p.loginEnabled ? el("span", { class: "tag" }, "No login yet") : null,
       !p.active ? el("span", { class: "tag off" }, "Off") : null,
       p.locked ? el("span", { class: "tag warn" }, `Locked ${p.minutesLeft} min`) : null,
       p.active && p.mustChangePin ? el("span", { class: "tag" }, "Hasn't picked PIN") : null,
@@ -103,13 +109,29 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
 
   // ---- People list --------------------------------------------------------
 
+  // Quick filters for working through a new list (e.g. after the Gusto import). Turned-off people only in "All".
+  const FILTERS = {
+    all: { label: "All", test: () => true },
+    unconfirmed: { label: "Role not confirmed", test: (p) => p.active && !p.rolesConfirmed },
+    noTeam: { label: "No team set", test: (p) => p.active && !p.team },
+    noLogin: { label: "No login yet", test: (p) => p.active && !p.loginEnabled },
+  };
+  const visible = () => (ui.people || []).filter(FILTERS[ui.filter].test);
+  function filterChips() {
+    if (!ui.people) return null;
+    return el("div", { class: "chips" }, Object.entries(FILTERS).map(([id, f]) => {
+      const n = ui.people.filter(f.test).length;
+      return el("button", { class: ui.filter === id ? "chip on" : "chip", type: "button", onclick: () => { ui.filter = id; render(); } }, `${f.label} (${n})`);
+    }));
+  }
+
   function renderList() {
     const rows =
       ui.loadError && !ui.people
         ? []
         : ui.people === null
         ? [spinner("Loading people…")]
-        : ui.people.map((p) =>
+        : visible().map((p) =>
             el(
               "button",
               { class: "person-row", type: "button", onclick: () => { ui.selected = p.employeeNumber; show("person"); } },
@@ -125,6 +147,8 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
       ui.loadError ? banner({ message: `Couldn't load the people list. ${ui.loadError}`, messageKind: "error", retry: reload }) : null,
       messageBox(),
       el("button", { class: "btn", type: "button", onclick: () => startAdd() }, "+ Add a person"),
+      filterChips(),
+      ui.people && !visible().length && !ui.loadError ? el("p", { class: "empty" }, el("strong", {}, "Nobody left here ✔"), el("p", {}, "Everyone in this filter is done.")) : null,
       el("div", { class: "person-list" }, rows),
     ];
   }
@@ -141,7 +165,10 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
 
   function startEdit() {
     const p = person();
-    ui.draft = { number: p.employeeNumber, name: p.name, roles: [...p.roles], team: p.team || "", shift: p.shift || "", homeLineId: p.homeLineId || "" };
+    ui.draft = {
+      number: p.employeeNumber, name: p.name, position: p.position || "", roles: p.rolesConfirmed ? [...p.roles] : [...p.suggestedRoles],
+      team: p.team || "", shift: p.shift || "", homeLineId: p.homeLineId || "",
+    };
     show("edit");
   }
 
@@ -177,7 +204,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
           : spinner("Loading roles…")];
 
     // Read at save time (the inputs update the draft as you type).
-    const fields = () => ({ name: d.name, roles: d.roles, team: d.team || null, shift: d.shift || null, homeLineId: d.homeLineId || null });
+    const fields = () => ({ name: d.name, roles: d.roles, team: d.team || null, shift: d.shift || null, homeLineId: d.homeLineId || null, ...(existing ? { position: d.position || "" } : {}) });
     // `again` = add this person and keep the form open for the next one.
     async function save(e, again = false) {
       e?.preventDefault();
@@ -226,7 +253,14 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
           : [el("label", { class: "field-label", for: "f-number" }, "Employee number (next free one filled in — change it if needed)"), numberInput],
         el("label", { class: "field-label", for: "f-name" }, "Name (as it should appear in the app)"),
         nameInput,
+        existing
+          ? [el("label", { class: "field-label", for: "f-position" }, "Position (from Gusto)"),
+             el("input", { class: "field", id: "f-position", autocomplete: "off", maxlength: "80", value: d.position, oninput: (e) => { d.position = e.target.value; } })]
+          : null,
         el("p", { class: "field-label" }, "Roles"),
+        existing && !existing.rolesConfirmed
+          ? el("p", { class: "message" }, `Suggested from “${existing.position || "no position"}”: ${existing.suggestedRoles.length ? roleNames(existing.suggestedRoles) : "no match — pick one"}. Tick the right role(s) — saving confirms them.`)
+          : null,
         roleBoxes,
         el("label", { class: "field-label", for: "f-team" }, "Team"),
         picker({ id: "f-team", title: "Team", value: d.team, placeholder: "No team", options: [{ value: "", label: "No team" }, ...teams.map((t) => ({ value: t.id, label: `Team ${t.name}` }))], onChange: (v) => { d.team = v; render(); } }),
@@ -280,6 +314,20 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
       }
     }
 
+    async function enableLogin(askFirst = true) {
+      const ok = !askFirst || (await confirmSheet({
+        title: `Enable login for ${p.name}?`,
+        text: "You'll get a temporary PIN to give them. They pick their own PIN the first time they sign in.",
+        confirmLabel: "Enable login",
+      }));
+      if (!ok) return;
+      const data = await act(() => callAdminEnableLogin({ employeeNumber: p.employeeNumber }), () => enableLogin(false));
+      if (data) {
+        ui.tempPin = { name: p.name, pin: data.tempPin };
+        show("tempPin");
+      }
+    }
+
     async function unlock() {
       if (await act(() => callAdminUnlock({ employeeNumber: p.employeeNumber }), unlock)) show("person", "Unlocked — they can sign in now", "ok");
     }
@@ -301,7 +349,11 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
       el("p", { class: "tags center" }, tags(p)),
       messageBox(),
       p.locked ? el("button", { class: "btn", type: "button", onclick: () => unlock(), disabled: ui.busy }, "🔓 Unlock now") : null,
-      el("button", { class: "btn secondary", type: "button", onclick: () => resetPin(), disabled: ui.busy || !p.active }, "🔑 Reset PIN"),
+      p.position ? el("p", { class: "hint" }, p.position) : null,
+      !p.rolesConfirmed ? el("p", { class: "message" }, "Role not confirmed yet — tap Edit, tick the right role(s), and Save.") : null,
+      p.loginEnabled
+        ? el("button", { class: "btn secondary", type: "button", onclick: () => resetPin(), disabled: ui.busy || !p.active }, "🔑 Reset PIN")
+        : el("button", { class: "btn", type: "button", onclick: () => enableLogin(), disabled: ui.busy || !p.active || !p.rolesConfirmed }, p.rolesConfirmed ? "🔑 Enable login" : "🔑 Enable login (confirm role first)"),
       el("button", { class: "btn secondary", type: "button", onclick: startEdit, disabled: ui.busy }, "✎ Edit name, roles, team, shift, home line"),
       isMe
         ? null

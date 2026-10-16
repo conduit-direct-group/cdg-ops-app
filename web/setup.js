@@ -10,9 +10,14 @@ import { callAdminSaveLine, callAdminSaveMachine, callAdminSaveRole, callAdminSa
 // The starting roles from the plan (§5). Ids are permanent; names can be edited later.
 const STARTING_ROLES = [
   ["operator", "Operator"],
+  ["lead", "Line Lead"],
+  ["supervisor", "Supervisor"],
   ["maintenance", "Maintenance"],
-  ["shipping", "Shipping"],
-  ["lead", "Production Lead / Supervisor"],
+  ["quality", "Quality"],
+  ["shipping", "Logistics & Distribution"],
+  ["sales", "Sales"],
+  ["office", "Office"],
+  ["training-safety", "Training & Safety"],
   ["admin", "Admin"],
 ];
 
