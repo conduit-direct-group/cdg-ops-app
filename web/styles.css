@@ -286,6 +286,87 @@ textarea.field { line-height: 1.45; resize: vertical; }
 details.more { margin-top: var(--s3); }
 details.more summary { display: flex; align-items: center; min-height: var(--tap); cursor: pointer; color: var(--orange); font-weight: bold; }
 
+/* ---- Big picker (glove-sized dropdown) ----------------------------------- */
+.picker {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  width: 100%;
+  min-height: var(--tap);
+  padding: var(--s2) var(--s3);
+  border: var(--border-width) solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  color: var(--white);
+  font-family: inherit;
+  font-size: var(--text-body);
+  font-weight: bold;
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: border-color var(--fast), transform var(--fast);
+}
+.picker:active { transform: scale(0.99); }
+.picker.empty-pick { color: var(--muted); font-weight: normal; }
+.picker-text { flex: 1; overflow-wrap: break-word; }
+.picker-arrow, .fold-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius);
+  background: var(--orange);
+  color: var(--black);
+  font-size: var(--text-section);
+  transition: transform var(--fast);
+}
+.picker-sheet { display: flex; flex-direction: column; max-height: calc(100vh - var(--s5)); max-height: calc(100dvh - var(--s5)); }
+.picker-list { display: flex; flex-direction: column; gap: var(--s2); overflow-y: auto; padding: var(--s1); margin: 0 calc(var(--s1) * -1); }
+.picker-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  min-height: var(--tap);
+  padding: var(--s2) var(--s3);
+  border: var(--border-width) solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--white);
+  font-family: inherit;
+  font-size: var(--text-body);
+  font-weight: bold;
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+  flex: none;
+  transition: background var(--fast), border-color var(--fast);
+}
+.picker-option.on { background: var(--orange); border-color: var(--orange); color: var(--black); }
+.picker-option:active { background: var(--surface-3); }
+
+/* ---- Collapsible section --------------------------------------------------- */
+details.fold { margin: var(--s3) 0; border: var(--border-width) solid var(--line); border-radius: var(--radius); background: var(--surface-1); }
+details.fold > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  min-height: var(--tap);
+  padding: var(--s2) var(--s2) var(--s2) var(--s3);
+  font-weight: bold;
+  cursor: pointer;
+  list-style: none;
+  touch-action: manipulation;
+}
+details.fold > summary::-webkit-details-marker { display: none; }
+details.fold[open] .fold-arrow { transform: rotate(180deg); }
+.fold-body { padding: 0 var(--s3) var(--s3); }
+.fold-body > .btn:first-child, .fold-body > .chips:first-child { margin-top: 0; }
+
 /* ---- Filter chips and big choice buttons ---------------------------------- */
 .chips { display: flex; flex-wrap: wrap; gap: var(--s2); margin: var(--s2) 0; }
 .chip, .choice {
@@ -503,7 +584,8 @@ details.more summary { display: flex; align-items: center; min-height: var(--tap
   .btn.secondary:hover:not(:disabled) { border-color: var(--orange); }
   .person-row:hover, .issue-card:hover, .check-row:hover { background: var(--surface-2); }
   .issue-card.down:hover { background: var(--red-tint); filter: brightness(1.15); }
-  .chip:hover, .choice:hover { border-color: var(--orange); }
+  .chip:hover, .choice:hover, .picker:hover, .picker-option:hover { border-color: var(--orange); }
+  details.fold > summary:hover { color: var(--orange); }
   .key:hover:not(:disabled) { background: var(--surface-3); }
   .link-btn:hover { color: var(--white); }
 }
@@ -553,6 +635,9 @@ details.more summary { display: flex; align-items: center; min-height: var(--tap
   main[data-width="wide"] .temp-pin { max-width: 720px; }
   main[data-width="wide"] .import-preview { max-width: 900px; }
   main[data-width="wide"] .fix-body { max-width: 80ch; }
+  main[data-width="wide"] .filter-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--s3); max-width: 720px; align-items: start; }
+  main[data-width="wide"] .filter-row details.fold { margin: 0; }
+  main[data-width="wide"] .fold-body > .btn { display: inline-flex; width: auto; min-width: 220px; padding: 0 var(--s4); margin-right: var(--s2); }
 
   /* Photos and videos side by side. */
   main[data-width="wide"] .fix-media { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); align-items: start; }

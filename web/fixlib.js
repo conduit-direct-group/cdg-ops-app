@@ -2,7 +2,7 @@
 // Approved fixes come live from the database (data.js). Every change goes through the server
 // (submitFix, reviewFix, retireFix, voteFix), which checks the person's live role.
 
-import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, breakable } from "./ui.js";
+import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, picker, collapsible } from "./ui.js";
 import { data, onDataChange, lineName } from "./data.js";
 import {
   db, storage, callSubmitFix, callReviewFix, callRetireFix, callVoteFix, callAdminImportOldLibrary,
@@ -146,8 +146,7 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
 
     const counts = new Map();
     for (const f of data.fixes) counts.set(f.categoryId, (counts.get(f.categoryId) || 0) + 1);
-    const chip = (id, label) =>
-      el("button", { class: ui.category === id ? "chip on" : "chip", type: "button", onclick: () => { ui.category = id; render(); } }, breakable(label));
+    const waiting = me.approver ? pending().length : 0;
 
     // Search box keeps its place while typing: only the results redraw.
     const results = el("div", { class: "person-list" });
@@ -179,20 +178,37 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
     const attachChip = (id, label) =>
       el("button", { class: ui.attach === id ? "chip on" : "chip", type: "button", onclick: () => { ui.attach = ui.attach === id ? "all" : id; render(); } }, label);
 
+    // Category is one big picker instead of a wall of buttons; attachment filters fold away under
+    // "More filters" (the summary says which one is on). Sign-offs due stay in plain sight.
+    const categoryPicker = picker({
+      id: "fx-filter-cat",
+      title: "Show fixes for",
+      value: ui.category,
+      options: [
+        { value: "all", label: `All categories (${data.fixes.length})` },
+        ...(waiting ? [{ value: "pending", label: `⏳ Waiting for approval (${waiting})` }] : []),
+        ...categories().filter((c) => counts.get(c.id)).map((c) => ({ value: c.id, label: `${c.name} (${counts.get(c.id)})` })),
+      ],
+      onChange: (v) => { ui.category = v; render(); },
+    });
+    const attachOn = ui.attach !== "all" ? ATTACH_FILTERS[ui.attach].label : "";
+
     const myOwn = !me.approver ? (data.myFixes || []).filter((f) => f.status !== "approved") : [];
     return [
       back("Home", onExit),
       el("h1", {}, "Fix Library"),
       messageBox(),
+      waiting && ui.category !== "pending"
+        ? el("button", { class: "btn secondary", type: "button", onclick: () => { ui.category = "pending"; render(); } }, `⏳ ${waiting} waiting for your approval`)
+        : null,
       searchBox,
       el(
         "div",
-        { class: "chips" },
-        chip("all", `All (${data.fixes.length})`),
-        me.approver && pending().length ? chip("pending", `Waiting for approval (${pending().length})`) : null,
-        categories().filter((c) => counts.get(c.id)).map((c) => chip(c.id, `${c.name} (${counts.get(c.id)})`))
+        { class: "filter-row" },
+        categoryPicker,
+        collapsible("fix-more-filters", attachOn ? `More filters · ${attachOn}` : "More filters",
+          el("div", { class: "chips" }, Object.entries(ATTACH_FILTERS).map(([id, f]) => attachChip(id, f.label))))
       ),
-      el("div", { class: "chips small" }, Object.entries(ATTACH_FILTERS).map(([id, f]) => attachChip(id, f.label))),
       el("button", { class: "btn", type: "button", onclick: () => startForm(null) }, "+ Add a fix"),
       maintenanceRequestButton(data.fixCategories.find((c) => c.id === ui.category)?.machineTypes),
       !["all", "pending"].includes(ui.category) ? maintenancePanel(machinesOfCategory(ui.category)) : null,
@@ -265,10 +281,9 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
 
   function adminTools() {
     const open = (ui.gaps || []).filter((g) => !g.done).length;
-    return el(
-      "div",
-      { class: "card" },
-      el("strong", {}, "Admin tools"),
+    return collapsible(
+      "fix-admin-tools",
+      "⚙ Admin tools",
       el("button", { class: "btn secondary", type: "button", onclick: () => show("gaps") }, `🔍 Searches with no results (${ui.gaps ? open : "…"})`),
       el("button", { class: "btn secondary", type: "button", onclick: () => show("qr") }, "🖨 Print QR codes"),
       el("button", { class: "btn secondary", type: "button", onclick: () => { downloadCsv(); toast("Downloading all fixes (CSV)"); } }, "⇩ Download all fixes (CSV)"),
@@ -627,6 +642,11 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
 
     async function save(e) {
       e?.preventDefault();
+      if (!d.categoryId) {
+        Object.assign(ui, { message: "Pick a category.", messageKind: "error", retry: null });
+        render();
+        return;
+      }
       const payload = {
         ...(d.id ? { id: d.id } : {}),
         title: d.title, categoryId: d.categoryId, body: d.body,
@@ -678,12 +698,11 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
         el("label", { class: "field-label", for: "fx-title" }, "Title — what's the problem?"),
         el("input", { class: "field", id: "fx-title", maxlength: "120", required: true, value: d.title, oninput: (e) => { d.title = e.target.value; } }),
         el("label", { class: "field-label", for: "fx-cat" }, "Category"),
-        el(
-          "select",
-          { class: "field", id: "fx-cat", required: true, onchange: (e) => { d.categoryId = e.target.value; d.machineIds = []; render(); } },
-          el("option", { value: "" }, "Pick one…"),
-          categories().map((c) => el("option", { value: c.id, selected: c.id === d.categoryId }, c.name))
-        ),
+        picker({
+          id: "fx-cat", title: "Category", value: d.categoryId,
+          options: categories().map((c) => ({ value: c.id, label: c.name })),
+          onChange: (v) => { d.categoryId = v; d.machineIds = []; render(); },
+        }),
         cat && (cat.machineTypes || []).length
           ? el("p", { class: "hint" }, `Shows on every ${cat.machineTypes.join(" / ")} machine.`)
           : null,
@@ -715,10 +734,9 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
         el("input", { class: "field", id: "fx-tags", value: d.tags, oninput: (e) => { d.tags = e.target.value; } }),
 
         candidates.length
-          ? el(
-              "details",
-              { class: "more" },
-              el("summary", {}, "Also show on other machines (optional)"),
+          ? collapsible(
+              "fix-other-machines",
+              `Also show on other machines (optional)${d.machineIds.length ? ` · ${d.machineIds.length} picked` : ""}`,
               candidates.map((m) =>
                 el(
                   "label",

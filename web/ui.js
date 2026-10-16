@@ -107,6 +107,66 @@ export function confirmSheet({ title, text = "", confirmLabel = "Yes", cancelLab
   });
 }
 
+// ---- Big picker (instead of the browser's small dropdown) -------------------------
+
+// A full-width button showing the current choice and a large ▾. Tapping opens a sheet of big,
+// glove-sized options. `options` = [{ value, label }]. Calls onChange(value) with the pick.
+export function picker({ id = null, title, value, options, placeholder = "Pick one…", onChange }) {
+  const current = options.find((o) => o.value === value);
+  return el(
+    "button",
+    {
+      class: current ? "picker" : "picker empty-pick", type: "button", id, "aria-haspopup": "dialog",
+      onclick: () => openPickerSheet(title, value, options, onChange),
+    },
+    el("span", { class: "picker-text" }, current ? breakable(current.label) : placeholder),
+    el("span", { class: "picker-arrow", "aria-hidden": "true" }, "▾")
+  );
+}
+
+function openPickerSheet(title, value, options, onChange) {
+  const close = () => {
+    document.removeEventListener("keydown", onKey);
+    backdrop.remove();
+  };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  const pick = (v) => { close(); if (v !== value) onChange(v); };
+  const list = options.map((o) =>
+    el("button", { class: o.value === value ? "picker-option on" : "picker-option", type: "button", onclick: () => pick(o.value) },
+      el("span", {}, breakable(o.label)), o.value === value ? el("span", { "aria-hidden": "true" }, "✔") : null)
+  );
+  const backdrop = el(
+    "div",
+    { class: "sheet-backdrop", onclick: (e) => { if (e.target === backdrop) close(); } },
+    el(
+      "div",
+      { class: "sheet picker-sheet", role: "dialog", "aria-modal": "true", "aria-label": title },
+      el("h2", {}, title),
+      el("div", { class: "picker-list" }, list),
+      el("button", { class: "btn secondary", type: "button", onclick: close }, "Cancel")
+    )
+  );
+  document.addEventListener("keydown", onKey);
+  document.body.append(backdrop);
+  (backdrop.querySelector(".picker-option.on") || list[0])?.focus();
+}
+
+// ---- Collapsible section ------------------------------------------------------
+
+// A big tap-to-open section. Stays open or closed across redraws (remembered by `key`).
+const openSections = new Set();
+export function collapsible(key, summary, ...children) {
+  return el(
+    "details",
+    {
+      class: "fold", open: openSections.has(key),
+      ontoggle: (e) => { e.target.open ? openSections.add(key) : openSections.delete(key); },
+    },
+    el("summary", {}, el("span", {}, summary), el("span", { class: "fold-arrow", "aria-hidden": "true" }, "▾")),
+    el("div", { class: "fold-body" }, ...children)
+  );
+}
+
 // ---- Offline --------------------------------------------------------------------
 
 // Shows the red Offline bar while there's no connection. Looking things up keeps working

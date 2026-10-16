@@ -228,7 +228,6 @@ function renderHome() {
     el("button", { class: "btn big", type: "button", onclick: () => openFixes() }, "🔧 Fix Library"),
     isAdmin() ? el("button", { class: "btn secondary", type: "button", onclick: () => go("adminMenu") }, "⚙ Admin") : null,
     installCard(),
-    deviceCard(),
     el("button", { class: "btn secondary", type: "button", onclick: () => signOut(auth) }, "↪ Sign out"),
   ];
 }
@@ -358,6 +357,7 @@ function renderAdminMenu() {
     el("button", { class: "btn", type: "button", onclick: () => openModule(openAdmin) }, "👥 People"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openLines) }, "🏭 Lines & machines"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openRoles) }, "🏷 Roles"),
+    deviceCard(), // one-time device setup, so it lives here rather than on Home
   ];
 }
 

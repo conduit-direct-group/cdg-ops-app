@@ -13,6 +13,12 @@ Every screen should look and feel like a finished, professional CDG product. Cle
 - One version each of: primary button (orange), secondary button (outline), danger button/banner (red), card, filter chip, banner, form field, toast.
 - New screens use these parts. No one-off styling.
 
+## Keep screens clean
+- Use dropdowns, collapsible sections, tabs, or "More" menus whenever they make a screen cleaner.
+- Never hide anything urgent or used daily: overdue items, alerts, sign-offs due, the Maintenance Request banner, or a role's main actions.
+- Dropdowns and menus must be big enough for gloved hands, with no tiny arrows or small list items.
+- When hiding something, explain the choice in the summary to Chris.
+
 ## Shop floor usability
 - Tap targets at least 56px tall (gloves).
 - High contrast, readable at arm's length on a tablet.

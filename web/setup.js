@@ -3,7 +3,7 @@
 // checks it, records it in the audit log, and only lets admins do it.
 // Nothing is deleted — lines, machines, and roles are retired so history never points at nothing.
 
-import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet } from "./ui.js";
+import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, picker } from "./ui.js";
 import { data, onDataChange, lineName } from "./data.js";
 import { callAdminSaveLine, callAdminSaveMachine, callAdminSaveRole } from "./firebase.js";
 
@@ -290,12 +290,11 @@ export function openLines(container, { onExit }) {
         el("input", { class: "field", id: "f-type", list: "machine-types", autocomplete: "off", maxlength: "60", value: d.type, oninput: (e) => { d.type = e.target.value; } }),
         el("datalist", { id: "machine-types" }, types.map((t) => el("option", { value: t }))),
         el("label", { class: "field-label", for: "f-line" }, "Line"),
-        el(
-          "select",
-          { class: "field", id: "f-line", onchange: (e) => { d.lineId = e.target.value; } },
-          el("option", { value: "" }, "Not on a line"),
-          lineChoices.map((l) => el("option", { value: l.id, selected: l.id === d.lineId }, l.name))
-        ),
+        picker({
+          id: "f-line", title: "Line", value: d.lineId || "",
+          options: [{ value: "", label: "Not on a line" }, ...lineChoices.map((l) => ({ value: l.id, label: l.name }))],
+          onChange: (v) => { d.lineId = v; render(); },
+        }),
         el("button", { class: "btn", type: "submit", disabled: kit.busy }, kit.busy ? "Saving…" : d.id ? "Save" : "Add machine")
       ),
     ];

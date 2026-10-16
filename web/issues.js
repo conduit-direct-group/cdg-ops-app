@@ -2,7 +2,7 @@
 // Odoo maintenance request, the board shows every open breakdown in Odoo (synced every 5 minutes),
 // and Mark fixed (Maintenance, Admin) moves the Odoo request to Repaired.
 
-import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, breakable } from "./ui.js";
+import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, breakable, picker, collapsible } from "./ui.js";
 import { data, onDataChange, lineName } from "./data.js";
 import { storage, callReportProblem, callMarkIssueFixed, callAdminSyncOdoo } from "./firebase.js";
 import { ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-storage.js";
@@ -273,18 +273,23 @@ export function openReportForm(container, { me, onExit, onDone, machineTypes = n
               el("input", { type: "checkbox", checked: d.unsafe, onchange: (e) => { d.unsafe = e.target.checked; } }),
               el("span", {}, "Unsafe to run")
             ),
-            el(
-              "details",
-              { class: "more" },
-              el("summary", {}, "More details (optional)"),
+            collapsible(
+              "report-more-details",
+              "More details (optional)",
               el("p", { class: "field-label" }, "How urgent?"),
               el("div", { class: "choices" }, SEVERITIES.map(([id, label]) => choice(d.severity === id, label, () => { d.severity = id; render(); }))),
               el("label", { class: "field-label", for: "rp-fail" }, "Failure category"),
-              el("select", { class: "field", id: "rp-fail", onchange: (e) => { d.failureCategory = e.target.value; } },
-                el("option", { value: "" }, "Not sure"), FAILURE_CATEGORIES.map((c) => el("option", { value: c, selected: d.failureCategory === c }, c))),
+              picker({
+                id: "rp-fail", title: "Failure category", value: d.failureCategory,
+                options: [{ value: "", label: "Not sure" }, ...FAILURE_CATEGORIES.map((c) => ({ value: c, label: c }))],
+                onChange: (v) => { d.failureCategory = v; render(); },
+              }),
               el("label", { class: "field-label", for: "rp-cause" }, "Suspected cause"),
-              el("select", { class: "field", id: "rp-cause", onchange: (e) => { d.rootCause = e.target.value; } },
-                el("option", { value: "" }, "Not sure"), ROOT_CAUSES.map((c) => el("option", { value: c, selected: d.rootCause === c }, c))),
+              picker({
+                id: "rp-cause", title: "Suspected cause", value: d.rootCause,
+                options: [{ value: "", label: "Not sure" }, ...ROOT_CAUSES.map((c) => ({ value: c, label: c }))],
+                onChange: (v) => { d.rootCause = v; render(); },
+              }),
               el("label", { class: "field-label", for: "rp-act" }, "What's been tried already"),
               el("textarea", { class: "field", id: "rp-act", rows: "2", maxlength: "1000", value: d.actions, oninput: (e) => { d.actions = e.target.value; } }),
               el("p", { class: "field-label" }, "Photos"),
@@ -298,9 +303,7 @@ export function openReportForm(container, { me, onExit, onDone, machineTypes = n
           ]
         : null,
     ];
-    const open = container.querySelector("details.more")?.open; // keep "More details" open across redraws
     container.replaceChildren(...[content].flat(3).filter(Boolean));
-    if (open) container.querySelector("details.more").open = true;
   }
 
   const stop = onDataChange(() => { if (!ui.busy && !["rp-desc", "rp-act"].includes(document.activeElement?.id)) render(); });
