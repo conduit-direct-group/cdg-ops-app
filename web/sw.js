@@ -6,7 +6,7 @@
 //   - The app's own files: try the network first (so updates show up right away), fall back to the copy.
 //   - Firebase library from Google: the version is in the address and never changes, so use the copy if we have one.
 
-const CACHE = "cdg-ops-v9";
+const CACHE = "cdg-ops-v10";
 const FIREBASE_LIB = "https://www.gstatic.com/firebasejs/";
 
 const APP_FILES = [
@@ -23,6 +23,8 @@ const APP_FILES = [
   "/issues.js",
   "/checklists.js",
   "/activity.js",
+  "/requests.js",
+  "/push.js",
   "/manifest.webmanifest",
   "/icons/icon-192.png",
   "/icons/icon-512.png",
@@ -81,5 +83,37 @@ self.addEventListener("fetch", (event) => {
       .catch(() =>
         caches.match(request).then((hit) => hit || (request.mode === "navigate" ? caches.match("/index.html") : undefined))
       )
+  );
+});
+
+// Push notifications (requests sent to you, status of your requests). The server sends data only
+// ({ title, body, url }); this shows it, even when the app is closed.
+self.addEventListener("push", (event) => {
+  let d = {};
+  try {
+    const msg = event.data ? event.data.json() : {};
+    d = msg.data || msg.notification || msg;
+  } catch {}
+  event.waitUntil(
+    self.registration.showNotification(d.title || "CDG Ops", {
+      body: d.body || "",
+      icon: "/icons/icon-192.png",
+      badge: "/icons/favicon-32.png",
+      tag: d.tag || undefined,
+      data: { url: d.url || "/" },
+    })
+  );
+});
+
+// Tapping a notification opens the app on that request (or brings an open app to it).
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const url = new URL(event.notification.data?.url || "/", self.location.origin).href;
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+      const open = list.find((c) => new URL(c.url).origin === self.location.origin);
+      if (open) return open.navigate(url).then((c) => (c || open).focus());
+      return self.clients.openWindow(url);
+    })
   );
 });

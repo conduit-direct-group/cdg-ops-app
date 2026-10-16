@@ -12,7 +12,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 import { getStorage } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-storage.js";
 
-const app = initializeApp({
+export const app = initializeApp({
   apiKey: "AIzaSyB7Qr7gLtEZ_DKzNM3yKKnOeEHv6XsWYa0",
   authDomain: "cdg-ops-app.firebaseapp.com",
   projectId: "cdg-ops-app",
@@ -75,6 +75,12 @@ export const callAdminSaveChecklist = call("adminSaveChecklist");
 export const callAdminSetChecklistMedia = call("adminSetChecklistMedia");
 export const callAdminStartChecklists = call("adminStartChecklists");
 export const callAdminImportOldChecklists = call("adminImportOldChecklists", { timeout: 540000 });
+export const callSubmitRequest = call("submitRequest");
+export const callUpdateRequest = call("updateRequest");
+export const callAdminSaveRequestType = call("adminSaveRequestType");
+export const callAdminStartRequestTypes = call("adminStartRequestTypes");
+export const callSaveDeviceToken = call("saveDeviceToken");
+export const callRemoveDeviceToken = call("removeDeviceToken");
 export const callReportProblem = call("reportProblem");
 export const callMarkIssueFixed = call("markIssueFixed");
 export const callAdminSyncOdoo = call("adminSyncOdoo", { timeout: 120000 });

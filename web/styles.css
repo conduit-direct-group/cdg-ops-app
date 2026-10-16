@@ -611,6 +611,40 @@ details.fold[open] .fold-arrow { transform: rotate(180deg); }
 .machine-tile.down { border-color: var(--red); background: var(--red-tint); }
 .row-between { display: flex; justify-content: space-between; align-items: center; gap: var(--s2); flex-wrap: wrap; }
 
+/* ---- Need something? requests ------------------------------------------------- */
+/* "Machine down or broken? → Maintenance Request" — sends machine problems to the red flow. */
+.mr-redirect {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s1) var(--s3);
+  width: 100%;
+  min-height: var(--tap);
+  margin: var(--s3) 0;
+  padding: var(--s2) var(--s3);
+  border: var(--border-width) solid var(--red);
+  border-radius: var(--radius);
+  background: var(--red-tint);
+  color: var(--white);
+  font-family: inherit;
+  font-size: var(--text-body);
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: transform var(--fast), filter var(--fast);
+}
+.mr-redirect:active { transform: scale(0.99); }
+.mr-redirect span { font-weight: bold; text-decoration: underline; }
+.type-choices { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+.type-choices .choice { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s1); min-height: 96px; }
+.choice-icon { font-size: var(--text-title); line-height: 1; }
+.card.inbox .person-list { margin-top: var(--s2); }
+.card.inbox.urgent { border-left-color: var(--red); }
+.person-row.urgent { border-left-color: var(--red); background: var(--red-tint); }
+.person-row.static { cursor: default; }
+.person-row.static:active { transform: none; background: var(--surface-1); }
+
 /* ---- Checklist ---------------------------------------------------------------- */
 .ck-list { display: flex; flex-direction: column; gap: var(--s2); margin: var(--s3) 0; }
 .ck-item { border-radius: var(--radius); background: var(--surface-1); border: var(--border-width) solid transparent; transition: border-color var(--fast); }
@@ -688,7 +722,7 @@ details.fold[open] .fold-arrow { transform: rotate(180deg); }
   .person-row:hover, .issue-card:hover, .check-row:hover { background: var(--surface-2); }
   .issue-card.down:hover { background: var(--red-tint); filter: brightness(1.15); }
   .chip:hover, .choice:hover, .picker:hover, .picker-option:hover, .machine-tile:hover { border-color: var(--orange); }
-  .mr-banner:hover { filter: brightness(1.1); }
+  .mr-banner:hover, .mr-redirect:hover { filter: brightness(1.1); }
   .alert-pill:hover { background: var(--red); }
   details.fold > summary:hover { color: var(--orange); }
   .key:hover:not(:disabled) { background: var(--surface-3); }

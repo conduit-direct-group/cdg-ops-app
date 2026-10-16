@@ -31,6 +31,15 @@ service cloud.firestore {
       return member() && employee().roles.hasAny(['admin']);
     }
 
+    // Maintenance or Admin right now — they work the open-issues board.
+    function fixer() {
+      return member() && employee().roles.hasAny(['maintenance', 'admin']);
+    }
+
+    function me() {
+      return request.auth.token.emp;
+    }
+
     // Your own employee record (name, roles, on/off) — so the app shows the right buttons the moment an
     // admin changes your roles. Never anyone else's, and never PIN records.
     match /employees/{employeeNumber} {
@@ -102,12 +111,26 @@ service cloud.firestore {
       allow read: if admin();
     }
 
-    // Open issues (mirrored from Odoo maintenance requests). Test-site practice reports: test_issues.
+    // Open issues (mirrored from Odoo maintenance requests): Maintenance and Admin only. Everyone else
+    // sees only the ones they reported themselves (to follow their status). Test-site reports: test_issues.
     match /issues/{id} {
-      allow read: if member();
+      allow read: if fixer() || (member() && resource.data.reportedByEmp == me());
     }
     match /test_issues/{id} {
+      allow read: if fixer() || (member() && resource.data.reportedByEmp == me());
+    }
+
+    // "Need something?" request types (Admin → Request types & routing): everyone signed in reads them.
+    match /requestTypes/{id} {
       allow read: if member();
+    }
+
+    // Requests: the person who sent it, the people it was sent to, and admins. Test site: test_requests.
+    match /requests/{id} {
+      allow read: if member() && (resource.data.createdBy == me() || me() in resource.data.recipients || admin());
+    }
+    match /test_requests/{id} {
+      allow read: if member() && (resource.data.createdBy == me() || me() in resource.data.recipients || admin());
     }
 
     // Admin-only lists: who did what (every admin action), Odoo sync status, searches with no results.

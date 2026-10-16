@@ -24,6 +24,9 @@ const records = require("./records");
 const fixesLib = require("./fixes");
 const odoo = require("./odoo");
 const checklistsLib = require("./checklists");
+const requestsLib = require("./requests");
+const crypto = require("node:crypto");
+const { getMessaging } = require("firebase-admin/messaging");
 const { defineSecret } = require("firebase-functions/params");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 
@@ -1450,4 +1453,178 @@ async function purgeOnce(test) {
 exports.purgeTrash = onSchedule({ schedule: "every day 03:00", timeZone: "America/Chicago", retryCount: 0 }, async () => {
   await purgeOnce(false);
   await purgeOnce(true);
+});
+
+// ---------------------------------------------------------------------------
+// "Need something?" requests — app only, nothing goes to Odoo (Chris, 10-16-2026).
+//
+//   requestTypes/{id}     name, icon, routeRoles, routePeople, urgent, order, active (Admin → Request types)
+//   requests/{auto}       typeId, typeName, icon, description, photos, lineId, place, urgent, status,
+//                         recipients (employee #s it went to), createdBy, history, doneBy/doneAt
+//   pushTokens/{hash}     emp, token — one per device that turned notifications on
+// Test site: test_requests, and the push goes only to the person testing.
+// ---------------------------------------------------------------------------
+
+const requestTypes = db.collection("requestTypes");
+const pushTokens = db.collection("pushTokens");
+
+const tokenId = (token) => crypto.createHash("sha256").update(token).digest("hex").slice(0, 40);
+
+// Anyone signed in: { token } — this device wants push notifications.
+exports.saveDeviceToken = onCall(async (req) => {
+  const me = await requireMember(req);
+  const token = typeof req.data?.token === "string" ? req.data.token.trim() : "";
+  if (token.length < 20 || token.length > 4096) throw new HttpsError("invalid-argument", "That device couldn't be signed up for notifications.");
+  await pushTokens.doc(tokenId(token)).set({ emp: me.employeeNumber, token, updatedAt: FieldValue.serverTimestamp() });
+  return { ok: true };
+});
+
+// Anyone signed in: { token } — stop notifications on this device (e.g. a shared tablet).
+exports.removeDeviceToken = onCall(async (req) => {
+  await requireMember(req);
+  const token = typeof req.data?.token === "string" ? req.data.token.trim() : "";
+  if (token) await pushTokens.doc(tokenId(token)).delete();
+  return { ok: true };
+});
+
+// Sends a notification to every device of these employees. Never fails the save that triggered it.
+async function pushTo(employeeNumbers, { title, body, url, urgent = false }) {
+  const emps = [...new Set(employeeNumbers)].filter(Boolean);
+  if (!emps.length) return 0;
+  try {
+    const docs = [];
+    for (let i = 0; i < emps.length; i += 30) {
+      docs.push(...(await pushTokens.where("emp", "in", emps.slice(i, i + 30)).get()).docs);
+    }
+    if (!docs.length) return 0;
+    const res = await getMessaging().sendEachForMulticast({
+      tokens: docs.map((d) => d.get("token")),
+      data: { title, body: body.slice(0, 180), url, tag: url },
+      webpush: { headers: { Urgency: urgent ? "high" : "normal", TTL: "86400" } },
+    });
+    // Devices that are gone (app removed, permission turned off) are forgotten.
+    const dead = res.responses
+      .map((r, i) => (!r.success && /registration-token-not-registered|invalid-argument|invalid-registration-token/.test(r.error?.code || "") ? docs[i].ref : null))
+      .filter(Boolean);
+    await Promise.all(dead.map((ref) => ref.delete()));
+    return res.successCount;
+  } catch (err) {
+    console.error("push failed", err);
+    return 0;
+  }
+}
+
+async function activeEmployees() {
+  return (await employees.get()).docs.map((d) => ({ id: d.id, roles: d.get("roles") || [], active: d.get("active") }));
+}
+
+// Anyone signed in: { typeId, description, photos?, lineId?, place?, test? }
+exports.submitRequest = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const { request, error } = requestsLib.cleanRequest(req.data);
+  if (error) throw new HttpsError("invalid-argument", error);
+  const typeSnap = await requestTypes.doc(request.typeId).get();
+  if (!typeSnap.exists || typeSnap.get("active") === false) throw new HttpsError("invalid-argument", "That kind of request isn't available any more.");
+  const type = typeSnap.data();
+  let lineName = "";
+  if (request.lineId) {
+    const line = await lines.doc(request.lineId).get();
+    if (!line.exists) throw new HttpsError("invalid-argument", "Pick a line from the list.");
+    lineName = line.get("name");
+  }
+  const recipients = requestsLib.recipientsFor(type, await activeEmployees());
+  const now = FieldValue.serverTimestamp();
+  const ref = col("requests", test).doc();
+  await ref.set({
+    ...request, typeName: type.name, icon: type.icon || "💬", urgent: type.urgent === true, lineName,
+    status: "open", recipients, createdBy: me.employeeNumber, createdByName: me.name, createdAt: now, updatedAt: now,
+    history: [{ status: "open", by: me.employeeNumber, byName: me.name, at: new Date() }],
+    ...(test ? { test: true } : {}),
+  });
+  const where = [lineName, request.place].filter(Boolean).join(" · ");
+  const sent = await pushTo(test ? [me.employeeNumber] : recipients.filter((e) => e !== me.employeeNumber), {
+    title: `${test ? "[TEST] " : ""}${type.urgent ? "⚠ URGENT · " : ""}${type.icon || ""} ${type.name}`.trim(),
+    body: `${me.name}${where ? ` (${where})` : ""}: ${request.description}`,
+    url: `/?req=${ref.id}`,
+    urgent: type.urgent === true,
+  });
+  return { id: ref.id, recipients: recipients.length, pushed: sent, test };
+});
+
+const STATUS_WORDS = { open: "Open", "in-progress": "In progress", done: "Done" };
+
+// The people it was sent to, and admins: { id, status: "in-progress" | "done" | "open", note? }
+exports.updateRequest = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const ref = col("requests", test).doc(String(req.data?.id || ""));
+  const status = String(req.data?.status || "");
+  const note = typeof req.data?.note === "string" ? req.data.note.trim().slice(0, 1000) : "";
+  const r = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "That request no longer exists.");
+    const cur = snap.data();
+    if (!requestsLib.canWork(cur, me.employeeNumber, me.roles)) throw new HttpsError("permission-denied", "Only the people it was sent to (or an admin) can change this.");
+    if (!requestsLib.canMove(cur.status, status)) throw new HttpsError("failed-precondition", `It's already ${STATUS_WORDS[cur.status] || cur.status}.`);
+    const update = {
+      status, updatedAt: FieldValue.serverTimestamp(),
+      history: FieldValue.arrayUnion({ status, by: me.employeeNumber, byName: me.name, at: new Date(), ...(note ? { note } : {}) }),
+    };
+    if (status === "done") Object.assign(update, { doneBy: me.employeeNumber, doneByName: me.name, doneAt: FieldValue.serverTimestamp(), doneNote: note });
+    if (status === "open") Object.assign(update, { doneBy: FieldValue.delete(), doneByName: FieldValue.delete(), doneAt: FieldValue.delete(), doneNote: FieldValue.delete() });
+    if (status === "in-progress") Object.assign(update, { takenBy: me.employeeNumber, takenByName: me.name });
+    tx.update(ref, update);
+    if (me.roles.includes("admin") && !(cur.recipients || []).includes(me.employeeNumber)) {
+      auditRecord(tx, `request-${status}`, "request", ref.id, me.employeeNumber, { title: cur.typeName, test });
+    }
+    return cur;
+  });
+  // The person who asked hears about it.
+  if (r.createdBy !== me.employeeNumber || test) {
+    await pushTo([r.createdBy], {
+      title: `${test ? "[TEST] " : ""}Your request: ${STATUS_WORDS[status]}`,
+      body: `${r.icon || ""} ${r.typeName} — ${status === "done" ? `done by ${me.name}` : status === "in-progress" ? `${me.name} is on it` : "reopened"}${note ? `: ${note}` : ""}`,
+      url: `/?req=${ref.id}`,
+    });
+  }
+  return { ok: true };
+});
+
+async function knownRoleIds() {
+  return (await roles.get()).docs.filter((d) => d.get("active") !== false).map((d) => d.id);
+}
+
+// Admins: create { create: true, name, icon, routeRoles, routePeople, urgent, order }
+// or update { id, ...same, active? }.
+exports.adminSaveRequestType = onCall(async (req) => {
+  const adminNumber = await requireAdmin(req);
+  const { type, error } = requestsLib.cleanType(req.data, await knownRoleIds());
+  if (error) throw new HttpsError("invalid-argument", error);
+  const isNew = req.data?.create === true;
+  const id = isNew ? records.idFromName(type.name) : String(req.data?.id || "");
+  if (!records.isRecordId(id)) throw new HttpsError("invalid-argument", "Name must start with a letter.");
+  await db.runTransaction(async (tx) => {
+    const ref = requestTypes.doc(id);
+    const snap = await tx.get(ref);
+    if (isNew && snap.exists) throw new HttpsError("already-exists", `"${type.name}" already exists.`);
+    if (!isNew && !snap.exists) throw new HttpsError("not-found", "That request type no longer exists.");
+    tx.set(ref, { ...type, updatedAt: FieldValue.serverTimestamp(), ...(isNew ? { createdAt: FieldValue.serverTimestamp() } : {}) }, { merge: true });
+    auditRecord(tx, isNew ? "created" : "updated", "request type", id, adminNumber, { name: type.name, routeRoles: type.routeRoles, routePeople: type.routePeople, urgent: type.urgent, active: type.active });
+  });
+  return { id };
+});
+
+// Admins: the five starting request types (only the ones not here yet).
+exports.adminStartRequestTypes = onCall(async (req) => {
+  const adminNumber = await requireAdmin(req);
+  const added = [];
+  for (const t of requestsLib.STARTING_TYPES) {
+    const ref = requestTypes.doc(t.id);
+    if ((await ref.get()).exists) continue;
+    await ref.set({ ...requestsLib.startingType(t), createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+    added.push(t.id);
+  }
+  if (added.length) await auditLog.add({ type: "created", kind: "request type", recordId: added.join(","), by: adminNumber, at: FieldValue.serverTimestamp() });
+  return { added };
 });

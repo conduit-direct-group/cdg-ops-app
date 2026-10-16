@@ -19,6 +19,8 @@ import { startData, stopData, data, onDataChange } from "./data.js";
 import { openIssueBoard, openReportForm } from "./issues.js";
 import { openChecklist, openChecklistAdmin, overdueBanner } from "./checklists.js";
 import { openActivity } from "./activity.js";
+import { openNeedSomething, openRequest, openRequestTypesAdmin, inboxCard, myRequestsCard } from "./requests.js";
+import { pushState, turnOnPush, turnOffPush, refreshPush } from "./push.js";
 
 const screen = document.getElementById("screen");
 const deviceBadge = document.getElementById("device-badge");
@@ -79,7 +81,7 @@ function checkIdle() {
   noteActivity();
   if (state.user) {
     state.idleSignOut = true;
-    signOut(auth);
+    signOutNow();
   } else if (state.step !== "employee" || state.typed) {
     state.employeeNumber = "";
     go("employee", "Cleared after 5 minutes of no use.", "ok");
@@ -221,21 +223,83 @@ function renderPinStep() {
 
 function renderHome() {
   const name = state.user?.displayName || "there";
+  const m = me();
   // Role names from the Roles list ("Production Lead / Supervisor"), not internal ids ("lead").
   const roleNames = new Map((data.roles || []).map((r) => [r.id, r.name]));
-  const roles = (state.claims.roles || []).map((r) => roleNames.get(r) || r).join(", ");
+  const roles = (data.myself?.roles || state.claims.roles || []).map((r) => roleNames.get(r) || r).join(", ");
   return [
     el("h1", {}, `Hi, ${name}`),
     roles ? el("p", { class: "roles" }, `Employee ${state.claims.emp} · ${roles}`) : null,
     messageBox(),
+    // Always in sight: overdue checklists, the red Maintenance Request, requests waiting on me.
     overdueBanner((id) => openChecklistScreen(id, () => go("home"))),
-    el("button", { class: "btn big danger", type: "button", onclick: () => openReport() }, "🚨 Report a problem"),
-    issuesButton(),
-    el("button", { class: "btn big", type: "button", onclick: () => openFixes() }, "🔧 Fix Library"),
+    el("button", { class: "mr-banner", type: "button", onclick: () => openReport() }, "🚨 Machine down or broken? Maintenance Request"),
+    inboxCard(m, (id) => openRequestScreen(id)),
+    el("button", { class: "btn big", type: "button", onclick: openNeed }, "🙋 Need something?"),
+    m.fixer ? issuesButton() : null,
+    el("button", { class: "btn big secondary", type: "button", onclick: () => openFixes() }, "🔧 Fix Library"),
+    myRequestsCard((id) => openRequestScreen(id)),
     isAdmin() ? el("button", { class: "btn secondary", type: "button", onclick: () => go("adminMenu") }, "⚙ Admin") : null,
+    pushCard(),
     installCard(),
-    el("button", { class: "btn secondary", type: "button", onclick: () => signOut(auth) }, "↪ Sign out"),
+    el("button", { class: "btn secondary", type: "button", onclick: signOutNow }, "↪ Sign out"),
   ];
+}
+
+// "Need something?" — app-only requests (types and routing set in Admin → Request types & routing).
+function openNeed() {
+  if (closeModule) closeModule();
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  closeModule = openNeedSomething(screen, {
+    me: me(), onExit: () => go("home"), onMaintenance: () => openReport(null, openNeed),
+    onSent: (message) => { go("home"); toast(message); },
+  });
+}
+
+function openRequestScreen(id) {
+  if (closeModule) closeModule();
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  closeModule = openRequest(screen, { me: me(), id, onExit: () => go("home") });
+}
+
+// Notifications: one tap to turn on (per device). Shown until it's on; explains when it can't be.
+let pushNow = null;
+function refreshPushState() {
+  pushState().then((s) => { if (s !== pushNow) { pushNow = s; if (state.step === "home") render(); } });
+}
+function pushCard() {
+  if (!pushNow || pushNow === "on" || pushNow === "unsupported") return null;
+  const note = {
+    off: "Get a notification when a request is sent to you, or when yours is in progress or done.",
+    denied: "Notifications are blocked for this app. Turn them on in the phone's Settings → Notifications.",
+    "install-first": "On iPhone, add CDG Ops to your home screen first (Share → Add to Home Screen), then open it from there to turn on notifications.",
+  }[pushNow];
+  return el(
+    "div",
+    { class: "card" },
+    el("strong", {}, "🔔 Notifications"),
+    el("p", { class: "card-note" }, note),
+    pushNow === "off"
+      ? el("button", {
+          class: "btn", type: "button",
+          onclick: async () => {
+            try {
+              pushNow = await turnOnPush(state.claims.emp);
+              render();
+              if (pushNow === "on") toast("Notifications are on for this device");
+            } catch (err) {
+              toast(friendlyError(err), "error");
+            }
+          },
+        }, "🔔 Turn on notifications")
+      : null
+  );
+}
+
+// Signing out also stops this person's notifications on a shared line tablet.
+async function signOutNow() {
+  if (isLineTablet()) await turnOffPush().catch(() => {});
+  signOut(auth);
 }
 
 // ---------------------------------------------------------------------------
@@ -349,6 +413,7 @@ function openChecklistScreen(unitId, back) {
 
 // Open issues board (from Odoo).
 function openIssues() {
+  if (!me().fixer) return go("home"); // the board is for Maintenance and Admin (the database refuses others too)
   if (closeModule) closeModule();
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openIssueBoard(screen, { me: me(), onExit: () => go("home"), onReport: () => openReport() });
@@ -358,7 +423,7 @@ function openIssues() {
 function openReport(machineTypes = null, back = () => go("home"), machineId = null) {
   if (closeModule) closeModule();
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
-  closeModule = openReportForm(screen, { me: me(), machineTypes, machineId, onExit: back, onDone: () => openIssues() });
+  closeModule = openReportForm(screen, { me: me(), machineTypes, machineId, onExit: back, onDone: me().fixer ? () => openIssues() : null });
 }
 
 function issuesButton() {
@@ -379,6 +444,7 @@ function renderAdminMenu() {
     el("button", { class: "btn", type: "button", onclick: () => openModule(openLines) }, "🏭 Lines & machines"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openRoles) }, "🏷 Roles"),
     el("button", { class: "btn", type: "button", onclick: () => openModule((c, o) => openChecklistAdmin(c, { ...o, me: me() })) }, "📋 Checklists"),
+    el("button", { class: "btn", type: "button", onclick: () => openModule(openRequestTypesAdmin) }, "🙋 Request types & routing"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openActivity) }, "📜 Admin activity"),
     deviceCard(), // one-time device setup, so it lives here rather than on Home
   ];
@@ -544,13 +610,15 @@ onAuthStateChanged(auth, async (user) => {
     startData(me());
     go("home");
     // Opened from a QR code: ?m=M-001 goes straight to that machine; older ?cat=Die codes to that category (once).
+    refreshPushState();
+    refreshPush(state.claims.emp);
     const params = new URLSearchParams(location.search);
     const cat = params.get("cat");
     const machine = params.get("m");
-    if (cat || machine) {
-      history.replaceState(null, "", location.pathname);
-      openFixes(cat, machine);
-    }
+    const req = params.get("req"); // opened from a notification
+    if (cat || machine || req) history.replaceState(null, "", location.pathname);
+    if (req) openRequestScreen(req);
+    else if (cat || machine) openFixes(cat, machine);
   }
 });
 

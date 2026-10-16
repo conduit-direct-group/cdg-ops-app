@@ -7,15 +7,18 @@
 import { db, TEST_MODE } from "./firebase.js";
 import { collection, doc, onSnapshot, query, where } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 
-const LISTS = ["roles", "lines", "machines", "fixCategories", "checklistTemplates"];
+const LISTS = ["roles", "lines", "machines", "fixCategories", "checklistTemplates", "requestTypes"];
 
 // null = still loading; [] = loaded and empty.
 // myself = my own employee record (live roles). fixes = approved fixes; myFixes = pending suggestions I can see
 // (admins: everyone's; others: my own). openIssues = open breakdowns (line down first, newest first).
 // checklistUnits = { [unitId]: { [itemId]: { at, by, byName } } } — when each checklist item was last done.
+// openIssues: Maintenance and Admin only (others: []). myIssues = maintenance requests I reported (to follow
+// their status). requestsForMe = "Need something?" requests sent to me (admins: every open one);
+// requestsSent = the ones I sent.
 export const data = {
-  myself: null, roles: null, lines: null, machines: null, fixCategories: null, checklistTemplates: null,
-  fixes: null, myFixes: null, openIssues: null, checklistUnits: null,
+  myself: null, roles: null, lines: null, machines: null, fixCategories: null, checklistTemplates: null, requestTypes: null,
+  fixes: null, myFixes: null, openIssues: null, myIssues: null, checklistUnits: null, requestsForMe: null, requestsSent: null,
 };
 
 const listeners = new Set();
@@ -28,6 +31,9 @@ const byId = (a, b) => a.id.localeCompare(b.id, undefined, { numeric: true });
 const byTitle = (a, b) => a.title.localeCompare(b.title, undefined, { numeric: true });
 const time = (t) => (t?.toMillis ? t.toMillis() : 0);
 const lineDownFirst = (a, b) => (b.lineDown === true) - (a.lineDown === true) || time(b.reportedAt) - time(a.reportedAt);
+const newestFirst = (a, b) => time(b.reportedAt || b.createdAt) - time(a.reportedAt || a.createdAt);
+// Requests: not-done first, urgent first, newest first.
+const requestOrder = (a, b) => (a.status === "done") - (b.status === "done") || (b.urgent === true) - (a.urgent === true) || time(b.createdAt) - time(a.createdAt);
 
 function changed() {
   for (const fn of listeners) fn();
@@ -84,7 +90,7 @@ function watchChecklistUnits() {
 }
 
 // Called once signed in with a real PIN (the database refuses temporary-PIN accounts).
-// `me` = { emp, approver } — decides which pending fixes this person may see.
+// `me` = { emp, approver, admin, fixer } — decides which pending fixes, issues, and requests this person may see.
 export function startData(me) {
   stopData();
   stopFns = LISTS.map((name) => watch(name, collection(db, name), name === "machines" ? byId : byName));
@@ -100,8 +106,19 @@ export function startData(me) {
     me.approver ? query(collection(db, name), where("status", "==", "pending")) : query(collection(db, name), where("createdBy", "==", me.emp));
   stopFns.push(watchMerged("fixes", fixQuery("fixes"), fixQuery("test_fixes"), byTitle));
   stopFns.push(watchMerged("myFixes", mineQuery("fixes"), mineQuery("test_fixes"), byTitle));
-  const openQuery = (name) => query(collection(db, name), where("open", "==", true));
-  stopFns.push(watchMerged("openIssues", openQuery("issues"), openQuery("test_issues"), lineDownFirst));
+  if (me.fixer) {
+    const openQuery = (name) => query(collection(db, name), where("open", "==", true));
+    stopFns.push(watchMerged("openIssues", openQuery("issues"), openQuery("test_issues"), lineDownFirst));
+  } else {
+    data.openIssues = []; // the board is for Maintenance and Admin (the database refuses others too)
+  }
+  const mineIssues = (name) => query(collection(db, name), where("reportedByEmp", "==", me.emp));
+  stopFns.push(watchMerged("myIssues", mineIssues("issues"), mineIssues("test_issues"), newestFirst));
+  const forMe = (name) =>
+    me.admin ? query(collection(db, name), where("status", "in", ["open", "in-progress"])) : query(collection(db, name), where("recipients", "array-contains", me.emp));
+  stopFns.push(watchMerged("requestsForMe", forMe("requests"), forMe("test_requests"), requestOrder));
+  const sent = (name) => query(collection(db, name), where("createdBy", "==", me.emp));
+  stopFns.push(watchMerged("requestsSent", sent("requests"), sent("test_requests"), requestOrder));
   stopFns.push(watchChecklistUnits());
 }
 

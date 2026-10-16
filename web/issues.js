@@ -72,7 +72,7 @@ export function openIssueBoard(container, { me, onExit, onReport }) {
       el("h1", {}, "Open issues"),
       list && list.length ? el("p", { class: "hint" }, `${list.length} open · ${down ? `⛔ ${down} line${down === 1 ? "" : "s"} down` : "all lines running"}`) : null,
       messageBox(),
-      el("button", { class: "btn danger", type: "button", onclick: onReport }, "🚨 Report a problem"),
+      el("button", { class: "btn danger", type: "button", onclick: onReport }, "🚨 Maintenance Request"),
       !list
         ? spinner("Loading open issues…")
         : !list.length
@@ -232,9 +232,9 @@ export function openReportForm(container, { me, onExit, onDone, machineTypes = n
         ...[
           el("h1", {}, ui.sent.test ? "✔ Test report saved" : "✔ Sent to maintenance"),
           ui.sent.test
-            ? el("p", { class: "message test-note" }, "TEST — practice only. Nothing was sent to Odoo. It shows on the test site's Open issues board, marked TEST.")
-            : el("p", { class: "message" }, `Odoo request #${ui.sent.odooId} — it's on the Open issues board now.`),
-          el("button", { class: "btn", type: "button", onclick: onDone }, "🚨 See open issues"),
+            ? el("p", { class: "message test-note" }, "TEST — practice only. Nothing was sent to Odoo. It shows on the test site only, marked TEST.")
+            : el("p", { class: "message" }, `Odoo request #${ui.sent.odooId} — you can follow it under 🧾 My requests on the home screen.`),
+          onDone ? el("button", { class: "btn", type: "button", onclick: onDone }, "🚨 See open issues") : null,
           el("button", { class: "btn secondary", type: "button", onclick: onExit }, "✔ Done"),
         ]
       );
@@ -245,7 +245,7 @@ export function openReportForm(container, { me, onExit, onDone, machineTypes = n
     const machinesHere = d.lineId === "none" ? spare : activeMachines().filter((m) => m.lineId === d.lineId);
     const content = [
       el("button", { class: "link-btn", type: "button", onclick: onExit, disabled: ui.busy }, "← Back"),
-      el("h1", {}, "🚨 Report a problem"),
+      el("h1", {}, "🚨 Maintenance Request"),
       el("p", { class: "hint" }, "Goes straight to maintenance as an Odoo request."),
       // Before a machine is picked, problems show at the top; after, right above Send (where you're looking).
       !d.machineId ? banner(ui) : null,
