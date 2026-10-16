@@ -33,10 +33,11 @@ test("record ids come from names and never change format", () => {
   assert.equal(r.isRecordId("Line 3"), false);
 });
 
-test("the app hands out the next employee number, starting at 1001, never reusing one", () => {
+test("the app hands out the lowest unused employee number from 1001 up", () => {
   assert.strictEqual(r.nextEmployeeNumber([]), "1001");
   assert.strictEqual(r.nextEmployeeNumber(["1001"]), "1002");
-  assert.strictEqual(r.nextEmployeeNumber(["1001", "9000", "1002"]), "9001");
+  assert.strictEqual(r.nextEmployeeNumber(["1001", "9000"]), "1002");
+  assert.strictEqual(r.nextEmployeeNumber(["1001", "1002", "1004"]), "1003");
   assert.strictEqual(r.nextEmployeeNumber(["A12", "15"]), "1001");
 });
 

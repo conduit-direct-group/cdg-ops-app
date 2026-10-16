@@ -47,12 +47,14 @@ function cleanNotes(value, max = 1000) {
   return s.length <= max ? s : null;
 }
 
-// The app hands out employee numbers: the next one after the highest number in use, starting at 1001.
-// Numbers that aren't plain digits (if any were typed by hand) are ignored. Turned-off people still
-// count, so a number is never handed out twice.
+// The app hands out employee numbers: the lowest number from 1001 up that has never been used.
+// Turned-off people keep their number (nobody is ever deleted), so a number is never handed out twice.
+// Odd numbers typed by hand (e.g. a 9000 test account) don't push the next one up.
 function nextEmployeeNumber(numbers) {
-  const used = numbers.map((n) => (/^\d+$/.test(String(n)) ? Number(n) : 0));
-  return String(Math.max(1000, ...used) + 1);
+  const used = new Set(numbers.map(String));
+  let n = 1001;
+  while (used.has(String(n))) n++;
+  return String(n);
 }
 
 module.exports = { machineIdFor, isMachineId, cleanName, cleanOptional, cleanNotes, nextEmployeeNumber, idFromName, isRecordId };
