@@ -34,7 +34,7 @@ export function requestRow(r, onclick) {
     { class: r.urgent && r.status !== "done" ? "person-row urgent" : "person-row", type: "button", onclick },
     el("span", { class: "person-name" }, `${r.icon || "💬"} ${r.typeName}`),
     el("span", { class: "person-meta" }, [r.description?.slice(0, 80), [r.lineName, r.place].filter(Boolean).join(" · ")].filter(Boolean).join(" — ")),
-    el("span", { class: "person-meta" }, [r.createdByName ? `from ${r.createdByName}` : "", ago(toDate(r.createdAt))].filter(Boolean).join(" · ")),
+    el("span", { class: "person-meta" }, [r.createdByName ? `from ${r.createdByName}` : "", ago(toDate(r.createdAt)), r.status === "done" && r.doneByName ? `done by ${r.doneByName}` : r.status === "in-progress" && r.takenByName ? `${r.takenByName} is on it` : ""].filter(Boolean).join(" · ")),
     el("span", { class: "tags" }, r.urgent && r.status !== "done" ? el("span", { class: "tag off" }, "⚠ Urgent") : null, statusTag(r.status), r.test ? el("span", { class: "tag test" }, "TEST") : null)
   );
 }
