@@ -60,6 +60,13 @@ service cloud.firestore {
     match /checklistTemplates/{id} {
       allow read: if member();
     }
+    // Teams (A, B, C, D) and machine types: read by everyone signed in; changed only by admins via the server.
+    match /teams/{id} {
+      allow read: if member();
+    }
+    match /machineTypes/{id} {
+      allow read: if member();
+    }
 
     // Checklist due dates (latest sign-off per item). The test site uses test_checklistUnits.
     match /checklistUnits/{id} {

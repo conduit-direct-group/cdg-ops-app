@@ -39,4 +39,20 @@ function isRecordId(value) {
   return typeof value === "string" && /^[a-z][a-z0-9_-]{0,29}$/.test(value);
 }
 
-module.exports = { machineIdFor, isMachineId, cleanName, cleanOptional, idFromName, isRecordId };
+// Optional notes (machines): keeps line breaks, trims, empty becomes "". null = too long.
+function cleanNotes(value, max = 1000) {
+  if (value == null) return "";
+  if (typeof value !== "string") return null;
+  const s = value.replace(/\r\n/g, "\n").trim();
+  return s.length <= max ? s : null;
+}
+
+// The app hands out employee numbers: the next one after the highest number in use, starting at 1001.
+// Numbers that aren't plain digits (if any were typed by hand) are ignored. Turned-off people still
+// count, so a number is never handed out twice.
+function nextEmployeeNumber(numbers) {
+  const used = numbers.map((n) => (/^\d+$/.test(String(n)) ? Number(n) : 0));
+  return String(Math.max(1000, ...used) + 1);
+}
+
+module.exports = { machineIdFor, isMachineId, cleanName, cleanOptional, cleanNotes, nextEmployeeNumber, idFromName, isRecordId };

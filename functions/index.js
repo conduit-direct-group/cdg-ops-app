@@ -46,6 +46,8 @@ const auditLog = db.collection("auditLog");
 const roles = db.collection("roles");
 const lines = db.collection("lines");
 const machines = db.collection("machines");
+const teams = db.collection("teams");
+const machineTypes = db.collection("machineTypes");
 const counters = db.collection("meta").doc("counters");
 const fixes = db.collection("fixes");
 const fixCategories = db.collection("fixCategories");
@@ -166,6 +168,15 @@ function requireName(value) {
   return name;
 }
 
+// Team (Admin → Teams) and home line (Admin → Lines & machines): optional; when set, must exist and be on.
+async function optionalRef(collection, value, label) {
+  if (value == null || value === "") return null;
+  const id = String(value);
+  const snap = await collection.doc(id).get();
+  if (!snap.exists || snap.get("active") === false) throw new HttpsError("invalid-argument", `Pick a ${label} from the list.`);
+  return id;
+}
+
 // Roles must be on the Roles list (Admin → Roles) and not retired.
 async function requireRoles(value) {
   const ids = pin.normalizeRoles(value);
@@ -242,6 +253,8 @@ exports.adminListEmployees = onCall(async (req) => {
       employeeNumber: d.id,
       name: e.name,
       roles: e.roles || [],
+      team: e.team || null,
+      homeLineId: e.homeLineId || null,
       active: e.active !== false,
       mustChangePin: s.mustChangePin === true,
       locked: lock.locked,
@@ -249,14 +262,17 @@ exports.adminListEmployees = onCall(async (req) => {
     };
   });
   list.sort((a, b) => a.name.localeCompare(b.name));
-  return { employees: list };
+  return { employees: list, nextNumber: records.nextEmployeeNumber(empSnaps.docs.map((d) => d.id)) };
 });
 
 // Adds a person. Returns a temporary PIN for the admin to give them.
 exports.adminCreateEmployee = onCall(async (req) => {
   const adminNumber = await requireAdmin(req);
   const employeeNumber = requireEmployeeNumber(req.data?.employeeNumber);
-  const employee = { name: requireName(req.data?.name), roles: await requireRoles(req.data?.roles), active: true };
+  const employee = {
+    name: requireName(req.data?.name), roles: await requireRoles(req.data?.roles), active: true,
+    team: await optionalRef(teams, req.data?.team, "team"), homeLineId: await optionalRef(lines, req.data?.homeLineId, "line"),
+  };
   const tempPin = pin.randomTempPin();
   const hashed = await pin.hashPin(tempPin);
 
@@ -314,6 +330,8 @@ exports.adminUpdateEmployee = onCall(async (req) => {
   const changes = {};
   if (req.data?.name !== undefined) changes.name = requireName(req.data.name);
   if (req.data?.roles !== undefined) changes.roles = await requireRoles(req.data.roles);
+  if (req.data?.team !== undefined) changes.team = await optionalRef(teams, req.data.team, "team");
+  if (req.data?.homeLineId !== undefined) changes.homeLineId = await optionalRef(lines, req.data.homeLineId, "line");
   if (req.data?.active !== undefined) {
     if (typeof req.data.active !== "boolean") throw new HttpsError("invalid-argument", "active must be true or false.");
     changes.active = req.data.active;
@@ -361,9 +379,10 @@ function optionalActive(value) {
 }
 
 // Shared by roles and lines: create (no id, or a new explicit id) or update (existing id).
-async function saveNamedRecord(collection, kind, req, extraCheck) {
+async function saveNamedRecord(collection, kind, req, extraCheck, extraFields = () => ({})) {
   const adminNumber = await requireAdmin(req);
   const name = requireText(req.data?.name, "Name");
+  const extra = extraFields(req.data || {});
   const active = optionalActive(req.data?.active);
   const isNew = req.data?.create === true;
   const id = req.data?.id ? String(req.data.id) : records.idFromName(name);
@@ -377,14 +396,14 @@ async function saveNamedRecord(collection, kind, req, extraCheck) {
     const snap = await tx.get(ref);
     if (isNew) {
       if (snap.exists) throw new HttpsError("already-exists", `"${name}" already exists.`);
-      tx.create(ref, { name, active: active ?? true, createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
-      auditRecord(tx, "created", kind, id, adminNumber, { name });
+      tx.create(ref, { name, ...extra, active: active ?? true, createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+      auditRecord(tx, "created", kind, id, adminNumber, { name, ...extra });
     } else {
       if (!snap.exists) throw new HttpsError("not-found", "That record no longer exists.");
-      const changes = { name, updatedAt: FieldValue.serverTimestamp() };
+      const changes = { name, ...extra, updatedAt: FieldValue.serverTimestamp() };
       if (active !== undefined) changes.active = active;
       tx.update(ref, changes);
-      auditRecord(tx, "updated", kind, id, adminNumber, { name, ...(active !== undefined ? { active } : {}) });
+      auditRecord(tx, "updated", kind, id, adminNumber, { name, ...extra, ...(active !== undefined ? { active } : {}) });
     }
   });
   return { id };
@@ -402,7 +421,48 @@ exports.adminSaveRole = onCall((req) =>
 
 // Lines: create { create: true, name } or update { id, name, active? }.
 // The id comes from the first name ("Line 3" -> line-3) and never changes, even if the line is renamed.
-exports.adminSaveLine = onCall((req) => saveNamedRecord(lines, "line", req));
+// Lines: create { create: true, name, building? } or update { id, name, building?, active? }.
+exports.adminSaveLine = onCall((req) =>
+  saveNamedRecord(lines, "line", req, null, (d) => {
+    if (d.building === undefined) return {};
+    const building = records.cleanOptional(d.building);
+    if (building === null) throw new HttpsError("invalid-argument", "Building is 60 characters max.");
+    return { building };
+  })
+);
+
+// Teams (A, B, C, D, …): create { create: true, name } or update { id, name, active? }.
+exports.adminSaveTeam = onCall((req) => saveNamedRecord(teams, "team", req));
+
+// Machine types: create { create: true, name } or { id, active } to retire / bring back.
+// A type's name never changes — machines, fix categories, and checklists match on it.
+exports.adminSaveMachineType = onCall(async (req) => {
+  const adminNumber = await requireAdmin(req);
+  const active = optionalActive(req.data?.active);
+  if (req.data?.create === true) {
+    const name = requireText(req.data?.name, "Type name");
+    const id = records.idFromName(name);
+    if (!id) throw new HttpsError("invalid-argument", "Type name must start with a letter.");
+    await db.runTransaction(async (tx) => {
+      const all = await tx.get(machineTypes);
+      if (all.docs.some((d) => d.id === id || String(d.get("name")).toLowerCase() === name.toLowerCase())) {
+        throw new HttpsError("already-exists", `"${name}" is already on the list.`);
+      }
+      tx.create(machineTypes.doc(id), { name, active: true, createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+      auditRecord(tx, "created", "machine type", id, adminNumber, { name });
+    });
+    return { id };
+  }
+  const ref = machineTypes.doc(String(req.data?.id || ""));
+  if (active === undefined) throw new HttpsError("invalid-argument", "Nothing to change.");
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "That type no longer exists.");
+    tx.update(ref, { active, updatedAt: FieldValue.serverTimestamp() });
+    auditRecord(tx, active ? "restored" : "retired", "machine type", ref.id, adminNumber, { name: snap.get("name") });
+  });
+  return { id: ref.id };
+});
 
 // Machines: create { create: true, name, type?, lineId? } -> next plant-wide ID (M-001, M-002, ...),
 // or update { id, name, type?, lineId?, active? }. lineId null = not on a line (spare, shared, in storage).
@@ -411,6 +471,20 @@ exports.adminSaveMachine = onCall(async (req) => {
   const name = requireText(req.data?.name, "Machine name");
   const type = records.cleanOptional(req.data?.type);
   if (type === null) throw new HttpsError("invalid-argument", "Type is 60 characters max.");
+  const details = {};
+  for (const [key, label, max] of [["make", "Make", 60], ["model", "Model", 60], ["serial", "Serial number", 60]]) {
+    if (req.data?.[key] === undefined) continue;
+    details[key] = records.cleanOptional(req.data[key], max);
+    if (details[key] === null) throw new HttpsError("invalid-argument", `${label} is ${max} characters max.`);
+  }
+  if (req.data?.notes !== undefined) {
+    details.notes = records.cleanNotes(req.data.notes);
+    if (details.notes === null) throw new HttpsError("invalid-argument", "Notes are 1,000 characters max.");
+  }
+  const typeList = (await machineTypes.get()).docs.map((d) => d.data());
+  if (typeList.length && type && !typeList.some((t) => t.name === type)) {
+    throw new HttpsError("invalid-argument", `"${type}" isn't on the Machine types list. Add it in Admin → Machine types first.`);
+  }
   const lineId = req.data?.lineId ? String(req.data.lineId) : null;
   const active = optionalActive(req.data?.active);
   const isNew = req.data?.create === true;
@@ -427,7 +501,7 @@ exports.adminSaveMachine = onCall(async (req) => {
       const machineId = records.machineIdFor(next);
       tx.set(counters, { nextMachine: next + 1 }, { merge: true });
       tx.create(machines.doc(machineId), {
-        name, type, lineId, active: active ?? true,
+        name, type, lineId, ...details, active: active ?? true,
         createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(),
       });
       auditRecord(tx, "created", "machine", machineId, adminNumber, { name, lineId });
@@ -436,7 +510,7 @@ exports.adminSaveMachine = onCall(async (req) => {
     const ref = machines.doc(req.data.id);
     const snap = await tx.get(ref);
     if (!snap.exists) throw new HttpsError("not-found", "That machine no longer exists.");
-    const changes = { name, type, lineId, updatedAt: FieldValue.serverTimestamp() };
+    const changes = { name, type, lineId, ...details, updatedAt: FieldValue.serverTimestamp() };
     if (active !== undefined) changes.active = active;
     tx.update(ref, changes);
     auditRecord(tx, "updated", "machine", req.data.id, adminNumber, { name, lineId, ...(active !== undefined ? { active } : {}) });

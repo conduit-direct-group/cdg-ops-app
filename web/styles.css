@@ -787,3 +787,8 @@ details.fold[open] .fold-arrow { transform: rotate(180deg); }
 
   .sheet-backdrop { align-items: center; }
 }
+
+/* Machine notes and similar: keep the line breaks people typed. */
+.keep-lines { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Temporary PINs listed after "Save & add another person". */
+.pin-inline { margin-left: auto; color: var(--orange); font-size: var(--text-section); letter-spacing: 4px; }

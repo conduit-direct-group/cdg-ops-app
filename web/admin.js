@@ -1,8 +1,8 @@
 // Admin "People" screens: list everyone, add a person, reset PINs, unlock, edit, turn accounts off/on.
 // Every action is checked again on the server (admins only), so hiding buttons here is just tidiness.
 
-import { el, friendlyError, spinner, banner, toast, confirmSheet } from "./ui.js";
-import { data, onDataChange } from "./data.js";
+import { el, friendlyError, spinner, banner, toast, confirmSheet, picker } from "./ui.js";
+import { data, onDataChange, lineName } from "./data.js";
 import {
   callAdminListEmployees,
   callAdminCreateEmployee,
@@ -17,6 +17,12 @@ function roleNames(roles) {
   return roles.map((r) => names.get(r) || r).join(", ");
 }
 
+const teamName = (id) => (id ? data.teams?.find((t) => t.id === id)?.name || "?" : "");
+// "#1004 · Operator · Team A · Line 2"
+function personLine(p) {
+  return [`#${p.employeeNumber}`, roleNames(p.roles), p.team ? `Team ${teamName(p.team)}` : "", p.homeLineId ? lineName(p.homeLineId) : ""].filter(Boolean).join(" · ");
+}
+
 // Opens the People screens inside `container`. `onExit` returns to the Admin menu.
 export function openAdmin(container, { myEmployeeNumber, onExit }) {
   const ui = {
@@ -24,6 +30,8 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
     people: null,
     selected: null, // employeeNumber
     tempPin: null, // { name, pin } — shown once, never stored
+    justAdded: [], // [{ name, number, pin }] — PINs from "Save & add another", shown on the form until you leave it
+    nextNumber: "",
     draft: null, // what's typed in the add/edit form, so a failed save doesn't wipe it
     message: "",
     messageKind: "",
@@ -47,6 +55,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
     try {
       const { data } = await callAdminListEmployees();
       ui.people = data.employees;
+      ui.nextNumber = data.nextNumber || "";
       ui.loadError = "";
     } catch (err) {
       ui.loadError = friendlyError(err);
@@ -104,7 +113,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
               "button",
               { class: "person-row", type: "button", onclick: () => { ui.selected = p.employeeNumber; show("person"); } },
               el("span", { class: "person-name" }, p.name),
-              el("span", { class: "person-meta" }, `#${p.employeeNumber} · ${roleNames(p.roles)}`),
+              el("span", { class: "person-meta" }, personLine(p)),
               el("span", { class: "tags" }, tags(p))
             )
           );
@@ -114,21 +123,24 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
       el("p", { class: "hint" }, ui.people ? `${ui.people.length} ${ui.people.length === 1 ? "person" : "people"}` : ""),
       ui.loadError ? banner({ message: `Couldn't load the people list. ${ui.loadError}`, messageKind: "error", retry: reload }) : null,
       messageBox(),
-      el("button", { class: "btn", type: "button", onclick: startAdd }, "+ Add a person"),
+      el("button", { class: "btn", type: "button", onclick: () => startAdd() }, "+ Add a person"),
       el("div", { class: "person-list" }, rows),
     ];
   }
 
   // ---- Add / edit form ----------------------------------------------------
 
-  function startAdd() {
-    ui.draft = { number: "", name: "", roles: ["operator"] };
+  // A new person starts with the next free employee number filled in (it can be changed).
+  // `keep` = same roles, team, and home line as the last one (Save & add another).
+  function startAdd(keep = null) {
+    if (!keep) ui.justAdded = [];
+    ui.draft = { number: ui.nextNumber, name: "", roles: keep?.roles || ["operator"], team: keep?.team || "", homeLineId: keep?.homeLineId || "" };
     show("add");
   }
 
   function startEdit() {
     const p = person();
-    ui.draft = { number: p.employeeNumber, name: p.name, roles: [...p.roles] };
+    ui.draft = { number: p.employeeNumber, name: p.name, roles: [...p.roles], team: p.team || "", homeLineId: p.homeLineId || "" };
     show("edit");
   }
 
@@ -163,36 +175,63 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
           ? banner({ message: "No roles yet. Go to Admin → Roles and tap \"Add the starting roles\" first.", messageKind: "error" })
           : spinner("Loading roles…")];
 
-    async function save(e) {
+    // Read at save time (the inputs update the draft as you type).
+    const fields = () => ({ name: d.name, roles: d.roles, team: d.team || null, homeLineId: d.homeLineId || null });
+    // `again` = add this person and keep the form open for the next one.
+    async function save(e, again = false) {
       e?.preventDefault();
       if (existing) {
-        const ok = await act(() => callAdminUpdateEmployee({ employeeNumber: existing.employeeNumber, name: d.name, roles: d.roles }), save);
+        const ok = await act(() => callAdminUpdateEmployee({ employeeNumber: existing.employeeNumber, ...fields() }), () => save(null));
         if (ok) show("person", "Saved", "ok");
-      } else {
-        const data = await act(() => callAdminCreateEmployee({ employeeNumber: d.number, name: d.name, roles: d.roles }), save);
-        if (data) {
-          ui.tempPin = { name: d.name.trim(), pin: data.tempPin };
-          ui.selected = data.employeeNumber;
-          show("tempPin");
-        }
+        return;
       }
+      const r = await act(() => callAdminCreateEmployee({ employeeNumber: d.number, ...fields() }), () => save(null, again));
+      if (!r) return;
+      if (again) {
+        ui.justAdded.unshift({ name: d.name.trim(), number: r.employeeNumber, pin: r.tempPin });
+        toast(`${d.name.trim()} added — #${r.employeeNumber}`);
+        startAdd({ roles: d.roles, team: d.team, homeLineId: d.homeLineId });
+        document.getElementById("f-name")?.focus();
+        return;
+      }
+      ui.tempPin = { name: d.name.trim(), pin: r.tempPin };
+      ui.selected = r.employeeNumber;
+      show("tempPin");
     }
+    const teams = (data.teams || []).filter((t) => t.active !== false || t.id === d.team);
+    const lines = (data.lines || []).filter((l) => l.active !== false || l.id === d.homeLineId);
 
     return [
       backBar(existing ? existing.name : "People", () => show(existing ? "person" : "list")),
-      el("h1", {}, existing ? "Edit name and roles" : "Add a person"),
+      el("h1", {}, existing ? "Edit person" : "Add a person"),
       messageBox(),
+      // People added with "Save & add another" — their temporary PINs, until you leave this form.
+      !existing && ui.justAdded.length
+        ? el(
+            "div",
+            { class: "card" },
+            el("strong", {}, `Just added (${ui.justAdded.length}) — give each person their temporary PIN`),
+            el("div", { class: "import-preview" }, ui.justAdded.map((a) =>
+              el("div", { class: "import-row" }, el("span", { class: "import-line" }, `#${a.number}`), el("span", { class: "gap-term" }, a.name), el("strong", { class: "pin-inline" }, a.pin)))),
+            el("p", { class: "card-note" }, "Write these down now — they aren't shown again (you can always reset a PIN).")
+          )
+        : null,
       el(
         "form",
         { onsubmit: save },
         existing
           ? el("p", { class: "hint" }, `Employee #${existing.employeeNumber}`)
-          : [el("label", { class: "field-label", for: "f-number" }, "Employee number"), numberInput],
+          : [el("label", { class: "field-label", for: "f-number" }, "Employee number (next free one filled in — change it if needed)"), numberInput],
         el("label", { class: "field-label", for: "f-name" }, "Name (as it should appear in the app)"),
         nameInput,
         el("p", { class: "field-label" }, "Roles"),
         roleBoxes,
-        el("button", { class: "btn", type: "submit", disabled: ui.busy }, ui.busy ? "Saving…" : existing ? "Save" : "Add and get PIN")
+        el("label", { class: "field-label", for: "f-team" }, "Team"),
+        picker({ id: "f-team", title: "Team", value: d.team, placeholder: "No team", options: [{ value: "", label: "No team" }, ...teams.map((t) => ({ value: t.id, label: `Team ${t.name}` }))], onChange: (v) => { d.team = v; render(); } }),
+        el("label", { class: "field-label", for: "f-home" }, "Home line"),
+        picker({ id: "f-home", title: "Home line", value: d.homeLineId, placeholder: "No home line", options: [{ value: "", label: "No home line" }, ...lines.map((l) => ({ value: l.id, label: l.name }))], onChange: (v) => { d.homeLineId = v; render(); } }),
+        el("button", { class: "btn", type: "submit", disabled: ui.busy }, ui.busy ? "Saving…" : existing ? "Save" : "Add and get PIN"),
+        existing ? null : el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => save(null, true) }, "+ Save & add another person")
       ),
     ];
   }
@@ -252,12 +291,12 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
     return [
       backBar("People", () => show("list")),
       el("h1", {}, p.name),
-      el("p", { class: "roles" }, `#${p.employeeNumber} · ${roleNames(p.roles)}`),
+      el("p", { class: "roles" }, personLine(p)),
       el("p", { class: "tags center" }, tags(p)),
       messageBox(),
       p.locked ? el("button", { class: "btn", type: "button", onclick: () => unlock(), disabled: ui.busy }, "🔓 Unlock now") : null,
       el("button", { class: "btn secondary", type: "button", onclick: () => resetPin(), disabled: ui.busy || !p.active }, "🔑 Reset PIN"),
-      el("button", { class: "btn secondary", type: "button", onclick: startEdit, disabled: ui.busy }, "✎ Edit name and roles"),
+      el("button", { class: "btn secondary", type: "button", onclick: startEdit, disabled: ui.busy }, "✎ Edit name, roles, team, home line"),
       isMe
         ? null
         : el(

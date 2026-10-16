@@ -7,7 +7,7 @@
 import { db, TEST_MODE } from "./firebase.js";
 import { collection, doc, onSnapshot, query, where } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 
-const LISTS = ["roles", "lines", "machines", "fixCategories", "checklistTemplates", "requestTypes"];
+const LISTS = ["roles", "lines", "machines", "fixCategories", "checklistTemplates", "requestTypes", "teams", "machineTypes"];
 
 // null = still loading; [] = loaded and empty.
 // myself = my own employee record (live roles). fixes = approved fixes; myFixes = pending suggestions I can see
@@ -17,7 +17,7 @@ const LISTS = ["roles", "lines", "machines", "fixCategories", "checklistTemplate
 // their status). requestsForMe = "Need something?" requests sent to me (admins: every open one);
 // requestsSent = the ones I sent.
 export const data = {
-  myself: null, roles: null, lines: null, machines: null, fixCategories: null, checklistTemplates: null, requestTypes: null,
+  myself: null, roles: null, teams: null, machineTypes: null, lines: null, machines: null, fixCategories: null, checklistTemplates: null, requestTypes: null,
   fixes: null, myFixes: null, openIssues: null, myIssues: null, checklistUnits: null, requestsForMe: null, requestsSent: null,
 };
 
