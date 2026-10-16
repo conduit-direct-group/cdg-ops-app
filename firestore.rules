@@ -60,8 +60,11 @@ service cloud.firestore {
     match /checklistTemplates/{id} {
       allow read: if member();
     }
-    // Teams (A, B, C, D) and machine types: read by everyone signed in; changed only by admins via the server.
+    // Teams (A, B, C, D), shifts, and machine types: read by everyone signed in; changed only by admins via the server.
     match /teams/{id} {
+      allow read: if member();
+    }
+    match /shifts/{id} {
       allow read: if member();
     }
     match /machineTypes/{id} {

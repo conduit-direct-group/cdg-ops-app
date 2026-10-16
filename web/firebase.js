@@ -60,6 +60,7 @@ export const callAdminSaveRole = call("adminSaveRole");
 export const callAdminSaveLine = call("adminSaveLine");
 export const callAdminSaveMachine = call("adminSaveMachine");
 export const callAdminSaveTeam = call("adminSaveTeam");
+export const callAdminSaveShift = call("adminSaveShift");
 export const callAdminSaveMachineType = call("adminSaveMachineType");
 export const callSubmitFix = call("submitFix");
 export const callReviewFix = call("reviewFix");

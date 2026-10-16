@@ -47,6 +47,7 @@ const roles = db.collection("roles");
 const lines = db.collection("lines");
 const machines = db.collection("machines");
 const teams = db.collection("teams");
+const shifts = db.collection("shifts");
 const machineTypes = db.collection("machineTypes");
 const counters = db.collection("meta").doc("counters");
 const fixes = db.collection("fixes");
@@ -254,6 +255,7 @@ exports.adminListEmployees = onCall(async (req) => {
       name: e.name,
       roles: e.roles || [],
       team: e.team || null,
+      shift: e.shift || null,
       homeLineId: e.homeLineId || null,
       active: e.active !== false,
       mustChangePin: s.mustChangePin === true,
@@ -271,7 +273,8 @@ exports.adminCreateEmployee = onCall(async (req) => {
   const employeeNumber = requireEmployeeNumber(req.data?.employeeNumber);
   const employee = {
     name: requireName(req.data?.name), roles: await requireRoles(req.data?.roles), active: true,
-    team: await optionalRef(teams, req.data?.team, "team"), homeLineId: await optionalRef(lines, req.data?.homeLineId, "line"),
+    team: await optionalRef(teams, req.data?.team, "team"), shift: await optionalRef(shifts, req.data?.shift, "shift"),
+    homeLineId: await optionalRef(lines, req.data?.homeLineId, "line"),
   };
   const tempPin = pin.randomTempPin();
   const hashed = await pin.hashPin(tempPin);
@@ -331,6 +334,7 @@ exports.adminUpdateEmployee = onCall(async (req) => {
   if (req.data?.name !== undefined) changes.name = requireName(req.data.name);
   if (req.data?.roles !== undefined) changes.roles = await requireRoles(req.data.roles);
   if (req.data?.team !== undefined) changes.team = await optionalRef(teams, req.data.team, "team");
+  if (req.data?.shift !== undefined) changes.shift = await optionalRef(shifts, req.data.shift, "shift");
   if (req.data?.homeLineId !== undefined) changes.homeLineId = await optionalRef(lines, req.data.homeLineId, "line");
   if (req.data?.active !== undefined) {
     if (typeof req.data.active !== "boolean") throw new HttpsError("invalid-argument", "active must be true or false.");
@@ -433,6 +437,9 @@ exports.adminSaveLine = onCall((req) =>
 
 // Teams (A, B, C, D, …): create { create: true, name } or update { id, name, active? }.
 exports.adminSaveTeam = onCall((req) => saveNamedRecord(teams, "team", req));
+
+// Shifts (e.g. Days, Nights): create { create: true, name } or update { id, name, active? }.
+exports.adminSaveShift = onCall((req) => saveNamedRecord(shifts, "shift", req));
 
 // Machine types: create { create: true, name } or { id, active } to retire / bring back.
 // A type's name never changes — machines, fix categories, and checklists match on it.

@@ -18,9 +18,10 @@ function roleNames(roles) {
 }
 
 const teamName = (id) => (id ? data.teams?.find((t) => t.id === id)?.name || "?" : "");
+const shiftName = (id) => (id ? data.shifts?.find((t) => t.id === id)?.name || "?" : "");
 // "#1004 · Operator · Team A · Line 2"
 function personLine(p) {
-  return [`#${p.employeeNumber}`, roleNames(p.roles), p.team ? `Team ${teamName(p.team)}` : "", p.homeLineId ? lineName(p.homeLineId) : ""].filter(Boolean).join(" · ");
+  return [`#${p.employeeNumber}`, roleNames(p.roles), p.team ? `Team ${teamName(p.team)}` : "", p.shift ? `${shiftName(p.shift)} shift` : "", p.homeLineId ? lineName(p.homeLineId) : ""].filter(Boolean).join(" · ");
 }
 
 // Opens the People screens inside `container`. `onExit` returns to the Admin menu.
@@ -134,13 +135,13 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
   // `keep` = same roles, team, and home line as the last one (Save & add another).
   function startAdd(keep = null) {
     if (!keep) ui.justAdded = [];
-    ui.draft = { number: ui.nextNumber, name: "", roles: keep?.roles || ["operator"], team: keep?.team || "", homeLineId: keep?.homeLineId || "" };
+    ui.draft = { number: ui.nextNumber, name: "", roles: keep?.roles || ["operator"], team: keep?.team || "", shift: keep?.shift || "", homeLineId: keep?.homeLineId || "" };
     show("add");
   }
 
   function startEdit() {
     const p = person();
-    ui.draft = { number: p.employeeNumber, name: p.name, roles: [...p.roles], team: p.team || "", homeLineId: p.homeLineId || "" };
+    ui.draft = { number: p.employeeNumber, name: p.name, roles: [...p.roles], team: p.team || "", shift: p.shift || "", homeLineId: p.homeLineId || "" };
     show("edit");
   }
 
@@ -176,7 +177,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
           : spinner("Loading roles…")];
 
     // Read at save time (the inputs update the draft as you type).
-    const fields = () => ({ name: d.name, roles: d.roles, team: d.team || null, homeLineId: d.homeLineId || null });
+    const fields = () => ({ name: d.name, roles: d.roles, team: d.team || null, shift: d.shift || null, homeLineId: d.homeLineId || null });
     // `again` = add this person and keep the form open for the next one.
     async function save(e, again = false) {
       e?.preventDefault();
@@ -190,7 +191,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
       if (again) {
         ui.justAdded.unshift({ name: d.name.trim(), number: r.employeeNumber, pin: r.tempPin });
         toast(`${d.name.trim()} added — #${r.employeeNumber}`);
-        startAdd({ roles: d.roles, team: d.team, homeLineId: d.homeLineId });
+        startAdd({ roles: d.roles, team: d.team, shift: d.shift, homeLineId: d.homeLineId });
         document.getElementById("f-name")?.focus();
         return;
       }
@@ -199,6 +200,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
       show("tempPin");
     }
     const teams = (data.teams || []).filter((t) => t.active !== false || t.id === d.team);
+    const shifts = (data.shifts || []).filter((t) => t.active !== false || t.id === d.shift);
     const lines = (data.lines || []).filter((l) => l.active !== false || l.id === d.homeLineId);
 
     return [
@@ -228,6 +230,10 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
         roleBoxes,
         el("label", { class: "field-label", for: "f-team" }, "Team"),
         picker({ id: "f-team", title: "Team", value: d.team, placeholder: "No team", options: [{ value: "", label: "No team" }, ...teams.map((t) => ({ value: t.id, label: `Team ${t.name}` }))], onChange: (v) => { d.team = v; render(); } }),
+        el("label", { class: "field-label", for: "f-shift" }, "Shift"),
+        shifts.length
+          ? picker({ id: "f-shift", title: "Shift", value: d.shift, placeholder: "No shift", options: [{ value: "", label: "No shift" }, ...shifts.map((t) => ({ value: t.id, label: t.name }))], onChange: (v) => { d.shift = v; render(); } })
+          : el("p", { class: "card-note" }, "No shifts yet — add them in Admin → 🕒 Shifts."),
         el("label", { class: "field-label", for: "f-home" }, "Home line"),
         picker({ id: "f-home", title: "Home line", value: d.homeLineId, placeholder: "No home line", options: [{ value: "", label: "No home line" }, ...lines.map((l) => ({ value: l.id, label: l.name }))], onChange: (v) => { d.homeLineId = v; render(); } }),
         el("button", { class: "btn", type: "submit", disabled: ui.busy }, ui.busy ? "Saving…" : existing ? "Save" : "Add and get PIN"),
@@ -296,7 +302,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
       messageBox(),
       p.locked ? el("button", { class: "btn", type: "button", onclick: () => unlock(), disabled: ui.busy }, "🔓 Unlock now") : null,
       el("button", { class: "btn secondary", type: "button", onclick: () => resetPin(), disabled: ui.busy || !p.active }, "🔑 Reset PIN"),
-      el("button", { class: "btn secondary", type: "button", onclick: startEdit, disabled: ui.busy }, "✎ Edit name, roles, team, home line"),
+      el("button", { class: "btn secondary", type: "button", onclick: startEdit, disabled: ui.busy }, "✎ Edit name, roles, team, shift, home line"),
       isMe
         ? null
         : el(

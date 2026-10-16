@@ -13,7 +13,7 @@ import { auth, callPinLogin, callChangePin, TEST_MODE } from "./firebase.js";
 import { signInWithCustomToken, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
 import { el, friendlyError, spinner, toast, watchConnection } from "./ui.js";
 import { openAdmin } from "./admin.js";
-import { openLines, openRoles, openTeams, openMachineTypes } from "./setup.js";
+import { openLines, openRoles, openTeams, openShifts, openMachineTypes } from "./setup.js";
 import { openFixLibrary } from "./fixlib.js";
 import { startData, stopData, data, onDataChange } from "./data.js";
 import { openIssueBoard, openReportForm } from "./issues.js";
@@ -444,6 +444,7 @@ function renderAdminMenu() {
     el("button", { class: "btn", type: "button", onclick: () => openModule(openLines) }, "🏭 Lines & machines"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openMachineTypes) }, "🔩 Machine types"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openTeams) }, "🅰 Teams"),
+    el("button", { class: "btn", type: "button", onclick: () => openModule(openShifts) }, "🕒 Shifts"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openRoles) }, "🏷 Roles"),
     el("button", { class: "btn", type: "button", onclick: () => openModule((c, o) => openChecklistAdmin(c, { ...o, me: me() })) }, "📋 Checklists"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openRequestTypesAdmin) }, "🙋 Request types & routing"),

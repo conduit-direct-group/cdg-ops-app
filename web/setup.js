@@ -5,7 +5,7 @@
 
 import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, picker } from "./ui.js";
 import { data, onDataChange, lineName } from "./data.js";
-import { callAdminSaveLine, callAdminSaveMachine, callAdminSaveRole, callAdminSaveTeam, callAdminSaveMachineType } from "./firebase.js";
+import { callAdminSaveLine, callAdminSaveMachine, callAdminSaveRole, callAdminSaveTeam, callAdminSaveShift, callAdminSaveMachineType } from "./firebase.js";
 
 // The starting roles from the plan (§5). Ids are permanent; names can be edited later.
 const STARTING_ROLES = [
@@ -607,6 +607,19 @@ export function openTeams(container, { onExit }) {
       hint: "Crews (A, B, C, D). Each person can be on one team — set it in People.",
       items: () => data.teams, save: callAdminSaveTeam, rename: true,
       starters: () => STARTING_TEAMS, startersTitle: "Add teams A, B, C, D",
+      retireText: "It can't be given to anyone new. People on it stay on it until you edit them.",
+    },
+  });
+}
+
+export function openShifts(container, { onExit }) {
+  return openNamedList(container, {
+    onExit,
+    cfg: {
+      title: "Shifts", noun: "shift", a: "a shift", plural: "shifts", nameLabel: "Shift name (e.g. Days, Nights, 1st)",
+      hint: "The shifts people work. Each person can be on one shift — set it in People.",
+      items: () => data.shifts, save: callAdminSaveShift, rename: true,
+      starters: () => [], startersTitle: "",
       retireText: "It can't be given to anyone new. People on it stay on it until you edit them.",
     },
   });
