@@ -117,7 +117,7 @@ export function openNeedSomething(container, { me, onExit, onMaintenance, onSent
     render();
     try {
       const { data: r } = await callSubmitRequest({ typeId: d.typeId, description: d.description, lineId: d.lineId || null, place: d.place, photos: d.photos });
-      onSent(r.test ? "Test request sent — only you get the notification" : `Sent to ${r.recipients} ${r.recipients === 1 ? "person" : "people"}`);
+      onSent(r.test ? "Test request sent — only you get the notification" : r.backup ? "Sent to the Admins (no one is set up for this yet)" : `Sent to ${r.recipients} ${r.recipients === 1 ? "person" : "people"}`);
     } catch (err) {
       Object.assign(ui, { busy: false, message: friendlyError(err), messageKind: "error", retry: send });
       render();
@@ -220,6 +220,7 @@ export function openRequest(container, { me, id, onExit }) {
         el("h1", { class: "fix-title" }, `${r.icon || "💬"} ${r.typeName}`),
         el("p", { class: "hint" }, r.test ? "TEST request — test site only" : `Request · ${ago(toDate(r.createdAt))}`),
         r.urgent && r.status !== "done" ? el("p", { class: "message error" }, "⚠ Urgent") : null,
+        r.routedToBackup ? el("p", { class: "message" }, "Sent to the Admins as a backup — no one was set up for this kind of request yet.") : null,
         banner(ui),
         el("div", { class: "fix-body" }, r.description),
         (r.photos || []).length ? el("div", { class: "fix-media" }, r.photos.map((u, n) => el("a", { href: u, target: "_blank", rel: "noopener" }, el("img", { class: "fix-photo", src: u, alt: `Photo ${n + 1}`, loading: "lazy" })))) : null,
@@ -278,6 +279,8 @@ export function openRequestTypesAdmin(container, { onExit }) {
   );
   const roleName = (id) => data.roles?.find((r) => r.id === id)?.name || id;
   const personName = (emp) => ui.people?.find((p) => p.employeeNumber === emp)?.name || `#${emp}`;
+  // Does this routing reach at least one person who is on right now?
+  const reaches = (t) => (ui.people || []).some((p) => (t.routePeople || []).includes(p.employeeNumber) || p.roles.some((r) => (t.routeRoles || []).includes(r)));
   const routeText = (t) => [...(t.routeRoles || []).map(roleName), ...(t.routePeople || []).map(personName)].join(", ") || "—";
 
   function renderList() {
@@ -299,6 +302,7 @@ export function openRequestTypesAdmin(container, { onExit }) {
           el("span", { class: "tags" },
             t.urgent ? el("span", { class: "tag off" }, "⚠ Urgent") : null,
             t.needsRouting ? el("span", { class: "tag warn" }, "Pick who handles this") : null,
+            ui.people && !reaches(t) ? el("span", { class: "tag warn" }, "Reaches no one now — goes to Admins") : null,
             t.active === false ? el("span", { class: "tag off" }, "Retired") : null)))),
       el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: () => edit(null) }, "+ Add a request type"),
       list.length < 5 ? el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: start }, "Add the starting types") : null,

@@ -61,6 +61,14 @@ function recipientsFor(type, employees) {
   return [...new Set([...byRole, ...named])].sort();
 }
 
+// Backup: if the routing reaches nobody right now (e.g. no one has the role yet), the request goes to
+// the Admins instead, so nothing sits unseen. Returns { recipients, backup }.
+function withBackup(recipients, employees) {
+  if (recipients.length) return { recipients, backup: false };
+  const admins = employees.filter((e) => e.active !== false && (e.roles || []).includes("admin")).map((e) => e.id).sort();
+  return { recipients: admins, backup: true };
+}
+
 // Who may move a request along: the people it was sent to, and admins.
 function canWork(request, employeeNumber, roles) {
   return (request.recipients || []).includes(employeeNumber) || (roles || []).includes("admin");
@@ -74,4 +82,4 @@ function canMove(from, to) {
   return from === "done" && to === "open";
 }
 
-module.exports = { STATUSES, STARTING_TYPES, startingType, cleanRequest, cleanType, recipientsFor, canWork, canMove };
+module.exports = { STATUSES, STARTING_TYPES, startingType, cleanRequest, cleanType, recipientsFor, withBackup, canWork, canMove };

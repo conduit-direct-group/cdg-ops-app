@@ -1533,23 +1533,24 @@ exports.submitRequest = onCall(async (req) => {
     if (!line.exists) throw new HttpsError("invalid-argument", "Pick a line from the list.");
     lineName = line.get("name");
   }
-  const recipients = requestsLib.recipientsFor(type, await activeEmployees());
+  const everyone = await activeEmployees();
+  const { recipients, backup } = requestsLib.withBackup(requestsLib.recipientsFor(type, everyone), everyone);
   const now = FieldValue.serverTimestamp();
   const ref = col("requests", test).doc();
   await ref.set({
     ...request, typeName: type.name, icon: type.icon || "💬", urgent: type.urgent === true, lineName,
-    status: "open", recipients, createdBy: me.employeeNumber, createdByName: me.name, createdAt: now, updatedAt: now,
+    status: "open", recipients, routedToBackup: backup, createdBy: me.employeeNumber, createdByName: me.name, createdAt: now, updatedAt: now,
     history: [{ status: "open", by: me.employeeNumber, byName: me.name, at: new Date() }],
     ...(test ? { test: true } : {}),
   });
   const where = [lineName, request.place].filter(Boolean).join(" · ");
   const sent = await pushTo(test ? [me.employeeNumber] : recipients.filter((e) => e !== me.employeeNumber), {
-    title: `${test ? "[TEST] " : ""}${type.urgent ? "⚠ URGENT · " : ""}${type.icon || ""} ${type.name}`.trim(),
+    title: `${test ? "[TEST] " : ""}${type.urgent ? "⚠ URGENT · " : ""}${type.icon || ""} ${type.name}${backup ? " (no one assigned — sent to Admins)" : ""}`.trim(),
     body: `${me.name}${where ? ` (${where})` : ""}: ${request.description}`,
     url: `/?req=${ref.id}`,
     urgent: type.urgent === true,
   });
-  return { id: ref.id, recipients: recipients.length, pushed: sent, test };
+  return { id: ref.id, recipients: recipients.length, backup, pushed: sent, test };
 });
 
 const STATUS_WORDS = { open: "Open", "in-progress": "In progress", done: "Done" };

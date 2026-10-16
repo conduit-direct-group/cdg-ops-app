@@ -55,3 +55,9 @@ test("who can move a request, and which way", () => {
   assert.strictEqual(r.canMove("done", "open"), true);
   assert.strictEqual(r.canMove("open", "open"), false);
 });
+
+test("routing that reaches nobody goes to the Admins as a backup", () => {
+  assert.deepStrictEqual(r.withBackup(["2001"], people), { recipients: ["2001"], backup: false });
+  assert.deepStrictEqual(r.withBackup([], people), { recipients: ["1001"], backup: true });
+  assert.deepStrictEqual(r.withBackup(r.recipientsFor({ routeRoles: ["shipping"] }, people), people), { recipients: ["1001"], backup: true });
+});
