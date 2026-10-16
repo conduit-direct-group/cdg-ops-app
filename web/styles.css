@@ -298,7 +298,7 @@ details.more summary { display: flex; align-items: center; min-height: var(--tap
   font-family: inherit;
   font-size: var(--text-body);
   font-weight: bold;
-  overflow-wrap: anywhere; /* long names like "Loader/Receiver/Mixer" wrap instead of spilling */
+  overflow-wrap: break-word; /* only breaks a word if nothing else fits (slashes get break points in ui.js) */
   cursor: pointer;
   touch-action: manipulation;
   transition: background var(--fast), border-color var(--fast), transform var(--fast);

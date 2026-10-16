@@ -2,7 +2,7 @@
 // Odoo maintenance request, the board shows every open breakdown in Odoo (synced every 5 minutes),
 // and Mark fixed (Maintenance, Admin) moves the Odoo request to Repaired.
 
-import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet } from "./ui.js";
+import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, breakable } from "./ui.js";
 import { data, onDataChange, lineName } from "./data.js";
 import { storage, callReportProblem, callMarkIssueFixed, callAdminSyncOdoo } from "./firebase.js";
 import { ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-storage.js";
@@ -222,7 +222,7 @@ export function openReportForm(container, { me, onExit, onDone, machineTypes = n
   }
 
   const choice = (selected, label, onclick, extra = "") =>
-    el("button", { class: `choice${selected ? " on" : ""}${extra}`, type: "button", onclick, disabled: ui.busy }, label);
+    el("button", { class: `choice${selected ? " on" : ""}${extra}`, type: "button", onclick, disabled: ui.busy }, breakable(label));
 
   function render() {
     if (ui.sent) {

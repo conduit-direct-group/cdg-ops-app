@@ -2,7 +2,7 @@
 // Approved fixes come live from the database (data.js). Every change goes through the server
 // (submitFix, reviewFix, retireFix, voteFix), which checks the person's live role.
 
-import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet } from "./ui.js";
+import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, breakable } from "./ui.js";
 import { data, onDataChange, lineName } from "./data.js";
 import {
   db, storage, callSubmitFix, callReviewFix, callRetireFix, callVoteFix, callAdminImportOldLibrary,
@@ -147,7 +147,7 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
     const counts = new Map();
     for (const f of data.fixes) counts.set(f.categoryId, (counts.get(f.categoryId) || 0) + 1);
     const chip = (id, label) =>
-      el("button", { class: ui.category === id ? "chip on" : "chip", type: "button", onclick: () => { ui.category = id; render(); } }, label);
+      el("button", { class: ui.category === id ? "chip on" : "chip", type: "button", onclick: () => { ui.category = id; render(); } }, breakable(label));
 
     // Search box keeps its place while typing: only the results redraw.
     const results = el("div", { class: "person-list" });

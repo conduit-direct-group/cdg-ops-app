@@ -17,6 +17,11 @@ export function el(tag, props = {}, ...children) {
   return node;
 }
 
+// Lets long names like "Loader/Receiver/Mixer" wrap after a slash instead of mid-word.
+export function breakable(text) {
+  return String(text).replace(/\//g, "/​");
+}
+
 // Turns server and network errors into plain words.
 export function friendlyError(err) {
   const code = err?.code || "";
