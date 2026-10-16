@@ -179,8 +179,8 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, st
     return el("a", { class: "mr-banner", href: MAINTENANCE_FORM_URL, target: "_blank", rel: "noopener" }, label);
   }
 
-  // Overdue checklists, at the top and never hidden.
-  const overdue = () => overdueBanner((id) => onChecklist && onChecklist(id));
+  // Overdue checklists, at the top and never hidden (on a machine's page: that machine's).
+  const overdue = (m = null) => overdueBanner((id) => onChecklist && onChecklist(id), m);
 
   // Attachment filters (photos, videos, documents, needs video) — tucked under "More filters".
   function attachFilters() {
@@ -316,7 +316,7 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, st
       back("Fix Library", () => { ui.machineId = null; show("list"); }),
       el("h1", { class: "fix-title" }, breakable(m.name)),
       el("p", { class: "hint" }, [m.id, m.lineId ? lineName(m.lineId) : "Plant / other", m.type].filter(Boolean).join(" · ")),
-      overdue(),
+      overdue(m),
       maintenanceBanner(m),
       messageBox(),
       el(
@@ -784,7 +784,9 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, st
   function defaultCategory() {
     if (!["none", "pending"].includes(ui.category)) return ui.category;
     const m = ui.view === "machine" ? machine() : null;
-    return m ? categories().find((c) => (c.machineTypes || []).includes(m.type))?.id || "" : "";
+    if (!m) return "";
+    const fits = categories().filter((c) => (c.machineTypes || []).includes(m.type));
+    return (fits.find((c) => c.name.toLowerCase() === String(m.type).toLowerCase()) || fits[0])?.id || "";
   }
 
   function startForm(existing) {

@@ -95,8 +95,10 @@ export function statusTag(s) {
 }
 
 // Red banner listing every overdue checklist (one big button each). Null when nothing is overdue.
-export function overdueBanner(onOpen) {
-  const late = overdueUnits();
+// `machine` (optional) limits it to that machine's checklists (its page in the Fix Library).
+export function overdueBanner(onOpen, machine = null) {
+  const mine = machine ? new Set(unitsForMachine(machine).map((u) => u.id)) : null;
+  const late = overdueUnits().filter((u) => !mine || mine.has(u.id));
   if (!late.length) return null;
   return el(
     "div",
@@ -222,7 +224,7 @@ export function openChecklist(container, { me, unitId: id, onExit }) {
         })
       ),
       el("p", { class: "hint" }, `Signed as you${TEST_MODE ? " — test site, practice only" : ""}.`),
-      el("button", { class: "btn big", type: "button", disabled: ui.busy || !ui.checked.size, onclick: submit }, ui.busy ? "Saving…" : `✔ Sign off ${ui.checked.size || ""} item${ui.checked.size === 1 ? "" : "s"}`),
+      el("button", { class: "btn big", type: "button", disabled: ui.busy || !ui.checked.size, onclick: submit }, ui.busy ? "Saving…" : ui.checked.size ? `✔ Sign off ${ui.checked.size} item${ui.checked.size === 1 ? "" : "s"}` : "✔ Sign off"),
     ];
   }
 
