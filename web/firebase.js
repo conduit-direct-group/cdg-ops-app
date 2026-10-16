@@ -32,25 +32,34 @@ export const db = initializeFirestore(app, {
 export const storage = getStorage(app);
 
 const functions = getFunctions(app, "us-central1");
-export const callPinLogin = httpsCallable(functions, "pinLogin");
-export const callChangePin = httpsCallable(functions, "changePin");
-export const callAdminListEmployees = httpsCallable(functions, "adminListEmployees");
-export const callAdminCreateEmployee = httpsCallable(functions, "adminCreateEmployee");
-export const callAdminResetPin = httpsCallable(functions, "adminResetPin");
-export const callAdminUnlock = httpsCallable(functions, "adminUnlock");
-export const callAdminUpdateEmployee = httpsCallable(functions, "adminUpdateEmployee");
-export const callAdminSaveRole = httpsCallable(functions, "adminSaveRole");
-export const callAdminSaveLine = httpsCallable(functions, "adminSaveLine");
-export const callAdminSaveMachine = httpsCallable(functions, "adminSaveMachine");
-export const callSubmitFix = httpsCallable(functions, "submitFix");
-export const callReviewFix = httpsCallable(functions, "reviewFix");
-export const callRetireFix = httpsCallable(functions, "retireFix");
-export const callVoteFix = httpsCallable(functions, "voteFix");
-export const callLogSearchGap = httpsCallable(functions, "logSearchGap");
-export const callAdminMarkSearchGap = httpsCallable(functions, "adminMarkSearchGap");
-export const callAdminBulkAddFixes = httpsCallable(functions, "adminBulkAddFixes");
-export const callReportProblem = httpsCallable(functions, "reportProblem");
-export const callMarkIssueFixed = httpsCallable(functions, "markIssueFixed");
-export const callAdminSyncOdoo = httpsCallable(functions, "adminSyncOdoo", { timeout: 120000 });
+
+// Every save goes through one of these. While offline they stop right away with a plain message
+// (code "offline") instead of hanging — the red Offline bar explains why (Plan: save-later comes with checklists).
+function call(name, options) {
+  const fn = httpsCallable(functions, name, options);
+  return (data) =>
+    navigator.onLine ? fn(data) : Promise.reject(Object.assign(new Error("You're offline."), { code: "offline" }));
+}
+
+export const callPinLogin = call("pinLogin");
+export const callChangePin = call("changePin");
+export const callAdminListEmployees = call("adminListEmployees");
+export const callAdminCreateEmployee = call("adminCreateEmployee");
+export const callAdminResetPin = call("adminResetPin");
+export const callAdminUnlock = call("adminUnlock");
+export const callAdminUpdateEmployee = call("adminUpdateEmployee");
+export const callAdminSaveRole = call("adminSaveRole");
+export const callAdminSaveLine = call("adminSaveLine");
+export const callAdminSaveMachine = call("adminSaveMachine");
+export const callSubmitFix = call("submitFix");
+export const callReviewFix = call("reviewFix");
+export const callRetireFix = call("retireFix");
+export const callVoteFix = call("voteFix");
+export const callLogSearchGap = call("logSearchGap");
+export const callAdminMarkSearchGap = call("adminMarkSearchGap");
+export const callAdminBulkAddFixes = call("adminBulkAddFixes");
+export const callReportProblem = call("reportProblem");
+export const callMarkIssueFixed = call("markIssueFixed");
+export const callAdminSyncOdoo = call("adminSyncOdoo", { timeout: 120000 });
 // Copying files from the old library can take a few minutes.
-export const callAdminImportOldLibrary = httpsCallable(functions, "adminImportOldLibrary", { timeout: 540000 });
+export const callAdminImportOldLibrary = call("adminImportOldLibrary", { timeout: 540000 });

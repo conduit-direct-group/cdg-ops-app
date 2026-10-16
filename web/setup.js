@@ -3,7 +3,7 @@
 // checks it, records it in the audit log, and only lets admins do it.
 // Nothing is deleted — lines, machines, and roles are retired so history never points at nothing.
 
-import { el, friendlyError } from "./ui.js";
+import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet } from "./ui.js";
 import { data, onDataChange, lineName } from "./data.js";
 import { callAdminSaveLine, callAdminSaveMachine, callAdminSaveRole } from "./firebase.js";
 
@@ -18,23 +18,24 @@ const STARTING_ROLES = [
 
 // Shared bits for both screens: busy/message state, a server-call wrapper, and redraw on live changes.
 function screenKit(container, render, isEditing) {
-  const kit = { busy: false, message: "", messageKind: "" };
-  kit.say = (message = "", messageKind = "") => Object.assign(kit, { message, messageKind });
-  kit.messageBox = () =>
-    kit.message
-      ? el("p", { class: `message ${kit.messageKind}`, role: kit.messageKind === "error" ? "alert" : null }, kit.message)
-      : null;
+  const kit = { busy: false, message: "", messageKind: "", retry: null };
+  // Success goes to a toast; errors and notes stay on the screen.
+  kit.say = (message = "", messageKind = "") => {
+    Object.assign(kit, { message: messageKind === "ok" ? "" : message, messageKind, retry: null });
+    if (messageKind === "ok" && message) toast(message);
+  };
+  kit.messageBox = () => banner(kit);
   kit.back = (label, onclick) => el("button", { class: "link-btn", type: "button", onclick, disabled: kit.busy }, `← ${label}`);
-  // Runs a server call. Returns its data, or null after showing the error.
-  kit.act = async (fn) => {
-    Object.assign(kit, { busy: true, message: "", messageKind: "" });
+  // Runs a server call. Returns its data, or null after showing the error. `again` = what "Try again" runs.
+  kit.act = async (fn, again = null) => {
+    Object.assign(kit, { busy: true, message: "", messageKind: "", retry: null });
     render();
     try {
       const { data: result } = await fn();
       kit.busy = false;
       return result;
     } catch (err) {
-      Object.assign(kit, { busy: false, message: friendlyError(err), messageKind: "error" });
+      Object.assign(kit, { busy: false, message: friendlyError(err), messageKind: "error", retry: again });
       render();
       return null;
     }
@@ -46,7 +47,7 @@ function screenKit(container, render, isEditing) {
 }
 
 function loading() {
-  return el("p", { class: "hint" }, "Loading…");
+  return spinner();
 }
 
 function retiredTag(record) {
@@ -124,7 +125,7 @@ export function openLines(container, { onExit }) {
       el("p", { class: "hint" }, `${data.lines.filter((l) => l.active !== false).length} lines · ${data.machines.filter((m) => m.active !== false).length} machines`),
       kit.messageBox(),
       el("button", { class: "btn", type: "button", onclick: () => startLineForm(null) }, "+ Add a line"),
-      el("button", { class: "btn secondary", type: "button", onclick: startImport }, "Paste a list of machines (e.g. from Odoo)"),
+      el("button", { class: "btn secondary", type: "button", onclick: startImport }, "📋 Paste a list of machines (e.g. from Odoo)"),
       el(
         "div",
         { class: "person-list" },
@@ -134,7 +135,7 @@ export function openLines(container, { onExit }) {
         }),
         spare.length ? row("Not on a line", `${spare.length} — spares, shared, or in storage`, [], () => openLine(null)) : null
       ),
-      data.lines.length === 0 ? el("div", { class: "card" }, "No lines yet. Add Line 1 to start — machines go on lines.") : null,
+      data.lines.length === 0 ? emptyState("No lines yet", "Add Line 1 to start — machines go on lines. Or paste a list of machines from Odoo and the lines are made for you.") : null,
     ];
   }
 
@@ -160,24 +161,26 @@ export function openLines(container, { onExit }) {
         { class: "person-list" },
         list.map((m) => row(`${m.id} · ${m.name}`, m.type || null, [retiredTag(m)], () => { ui.machineId = m.id; show("machine"); }))
       ),
-      list.length === 0 ? el("p", { class: "hint" }, "No machines here yet.") : null,
-      l ? el("button", { class: "btn secondary", type: "button", onclick: () => startLineForm(l), disabled: kit.busy }, "Rename line") : null,
+      list.length === 0 ? emptyState("No machines here yet", "Tap “+ Add a machine” — each one gets its permanent M-number.") : null,
+      l ? el("button", { class: "btn secondary", type: "button", onclick: () => startLineForm(l), disabled: kit.busy }, "✎ Rename line") : null,
       l
         ? el(
             "button",
             { class: l.active === false ? "btn secondary" : "btn danger", type: "button", onclick: () => setLineActive(l, l.active === false), disabled: kit.busy },
-            l.active === false ? "Bring line back" : "Retire line"
+            l.active === false ? "↺ Bring line back" : "Retire line"
           )
         : null,
     ];
   }
 
-  async function setLineActive(l, active) {
-    const question = active
-      ? `Bring ${l.name} back?`
-      : `Retire ${l.name}? It stays in history but is hidden from everyday screens. Its machines stay on it — move them first if they're going elsewhere.`;
-    if (!confirm(question)) return;
-    if (await kit.act(() => callAdminSaveLine({ id: l.id, name: l.name, active }))) show("line", active ? "Line is back." : "Line retired.", "ok");
+  async function setLineActive(l, active, askFirst = true) {
+    const ok = !askFirst || (await confirmSheet(active
+      ? { title: `Bring ${l.name} back?`, confirmLabel: "Bring it back" }
+      : { title: `Retire ${l.name}?`, text: "It stays in history but is hidden from everyday screens. Its machines stay on it — move them first if they're going elsewhere.", confirmLabel: "Retire line", danger: true }));
+    if (!ok) return;
+    if (await kit.act(() => callAdminSaveLine({ id: l.id, name: l.name, active }), () => setLineActive(l, active, false))) {
+      show("line", active ? "Line is back" : "Line retired", "ok");
+    }
   }
 
   // ---- Add / rename a line ------------------------------------------------
@@ -190,13 +193,13 @@ export function openLines(container, { onExit }) {
   function renderLineForm() {
     const d = ui.draft;
     async function save(e) {
-      e.preventDefault();
+      e?.preventDefault();
       const result = await kit.act(() =>
-        d.id ? callAdminSaveLine({ id: d.id, name: d.name }) : callAdminSaveLine({ create: true, name: d.name })
+        d.id ? callAdminSaveLine({ id: d.id, name: d.name }) : callAdminSaveLine({ create: true, name: d.name }), save
       );
       if (result) {
         ui.lineId = result.id;
-        show("line", d.id ? "Saved." : "Line added.", "ok");
+        show("line", d.id ? "Saved" : "Line added", "ok");
       }
     }
     return [
@@ -226,22 +229,25 @@ export function openLines(container, { onExit }) {
       el("p", { class: "tags center" }, retiredTag(m)),
       kit.messageBox(),
       el("div", { class: "card" }, "This ID never changes. Use it in Odoo (equipment reference) and on the machine's QR sticker."),
-      el("button", { class: "btn secondary", type: "button", onclick: () => startMachineForm(m), disabled: kit.busy }, "Edit name, type, or line"),
+      el("button", { class: "btn secondary", type: "button", onclick: () => startMachineForm(m), disabled: kit.busy }, "✎ Edit name, type, or line"),
       el(
         "button",
         { class: m.active === false ? "btn secondary" : "btn danger", type: "button", onclick: () => setMachineActive(m, m.active === false), disabled: kit.busy },
-        m.active === false ? "Bring machine back" : "Retire machine"
+        m.active === false ? "↺ Bring machine back" : "Retire machine"
       ),
     ];
   }
 
-  async function setMachineActive(m, active) {
-    const question = active
-      ? `Bring ${m.id} ${m.name} back?`
-      : `Retire ${m.id} ${m.name}? It stays in history (and keeps its ID) but is hidden from everyday screens.`;
-    if (!confirm(question)) return;
-    const ok = await kit.act(() => callAdminSaveMachine({ id: m.id, name: m.name, type: m.type || "", lineId: m.lineId || null, active }));
-    if (ok) show("machine", active ? "Machine is back." : "Machine retired.", "ok");
+  async function setMachineActive(m, active, askFirst = true) {
+    const ok = !askFirst || (await confirmSheet(active
+      ? { title: `Bring ${m.id} ${m.name} back?`, confirmLabel: "Bring it back" }
+      : { title: `Retire ${m.id} ${m.name}?`, text: "It stays in history (and keeps its ID) but is hidden from everyday screens.", confirmLabel: "Retire machine", danger: true }));
+    if (!ok) return;
+    const done = await kit.act(
+      () => callAdminSaveMachine({ id: m.id, name: m.name, type: m.type || "", lineId: m.lineId || null, active }),
+      () => setMachineActive(m, active, false)
+    );
+    if (done) show("machine", active ? "Machine is back" : "Machine retired", "ok");
   }
 
   // ---- Add / edit a machine -----------------------------------------------
@@ -259,14 +265,14 @@ export function openLines(container, { onExit }) {
     const lineChoices = (data.lines || []).filter((l) => l.active !== false || l.id === d.lineId);
 
     async function save(e) {
-      e.preventDefault();
+      e?.preventDefault();
       const payload = { name: d.name, type: d.type, lineId: d.lineId || null };
       const result = await kit.act(() =>
-        d.id ? callAdminSaveMachine({ id: d.id, ...payload }) : callAdminSaveMachine({ create: true, ...payload })
+        d.id ? callAdminSaveMachine({ id: d.id, ...payload }) : callAdminSaveMachine({ create: true, ...payload }), save
       );
       if (result) {
         ui.machineId = result.id;
-        show("machine", d.id ? "Saved." : `Added as ${result.id}.`, "ok");
+        show("machine", d.id ? "Saved" : `Added as ${result.id}`, "ok");
       }
     }
 
@@ -309,7 +315,7 @@ export function openLines(container, { onExit }) {
 
   function previewList() {
     const rows = previewRows();
-    if (!rows.length) return [el("p", { class: "hint" }, "Paste names above — one machine per line.")];
+    if (!rows.length) return [emptyState("Nothing to add yet", "Paste names above — one machine per line.")];
     const adding = rows.filter((r) => !r.skip);
     const newLines = [...new Set(adding.filter((r) => r.newLine).map((r) => r.lineLabel))];
     return [
@@ -355,14 +361,16 @@ export function openLines(container, { onExit }) {
         done++;
       }
       return { data: true };
-    });
+    }, runImport);
     ui.progress = "";
     if (result) {
       ui.importText = "";
-      show("lines", `Added ${done} machines.`, "ok");
+      show("lines", `Added ${done} machines`, "ok");
     } else if (done) {
       // Stopped part-way: the rest can be added by pasting again — what's already in is skipped.
-      kit.say(`${kit.message} ${done} were added before it stopped. Paste again to add the rest — ones already in are skipped.`, "error");
+      const why = kit.message;
+      kit.say(`${why} ${done} were added before it stopped. Tap Try again to add the rest — ones already in are skipped.`, "error");
+      kit.retry = runImport;
       render();
     }
   }
@@ -381,11 +389,11 @@ export function openLines(container, { onExit }) {
       el("h1", {}, "Paste a list of machines"),
       el("p", { class: "hint" }, "One machine per line. \"L2-Puller\" goes on Line 2 as \"Puller\"; names without L1-, L2-… are added as Not on a line. Each gets the next M-number."),
       kit.messageBox(),
-      ui.progress ? el("p", { class: "message ok" }, ui.progress) : null,
+      ui.progress ? spinner(ui.progress) : null,
       el("label", { class: "field-label", for: "f-paste" }, "Machine names"),
       box,
       preview,
-      el("button", { class: "btn", type: "button", onclick: runImport, disabled: kit.busy }, kit.busy ? "Adding…" : "Add all"),
+      el("button", { class: "btn", type: "button", onclick: runImport, disabled: kit.busy }, kit.busy ? "Adding…" : "+ Add all"),
     ];
   }
 
@@ -423,8 +431,8 @@ export function openRoles(container, { onExit }) {
     const ok = await kit.act(async () => {
       for (const [id, name] of missing) await callAdminSaveRole({ create: true, id, name });
       return { data: true };
-    });
-    if (ok) show("list", "Starting roles added.", "ok");
+    }, addStartingRoles);
+    if (ok) show("list", "Starting roles added", "ok");
   }
 
   function renderList() {
@@ -442,7 +450,7 @@ export function openRoles(container, { onExit }) {
             { class: "card" },
             el("strong", {}, "Add the starting roles"),
             el("p", { class: "card-note" }, STARTING_ROLES.map(([, name]) => name).join(" · ")),
-            el("button", { class: "btn", type: "button", onclick: addStartingRoles, disabled: kit.busy }, kit.busy ? "Adding…" : "Add the starting roles")
+            el("button", { class: "btn", type: "button", onclick: addStartingRoles, disabled: kit.busy }, kit.busy ? "Adding…" : "+ Add the starting roles")
           )
         : null,
       el("button", { class: "btn secondary", type: "button", onclick: () => startForm(null), disabled: kit.busy }, "+ Add a role"),
@@ -462,23 +470,25 @@ export function openRoles(container, { onExit }) {
       el("h1", {}, r.name),
       el("p", { class: "tags center" }, retiredTag(r)),
       kit.messageBox(),
-      el("button", { class: "btn secondary", type: "button", onclick: () => startForm(r), disabled: kit.busy }, "Rename role"),
+      el("button", { class: "btn secondary", type: "button", onclick: () => startForm(r), disabled: kit.busy }, "✎ Rename role"),
       r.id === "admin"
         ? el("p", { class: "hint" }, "The Admin role can't be retired — someone has to be able to run the app.")
         : el(
             "button",
             { class: r.active === false ? "btn secondary" : "btn danger", type: "button", onclick: () => setActive(r, r.active === false), disabled: kit.busy },
-            r.active === false ? "Bring role back" : "Retire role"
+            r.active === false ? "↺ Bring role back" : "Retire role"
           ),
     ];
   }
 
-  async function setActive(r, active) {
-    const question = active
-      ? `Bring the ${r.name} role back?`
-      : `Retire the ${r.name} role? It can't be given to anyone new. People who already have it keep it until you edit them.`;
-    if (!confirm(question)) return;
-    if (await kit.act(() => callAdminSaveRole({ id: r.id, name: r.name, active }))) show("role", active ? "Role is back." : "Role retired.", "ok");
+  async function setActive(r, active, askFirst = true) {
+    const ok = !askFirst || (await confirmSheet(active
+      ? { title: `Bring the ${r.name} role back?`, confirmLabel: "Bring it back" }
+      : { title: `Retire the ${r.name} role?`, text: "It can't be given to anyone new. People who already have it keep it until you edit them.", confirmLabel: "Retire role", danger: true }));
+    if (!ok) return;
+    if (await kit.act(() => callAdminSaveRole({ id: r.id, name: r.name, active }), () => setActive(r, active, false))) {
+      show("role", active ? "Role is back" : "Role retired", "ok");
+    }
   }
 
   function startForm(existing) {
@@ -489,13 +499,13 @@ export function openRoles(container, { onExit }) {
   function renderForm() {
     const d = ui.draft;
     async function save(e) {
-      e.preventDefault();
+      e?.preventDefault();
       const result = await kit.act(() =>
-        d.id ? callAdminSaveRole({ id: d.id, name: d.name }) : callAdminSaveRole({ create: true, name: d.name })
+        d.id ? callAdminSaveRole({ id: d.id, name: d.name }) : callAdminSaveRole({ create: true, name: d.name }), save
       );
       if (result) {
         ui.roleId = result.id;
-        show("role", d.id ? "Saved." : "Role added.", "ok");
+        show("role", d.id ? "Saved" : "Role added", "ok");
       }
     }
     return [

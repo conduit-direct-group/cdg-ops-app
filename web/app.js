@@ -11,7 +11,7 @@
 
 import { auth, callPinLogin, callChangePin } from "./firebase.js";
 import { signInWithCustomToken, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
-import { el, friendlyError } from "./ui.js";
+import { el, friendlyError, spinner, toast, watchConnection } from "./ui.js";
 import { openAdmin } from "./admin.js";
 import { openLines, openRoles } from "./setup.js";
 import { openFixLibrary } from "./fixlib.js";
@@ -20,6 +20,7 @@ import { openIssueBoard, openReportForm } from "./issues.js";
 
 const screen = document.getElementById("screen");
 const deviceBadge = document.getElementById("device-badge");
+watchConnection(document.getElementById("offline-banner"));
 
 const IDLE_LIMIT_MS = 5 * 60 * 1000;
 const LINE_TABLET_KEY = "cdg.lineTablet";
@@ -92,6 +93,7 @@ function toggleLineTablet() {
   store(LINE_TABLET_KEY, isLineTablet() ? null : "yes");
   noteActivity();
   render();
+  toast(isLineTablet() ? "This device is now a line tablet" : "This device is now a personal device");
 }
 
 // ---------------------------------------------------------------------------
@@ -164,8 +166,11 @@ function keypad() {
   return el("div", { class: "keypad" }, keys, back, zero, right);
 }
 
+// Sign-in screens: errors and notes in a banner (the keypad is the "try again").
 function messageBox() {
-  return el("p", { class: `message ${state.messageKind}`, role: state.messageKind === "error" ? "alert" : null }, state.message);
+  return state.message
+    ? el("p", { class: `message ${state.messageKind}`, role: state.messageKind === "error" ? "alert" : null }, state.message)
+    : null;
 }
 
 function renderEmployee() {
@@ -211,19 +216,20 @@ function renderPinStep() {
 
 function renderHome() {
   const name = state.user?.displayName || "there";
-  const roles = (state.claims.roles || []).join(", ");
+  // Role names from the Roles list ("Production Lead / Supervisor"), not internal ids ("lead").
+  const roleNames = new Map((data.roles || []).map((r) => [r.id, r.name]));
+  const roles = (state.claims.roles || []).map((r) => roleNames.get(r) || r).join(", ");
   return [
     el("h1", {}, `Hi, ${name}`),
     roles ? el("p", { class: "roles" }, `Employee ${state.claims.emp} · ${roles}`) : null,
     messageBox(),
-    el("button", { class: "btn big danger-fill", type: "button", onclick: () => openReport() }, "🚨 Report a problem"),
+    el("button", { class: "btn big danger", type: "button", onclick: () => openReport() }, "🚨 Report a problem"),
     issuesButton(),
     el("button", { class: "btn big", type: "button", onclick: () => openFixes() }, "🔧 Fix Library"),
-    el("div", { class: "card" }, "Your daily screen — what's due, what's new, and what needs your signature — is coming next."),
-    isAdmin() ? el("button", { class: "btn secondary", type: "button", onclick: () => go("adminMenu") }, "Admin") : null,
+    isAdmin() ? el("button", { class: "btn secondary", type: "button", onclick: () => go("adminMenu") }, "⚙ Admin") : null,
     installCard(),
     deviceCard(),
-    el("button", { class: "btn secondary", type: "button", onclick: () => signOut(auth) }, "Sign out"),
+    el("button", { class: "btn secondary", type: "button", onclick: () => signOut(auth) }, "↪ Sign out"),
   ];
 }
 
@@ -349,9 +355,9 @@ function renderAdminMenu() {
   return [
     el("button", { class: "link-btn", type: "button", onclick: () => go("home") }, "← Home"),
     el("h1", {}, "Admin"),
-    el("button", { class: "btn", type: "button", onclick: () => openModule(openAdmin) }, "People"),
-    el("button", { class: "btn", type: "button", onclick: () => openModule(openLines) }, "Lines & machines"),
-    el("button", { class: "btn", type: "button", onclick: () => openModule(openRoles) }, "Roles"),
+    el("button", { class: "btn", type: "button", onclick: () => openModule(openAdmin) }, "👥 People"),
+    el("button", { class: "btn", type: "button", onclick: () => openModule(openLines) }, "🏭 Lines & machines"),
+    el("button", { class: "btn", type: "button", onclick: () => openModule(openRoles) }, "🏷 Roles"),
   ];
 }
 
@@ -387,7 +393,7 @@ function render() {
   screen.dataset.width = NARROW_STEPS.includes(state.step) ? "narrow" : "wide";
   if (state.step === "admin") return; // admin.js draws its own screens
   let content;
-  if (state.step === "loading") content = [el("p", { class: "loading" }, "Loading…")];
+  if (state.step === "loading") content = [el("div", { class: "loading-screen" }, spinner())];
   else if (state.step === "employee") content = renderEmployee();
   else if (state.step === "home") content = renderHome();
   else if (state.step === "adminMenu") content = renderAdminMenu();
@@ -450,7 +456,8 @@ async function submit() {
       await loadClaims();
       startData(me()); // the database only answers once the PIN is no longer temporary
       Object.assign(state, { knownPin: "", newPin: "", busy: false });
-      go("home", "Your PIN is set. Use it from now on.", "ok");
+      go("home");
+      toast("Your PIN is set. Use it from now on.");
     } catch (err) {
       const message = friendlyError(err);
       state.newPin = "";

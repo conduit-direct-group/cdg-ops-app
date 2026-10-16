@@ -22,9 +22,10 @@
     </span>
     <span id="device-badge" class="badge" hidden>Line tablet</span>
   </header>
-  <main id="screen" aria-live="polite">
-    <p class="loading">Loading…</p>
+  <div id="offline-banner" class="offline-banner" role="status" hidden>📡 Offline — you can look things up; saving waits until you're back online</div>
+  <main id="screen" aria-live="polite" data-width="narrow">
+    <div class="loading-screen"><div class="spinner-row" role="status"><span class="spinner" aria-hidden="true"></span>Loading…</div></div>
   </main>
-  <noscript><p class="loading">This app needs JavaScript turned on.</p></noscript>
+  <noscript><p class="hint">This app needs JavaScript turned on.</p></noscript>
 </body>
 </html>

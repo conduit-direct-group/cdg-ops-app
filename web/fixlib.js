@@ -2,7 +2,7 @@
 // Approved fixes come live from the database (data.js). Every change goes through the server
 // (submitFix, reviewFix, retireFix, voteFix), which checks the person's live role.
 
-import { el, friendlyError } from "./ui.js";
+import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet } from "./ui.js";
 import { data, onDataChange, lineName } from "./data.js";
 import {
   db, storage, callSubmitFix, callReviewFix, callRetireFix, callVoteFix, callAdminImportOldLibrary,
@@ -79,29 +79,31 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
 
   // ---- helpers ------------------------------------------------------------
 
+  // Success goes to a toast; errors and notes stay on the screen.
   function show(view, message = "", kind = "") {
-    Object.assign(ui, { view, message, messageKind: kind, busy: false });
+    Object.assign(ui, { view, busy: false, retry: null, message: kind === "ok" ? "" : message, messageKind: kind });
     render();
     container.scrollTop = 0;
     window.scrollTo(0, 0);
+    if (kind === "ok" && message) toast(message);
   }
 
-  async function act(fn) {
-    Object.assign(ui, { busy: true, message: "", messageKind: "" });
+  // Runs a server call. Returns its data, or null after showing the error. `again` = what "Try again" runs.
+  async function act(fn, again = null) {
+    Object.assign(ui, { busy: true, message: "", messageKind: "", retry: null });
     render();
     try {
       const { data: result } = await fn();
       ui.busy = false;
       return result;
     } catch (err) {
-      Object.assign(ui, { busy: false, message: friendlyError(err), messageKind: "error" });
+      Object.assign(ui, { busy: false, message: friendlyError(err), messageKind: "error", retry: again });
       render();
       return null;
     }
   }
 
-  const messageBox = () =>
-    ui.message ? el("p", { class: `message ${ui.messageKind}`, role: ui.messageKind === "error" ? "alert" : null }, ui.message) : null;
+  const messageBox = () => banner(ui);
   const back = (label, onclick) => el("button", { class: "link-btn", type: "button", onclick, disabled: ui.busy }, `← ${label}`);
 
   const categories = () => (data.fixCategories || []).filter((c) => c.active !== false);
@@ -134,7 +136,7 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
   // ---- library list -------------------------------------------------------
 
   function renderList() {
-    if (!data.fixes || !data.fixCategories) return [back("Home", onExit), el("h1", {}, "Fix Library"), el("p", { class: "hint" }, "Loading…")];
+    if (!data.fixes || !data.fixCategories) return [back("Home", onExit), el("h1", {}, "Fix Library"), spinner("Loading fixes…")];
 
     // A category from a link/QR code may be a name ("Die", "vacuum tank") rather than an id.
     if (!["all", "pending"].includes(ui.category) && !data.fixCategories.some((c) => c.id === ui.category)) {
@@ -155,7 +157,15 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
       if (ui.category !== "all" && ui.category !== "pending") l = l.filter((f) => f.categoryId === ui.category);
       if (ui.attach !== "all") l = l.filter(ATTACH_FILTERS[ui.attach].test);
       if (w.length) l = l.filter((f) => matches(f, w));
-      results.replaceChildren(...(l.length ? l.map(fixRow) : [el("p", { class: "hint" }, w.length ? "No fixes match. Try fewer or different words." : "No fixes here yet.")]));
+      results.replaceChildren(
+        ...(l.length
+          ? l.map(fixRow)
+          : [w.length
+              ? emptyState("No fixes match", "Try fewer or different words. If the fix isn't written yet, add it with “+ Add a fix”.")
+              : ui.category === "pending"
+              ? emptyState("Nothing waiting for approval", "New suggestions show up here.")
+              : emptyState("No fixes here yet", "Tap “+ Add a fix” to write the first one.")])
+      );
       if (w.length && !l.length) noteSearchGap(ui.search);
     };
 
@@ -198,9 +208,9 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
   // Without the in-app form available, falls back to the old Microsoft Form.
   function maintenanceRequestButton(machineTypes = null) {
     if (onReport) {
-      return el("button", { class: "btn secondary", type: "button", onclick: () => onReport(machineTypes && machineTypes.length ? machineTypes : null) }, "🛠 Maintenance Request");
+      return el("button", { class: "btn secondary", type: "button", onclick: () => onReport(machineTypes && machineTypes.length ? machineTypes : null) }, "🚨 Report a problem");
     }
-    return el("a", { class: "btn secondary link-as-btn", href: MAINTENANCE_FORM_URL, target: "_blank", rel: "noopener" }, "🛠 Maintenance Request");
+    return el("a", { class: "btn secondary", href: MAINTENANCE_FORM_URL, target: "_blank", rel: "noopener" }, "🚨 Report a problem");
   }
 
   // Last PM / last repair (from Odoo) and open issues for a set of machines — like the old library's panel.
@@ -259,10 +269,10 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
       "div",
       { class: "card" },
       el("strong", {}, "Admin tools"),
-      el("button", { class: "btn secondary", type: "button", onclick: () => show("gaps") }, `Searches with no results (${ui.gaps ? open : "…"})`),
-      el("button", { class: "btn secondary", type: "button", onclick: () => show("qr") }, "Print QR codes"),
-      el("button", { class: "btn secondary", type: "button", onclick: downloadCsv }, "Download all fixes (CSV)"),
-      el("button", { class: "btn secondary", type: "button", onclick: () => show("bulk") }, "Bulk add fixes"),
+      el("button", { class: "btn secondary", type: "button", onclick: () => show("gaps") }, `🔍 Searches with no results (${ui.gaps ? open : "…"})`),
+      el("button", { class: "btn secondary", type: "button", onclick: () => show("qr") }, "🖨 Print QR codes"),
+      el("button", { class: "btn secondary", type: "button", onclick: () => { downloadCsv(); toast("Downloading all fixes (CSV)"); } }, "⇩ Download all fixes (CSV)"),
+      el("button", { class: "btn secondary", type: "button", onclick: () => show("bulk") }, "📋 Bulk add fixes"),
       importCard()
     );
   }
@@ -270,14 +280,14 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
   function renderGaps() {
     const gaps = [...(ui.gaps || [])].sort((a, b) => (a.done - b.done) || ((b.lastAt?.toMillis?.() || 0) - (a.lastAt?.toMillis?.() || 0)));
     async function mark(g, done) {
-      if (await act(() => callAdminMarkSearchGap({ id: g.id, done }))) show("gaps");
+      if (await act(() => callAdminMarkSearchGap({ id: g.id, done }), () => mark(g, done))) show("gaps", done ? "Marked done" : "Back on the list", "ok");
     }
     return [
       back("Fix Library", () => show("list")),
       el("h1", {}, "Searches with no results"),
       el("p", { class: "hint" }, "What people looked for and didn't find — the fixes to write next. Tap Done once it's written."),
       messageBox(),
-      !ui.gaps ? el("p", { class: "hint" }, "Loading…") : !gaps.length ? el("p", { class: "hint" }, "None yet.") : null,
+      !ui.gaps ? spinner() : !gaps.length ? emptyState("No searches without results yet", "When someone searches and finds nothing, it shows up here.") : null,
       el(
         "div",
         { class: "import-preview" },
@@ -297,7 +307,7 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
   // One QR code per category, printable — scanning opens the app on that category (?cat=Name).
   function renderQr() {
     const list = categories().filter((c) => (data.fixes || []).some((f) => f.categoryId === c.id));
-    const grid = el("div", { class: "qr-grid" }, el("p", { class: "hint" }, "Making QR codes…"));
+    const grid = el("div", { class: "qr-grid" }, spinner("Making QR codes…"));
     loadQrLibrary().then(
       () => {
         grid.replaceChildren(
@@ -313,12 +323,12 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
           })
         );
       },
-      () => grid.replaceChildren(el("p", { class: "message error" }, "Couldn't load the QR code maker. Check Wi-Fi and try again."))
+      () => grid.replaceChildren(banner({ message: "Couldn't load the QR code maker. Check Wi-Fi and try again.", messageKind: "error", retry: () => show("qr") }))
     );
     return [
       el("div", { class: "no-print" }, back("Fix Library", () => show("list")), el("h1", {}, "QR codes"),
         el("p", { class: "hint" }, "One per category. Scanning opens CDG Ops straight to that category's fixes."),
-        el("button", { class: "btn", type: "button", onclick: () => window.print() }, "Print")),
+        el("button", { class: "btn", type: "button", onclick: () => window.print() }, "🖨 Print")),
       grid,
     ];
   }
@@ -363,14 +373,14 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
       );
     };
     drawPreview();
-    async function addAll() {
+    async function addAll(askFirst = true) {
       const items = parseBulkFixes(ui.bulkText);
       if (!items.length) return;
-      if (!confirm(`Add ${items.length} fixes? They go live right away.`)) return;
-      const r = await act(() => callAdminBulkAddFixes({ items }));
+      if (askFirst && !(await confirmSheet({ title: `Add ${items.length} fixes?`, text: "They go live right away.", confirmLabel: `Add ${items.length} fixes` }))) return;
+      const r = await act(() => callAdminBulkAddFixes({ items }), () => addAll(false));
       if (r) {
         ui.bulkText = "";
-        show("list", `Added ${r.added} fixes.${r.newCategories.length ? ` New categories: ${r.newCategories.join(", ")}.` : ""}`, "ok");
+        show("list", `Added ${r.added} fixes${r.newCategories.length ? ` · new categories: ${r.newCategories.join(", ")}` : ""}`, "ok");
       }
     }
     return [
@@ -384,12 +394,17 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
         oninput: (e) => { ui.bulkText = e.target.value; drawPreview(); },
       }),
       preview,
-      el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: addAll }, ui.busy ? "Adding…" : "Add all"),
+      el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: () => addAll() }, ui.busy ? "Adding…" : "+ Add all"),
     ];
   }
 
   function fixRow(f) {
-    const icons = [(f.photos || []).length ? "📷" : "", (f.videos || []).length ? "🎥" : "", f.docLink ? "📄" : ""].join(" ").trim();
+    const n = (list) => (list || []).length;
+    const icons = [
+      n(f.photos) ? `📷 ${n(f.photos) === 1 ? "Photo" : `${n(f.photos)} photos`}` : "",
+      n(f.videos) ? `🎥 ${n(f.videos) === 1 ? "Video" : `${n(f.videos)} videos`}` : "",
+      f.docLink ? "📄 Document" : "",
+    ].filter(Boolean).join(" · ");
     const tag =
       f.status === "pending" ? el("span", { class: "tag warn" }, f.editOf ? "Suggested change" : "Waiting for approval")
       : f.status === "rejected" ? el("span", { class: "tag off" }, "Not approved")
@@ -421,17 +436,23 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
       el(
         "button",
         { class: "btn secondary", type: "button", disabled: ui.busy, onclick: runImport },
-        ui.busy ? "Copying… (a few minutes — keep this open)" : imported ? "Copy again" : "Copy the old library"
+        ui.busy ? "Copying… (a few minutes — keep this open)" : imported ? "↻ Copy again" : "⇩ Copy the old library"
       )
     );
   }
 
   async function runImport() {
-    const r = await act(() => callAdminImportOldLibrary());
+    const r = await act(() => callAdminImportOldLibrary(), runImport);
     if (r) {
-      const problems = r.fileProblems?.length ? ` ${r.fileProblems.length} files couldn't be copied — run it again to retry.` : "";
-      const gaps = r.searchGapsCopied ? ` ${r.searchGapsCopied} no-result searches copied.` : "";
-      show("list", `Copied ${r.fixesSaved} fixes in ${r.categories} categories. Files: ${r.filesCopied} copied, ${r.filesSkipped} already here.${gaps}${problems}`, problems ? "error" : "ok");
+      const gaps = r.searchGapsCopied ? ` · ${r.searchGapsCopied} no-result searches` : "";
+      const summary = `Copied ${r.fixesSaved} fixes in ${r.categories} categories · files: ${r.filesCopied} copied, ${r.filesSkipped} already here${gaps}`;
+      if (r.fileProblems?.length) {
+        show("list", `${summary}. ${r.fileProblems.length} files couldn't be copied.`, "error");
+        ui.retry = runImport;
+        render();
+      } else {
+        show("list", summary, "ok");
+      }
     }
   }
 
@@ -443,16 +464,16 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
       parts.push(
         isOwnFile(url)
           ? el("a", { href: url, target: "_blank", rel: "noopener" }, el("img", { class: "fix-photo", src: url, alt: `Photo ${i + 1}`, loading: "lazy" }))
-          : el("a", { class: "btn secondary", href: url, target: "_blank", rel: "noopener" }, `Open photo ${i + 1}`)
+          : el("a", { class: "btn secondary", href: url, target: "_blank", rel: "noopener" }, `📷 Open photo ${i + 1}`)
       );
     });
     (f.videos || []).forEach((url, i) => {
       const yt = youtubeId(url);
       if (isOwnFile(url)) parts.push(el("video", { class: "fix-video", src: url, controls: true, preload: "metadata", playsinline: true }));
-      else if (yt) parts.push(el("a", { class: "btn secondary", href: `https://www.youtube.com/watch?v=${yt}`, target: "_blank", rel: "noopener" }, `Watch video ${i + 1} (YouTube)`));
-      else parts.push(el("a", { class: "btn secondary", href: url, target: "_blank", rel: "noopener" }, `Open video ${i + 1}`));
+      else if (yt) parts.push(el("a", { class: "btn secondary", href: `https://www.youtube.com/watch?v=${yt}`, target: "_blank", rel: "noopener" }, `🎥 Watch video ${i + 1} (YouTube)`));
+      else parts.push(el("a", { class: "btn secondary", href: url, target: "_blank", rel: "noopener" }, `🎥 Open video ${i + 1}`));
     });
-    if (f.docLink) parts.push(el("a", { class: "btn secondary", href: f.docLink, target: "_blank", rel: "noopener" }, "Open document"));
+    if (f.docLink) parts.push(el("a", { class: "btn secondary", href: f.docLink, target: "_blank", rel: "noopener" }, "📄 Open document"));
     return parts.length ? el("div", { class: "fix-media" }, parts) : null;
   }
 
@@ -470,20 +491,24 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
     const myVote = f.votes?.[me.emp];
 
     async function vote(helpful) {
-      await act(() => callVoteFix({ id: f.id, helpful }));
+      if (await act(() => callVoteFix({ id: f.id, helpful }), () => vote(helpful))) toast("Thanks for the feedback");
       render();
     }
-    async function review(approve) {
-      if (!approve && !confirm("Reject this suggestion? It won't be published.")) return;
-      const r = await act(() => callReviewFix({ id: f.id, approve }));
+    async function review(approve, askFirst = true) {
+      if (!approve && askFirst && !(await confirmSheet({ title: "Reject this suggestion?", text: "It won't be published.", confirmLabel: "Reject", danger: true }))) return;
+      const r = await act(() => callReviewFix({ id: f.id, approve }), () => review(approve, false));
       if (r) {
         ui.fixId = r.id;
-        show(approve ? "fix" : "list", approve ? "Approved — everyone can see it now." : "Suggestion rejected.", "ok");
+        show(approve ? "fix" : "list", approve ? "Approved — everyone can see it now" : "Suggestion rejected", "ok");
       }
     }
-    async function retire(retiring) {
-      if (retiring && !confirm("Retire this fix? It's hidden from the library but kept in history. You can bring it back.")) return;
-      if (await act(() => callRetireFix({ id: f.id, retire: retiring }))) show("fix", retiring ? "Fix retired." : "Fix is back.", "ok");
+    async function retire(retiring, askFirst = true) {
+      if (retiring && askFirst && !(await confirmSheet({
+        title: "Retire this fix?", text: "It's hidden from the library but kept in history. You can bring it back.", confirmLabel: "Retire fix", danger: true,
+      }))) return;
+      if (await act(() => callRetireFix({ id: f.id, retire: retiring }), () => retire(retiring, false))) {
+        show("fix", retiring ? "Fix retired" : "Fix is back", "ok");
+      }
     }
 
     return [
@@ -491,9 +516,9 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
       el("h1", { class: "fix-title" }, f.title),
       appliesTo(f),
       f.status === "pending"
-        ? el("p", { class: "message ok" }, f.editOf ? `Suggested change to "${original?.title || "a fix"}" — waiting for approval.` : "Waiting for approval.")
+        ? el("p", { class: "message" }, f.editOf ? `⏳ Suggested change to "${original?.title || "a fix"}" — waiting for an Admin to approve.` : "⏳ Waiting for an Admin to approve.")
         : null,
-      f.status === "rejected" ? el("p", { class: "message error" }, "This suggestion wasn't approved.") : null,
+      f.status === "rejected" ? el("p", { class: "message error" }, "✖ This suggestion wasn't approved.") : null,
       f.status === "retired" ? el("p", { class: "message error" }, "Retired — hidden from the library.") : null,
       messageBox(),
       el("div", { class: "fix-body" }, f.body),
@@ -504,28 +529,28 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
             "div",
             { class: "helpful" },
             el("span", {}, "Was this helpful?"),
-            el("button", { class: myVote === true ? "chip on" : "chip", type: "button", disabled: ui.busy, onclick: () => vote(true) }, `👍 ${f.helpfulYes || 0}`),
-            el("button", { class: myVote === false ? "chip on" : "chip", type: "button", disabled: ui.busy, onclick: () => vote(false) }, `👎 ${f.helpfulNo || 0}`)
+            el("button", { class: myVote === true ? "chip on" : "chip", type: "button", disabled: ui.busy, onclick: () => vote(true) }, `👍 Yes · ${f.helpfulYes || 0}`),
+            el("button", { class: myVote === false ? "chip on" : "chip", type: "button", disabled: ui.busy, onclick: () => vote(false) }, `👎 No · ${f.helpfulNo || 0}`)
           )
         : null,
       me.approver && f.status === "pending"
         ? [
-            el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: () => review(true) }, "Approve"),
-            el("button", { class: "btn danger", type: "button", disabled: ui.busy, onclick: () => review(false) }, "Reject"),
+            el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: () => review(true) }, "✔ Approve"),
+            el("button", { class: "btn danger", type: "button", disabled: ui.busy, onclick: () => review(false) }, "✖ Reject"),
           ]
         : null,
       f.status === "approved" || (f.status === "pending" && (me.approver || f.createdBy === me.emp))
         ? el(
             "button",
             { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => startForm(f) },
-            me.approver || f.status === "pending" ? "Edit" : "Suggest a change"
+            me.approver || f.status === "pending" ? "✎ Edit" : "✎ Suggest a change"
           )
         : null,
       me.approver && f.status === "approved"
         ? el("button", { class: "btn danger", type: "button", disabled: ui.busy, onclick: () => retire(true) }, "Retire fix")
         : null,
       me.approver && f.status === "retired"
-        ? el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => retire(false) }, "Bring fix back")
+        ? el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => retire(false) }, "↺ Bring fix back")
         : null,
       maintenanceRequestButton(data.fixCategories?.find((c) => c.id === f.categoryId)?.machineTypes),
       maintenancePanel(machinesFor(f)),
@@ -568,24 +593,31 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
       Object.assign(ui, { message: "That file is over 250 MB. Trim the video or send a shorter one.", messageKind: "error" });
       return render();
     }
+    if (!navigator.onLine) {
+      Object.assign(ui, { message: friendlyError({ code: "offline" }), messageKind: "error", retry: () => uploadFile(file) });
+      return render();
+    }
     const safe = file.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-80);
     const task = uploadBytesResumable(ref(storage, `uploads/${me.emp}/${Date.now()}_${safe}`), file, { contentType: file.type });
-    ui.busy = true;
+    Object.assign(ui, { busy: true, message: "", retry: null });
+    let ok = false;
     await new Promise((resolve) => {
       task.on(
         "state_changed",
         (s) => { ui.upload = `Uploading ${file.name}: ${Math.round((s.bytesTransferred / s.totalBytes) * 100)}%`; render(); },
-        (err) => { Object.assign(ui, { message: friendlyError(err), messageKind: "error" }); resolve(); },
+        (err) => { Object.assign(ui, { message: friendlyError(err), messageKind: "error", retry: () => uploadFile(file) }); resolve(); },
         async () => {
           const url = await getDownloadURL(task.snapshot.ref);
           if (kind === "doc") d.docLink = url;
           else d[kind].push(url);
+          ok = true;
           resolve();
         }
       );
     });
     Object.assign(ui, { busy: false, upload: "" });
     render();
+    if (ok) toast(kind === "videos" ? "Video added" : kind === "doc" ? "Document added" : "Photo added");
   }
 
   function renderForm() {
@@ -594,20 +626,20 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
     const candidates = (data.machines || []).filter((m) => m.active !== false && cat && !(cat.machineTypes || []).includes(m.type));
 
     async function save(e) {
-      e.preventDefault();
+      e?.preventDefault();
       const payload = {
         ...(d.id ? { id: d.id } : {}),
         title: d.title, categoryId: d.categoryId, body: d.body,
         tags: d.tags.split(",").map((t) => t.trim()).filter(Boolean),
         photos: d.photos, videos: d.videos, docLink: d.docLink.trim(), machineIds: d.machineIds,
       };
-      const r = await act(() => callSubmitFix(payload));
+      const r = await act(() => callSubmitFix(payload), save);
       if (!r) return;
       ui.fixId = r.id;
       const msg =
-        r.status === "approved" ? "Saved — everyone can see it now."
-        : r.editOf ? "Thanks! Your change was sent for approval."
-        : "Thanks! Your fix was sent for approval.";
+        r.status === "approved" ? "Saved — everyone can see it now"
+        : r.editOf ? "Thanks! Your change was sent for approval"
+        : "Thanks! Your fix was sent for approval";
       show("fix", msg, "ok");
     }
 
@@ -639,7 +671,7 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
       el("h1", {}, d.id ? (me.approver || fix()?.status === "pending" ? "Edit fix" : "Suggest a change") : "Add a fix"),
       me.approver ? null : el("p", { class: "hint" }, "An Admin approves it before everyone sees it."),
       messageBox(),
-      ui.upload ? el("p", { class: "message ok" }, ui.upload) : null,
+      ui.upload ? spinner(ui.upload) : null,
       el(
         "form",
         { onsubmit: save },
@@ -676,7 +708,7 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
           "div",
           { class: "link-row" },
           el("input", { class: "field", id: "fx-link", type: "url", placeholder: "https://", value: d.link, oninput: (e) => { d.link = e.target.value; } }),
-          el("button", { class: "btn secondary", type: "button", onclick: addLink }, "Add")
+          el("button", { class: "btn secondary", type: "button", onclick: addLink }, "+ Add link")
         ),
 
         el("label", { class: "field-label", for: "fx-tags" }, "Tags (optional, separated by commas)"),
@@ -704,7 +736,7 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
         el(
           "button",
           { class: "btn", type: "submit", disabled: ui.busy },
-          ui.busy ? "Saving…" : me.approver ? "Save" : "Send for approval"
+          ui.busy ? "Saving…" : me.approver ? "✔ Save" : "✔ Send for approval"
         )
       ),
     ];

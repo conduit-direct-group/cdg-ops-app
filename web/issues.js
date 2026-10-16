@@ -2,7 +2,7 @@
 // Odoo maintenance request, the board shows every open breakdown in Odoo (synced every 5 minutes),
 // and Mark fixed (Maintenance, Admin) moves the Odoo request to Repaired.
 
-import { el, friendlyError } from "./ui.js";
+import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet } from "./ui.js";
 import { data, onDataChange, lineName } from "./data.js";
 import { storage, callReportProblem, callMarkIssueFixed, callAdminSyncOdoo } from "./firebase.js";
 import { ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-storage.js";
@@ -52,14 +52,16 @@ export function issueCard(issue, onclick) {
 // ===========================================================================
 
 export function openIssueBoard(container, { me, onExit, onReport }) {
-  const ui = { view: "list", issueId: null, busy: false, message: "", messageKind: "", note: "", confirming: false };
+  const ui = { view: "list", issueId: null, busy: false, message: "", messageKind: "", retry: null, note: "" };
 
+  // Success goes to a toast; errors and notes stay on the screen.
   const show = (view, message = "", kind = "") => {
-    Object.assign(ui, { view, message, messageKind: kind, busy: false });
+    Object.assign(ui, { view, busy: false, retry: null, message: kind === "ok" ? "" : message, messageKind: kind });
     render();
     window.scrollTo(0, 0);
+    if (kind === "ok" && message) toast(message);
   };
-  const messageBox = () => (ui.message ? el("p", { class: `message ${ui.messageKind}`, role: ui.messageKind === "error" ? "alert" : null }, ui.message) : null);
+  const messageBox = () => banner(ui);
   const back = (label, onclick) => el("button", { class: "link-btn", type: "button", onclick, disabled: ui.busy }, `← ${label}`);
 
   function renderList() {
@@ -68,29 +70,35 @@ export function openIssueBoard(container, { me, onExit, onReport }) {
     return [
       back("Home", onExit),
       el("h1", {}, "Open issues"),
-      list ? el("p", { class: "hint" }, list.length ? `${list.length} open · ${down ? `${down} line${down === 1 ? "" : "s"} down` : "all lines running"}` : "No open issues — all clear.") : el("p", { class: "hint" }, "Loading…"),
+      list && list.length ? el("p", { class: "hint" }, `${list.length} open · ${down ? `⛔ ${down} line${down === 1 ? "" : "s"} down` : "all lines running"}`) : null,
       messageBox(),
-      el("button", { class: "btn", type: "button", onclick: onReport }, "🚨 Report a problem"),
-      el("div", { class: "issue-grid" }, (list || []).map((i) => issueCard(i, () => { Object.assign(ui, { issueId: i.id, confirming: false }); show("issue"); }))),
+      el("button", { class: "btn danger", type: "button", onclick: onReport }, "🚨 Report a problem"),
+      !list
+        ? spinner("Loading open issues…")
+        : !list.length
+        ? emptyState("✔ No open issues — all clear", "Problems reported in the app or entered in Odoo show up here.")
+        : el("div", { class: "issue-grid" }, list.map((i) => issueCard(i, () => { ui.issueId = i.id; show("issue"); }))),
       el("p", { class: "hint small-print" }, "From Odoo — every open breakdown request, updated every 5 minutes."),
       me.admin ? el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: syncNow }, ui.busy ? "Syncing with Odoo…" : "↻ Sync with Odoo now") : null,
     ];
   }
 
   async function syncNow() {
-    ui.busy = true;
+    Object.assign(ui, { busy: true, message: "", retry: null });
     render();
     try {
       const { data: r } = await callAdminSyncOdoo();
-      show("list", `Synced with Odoo: ${r.openIssues} open, ${r.closedSinceLastSync} closed since last sync, dates for ${r.machinesWithDates} machines.`, "ok");
+      show("list", `Synced with Odoo: ${r.openIssues} open, ${r.closedSinceLastSync} closed since last sync`, "ok");
     } catch (err) {
       show("list", friendlyError(err), "error");
+      ui.retry = syncNow;
+      render();
     }
   }
 
   function renderIssue() {
     const i = data.openIssues?.find((x) => x.id === ui.issueId);
-    if (!i) return [back("Open issues", () => show("list")), el("p", { class: "message ok" }, ui.message || "This issue was closed.")];
+    if (!i) return [back("Open issues", () => show("list")), emptyState("This issue was closed", "It's no longer open in Odoo.")];
     const rows = [
       ["Machine", machineLabel(i)],
       ["Status", i.lineDown ? "⛔ Line down" : "Running — problem exists"],
@@ -101,16 +109,21 @@ export function openIssueBoard(container, { me, onExit, onReport }) {
       ["Reported", [i.reportedBy, toDate(i.reportedAt)?.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }), ago(toDate(i.reportedAt))].filter(Boolean).join(" · ")],
     ].filter(([, v]) => v);
 
-    // Confirmed on the page (not a pop-up — some browsers block those, and big buttons are easier with gloves).
-    async function markFixed() {
-      Object.assign(ui, { busy: true, confirming: false });
+    // Confirmed on the page (shared confirm sheet — never a browser pop-up).
+    async function markFixed(askFirst = true) {
+      if (askFirst && !(await confirmSheet({
+        title: `Mark ${machineLabel(i)} fixed?`,
+        text: "The Odoo request moves to Repaired and it leaves the board for everyone.",
+        confirmLabel: "✔ Yes, mark fixed",
+      }))) return;
+      Object.assign(ui, { busy: true, message: "", retry: null });
       render();
       try {
         await callMarkIssueFixed({ id: i.id, note: ui.note });
         ui.note = "";
-        show("list", "Marked fixed — Odoo updated.", "ok");
+        show("list", "Marked fixed — Odoo updated", "ok");
       } catch (err) {
-        Object.assign(ui, { busy: false, message: friendlyError(err), messageKind: "error" });
+        Object.assign(ui, { busy: false, message: friendlyError(err), messageKind: "error", retry: () => markFixed(false) });
         render();
       }
     }
@@ -118,7 +131,7 @@ export function openIssueBoard(container, { me, onExit, onReport }) {
     return [
       back("Open issues", () => show("list")),
       el("h1", { class: "fix-title" }, i.title || machineLabel(i)),
-      el("p", { class: i.lineDown ? "message error" : "message ok" }, i.lineDown ? "⛔ Line down — production stopped" : "⚠ Running — problem exists"),
+      el("p", { class: i.lineDown ? "message error" : "message" }, i.lineDown ? "⛔ Line down — production stopped" : "⚠ Running — problem exists"),
       messageBox(),
       el("table", { class: "info-table" }, rows.map(([k, v]) => el("tr", {}, el("th", {}, k), el("td", {}, v)))),
       i.description ? el("div", { class: "fix-body" }, i.description) : null,
@@ -129,19 +142,11 @@ export function openIssueBoard(container, { me, onExit, onReport }) {
             { class: "card" },
             el("label", { class: "field-label", for: "fix-note" }, "What was done (optional — goes on the Odoo request)"),
             el("textarea", { class: "field", id: "fix-note", rows: "3", maxlength: "1000", value: ui.note, oninput: (e) => { ui.note = e.target.value; } }),
-            ui.confirming
-              ? el(
-                  "div",
-                  { class: "confirm-box" },
-                  el("p", {}, `Mark ${machineLabel(i)} fixed? The Odoo request moves to Repaired and it leaves the board for everyone.`),
-                  el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: markFixed }, "Yes, mark fixed"),
-                  el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => { ui.confirming = false; render(); } }, "Cancel")
-                )
-              : el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: () => { ui.confirming = true; render(); } }, ui.busy ? "Updating Odoo…" : "✔ Mark fixed")
+            el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: () => markFixed() }, ui.busy ? "Updating Odoo…" : "✔ Mark fixed")
           )
         : null,
       me.fixer || me.admin
-        ? el("p", { class: "hint small-print" }, el("a", { class: "text-link", href: odooRequestUrl(i.odooId), target: "_blank", rel: "noopener" }, `Open request #${i.odooId} in Odoo ↗`))
+        ? el("a", { class: "btn secondary", href: odooRequestUrl(i.odooId), target: "_blank", rel: "noopener" }, `↗ Open request #${i.odooId} in Odoo`)
         : null,
     ];
   }
@@ -167,36 +172,36 @@ export function openReportForm(container, { me, onExit, onDone, machineTypes = n
     lineId: null, machineId: null, lineDown: null, description: "", unsafe: false, severity: "normal",
     failureCategory: "", rootCause: "", actions: "", photos: [],
   };
-  const ui = { busy: false, upload: "", message: "", messageKind: "", sent: null };
+  const ui = { busy: false, upload: "", message: "", messageKind: "", retry: null, sent: null };
 
   const activeMachines = () => (data.machines || []).filter((m) => m.active !== false && (!machineTypes || machineTypes.includes(m.type)));
   const linesWithMachines = () => (data.lines || []).filter((l) => l.active !== false && activeMachines().some((m) => m.lineId === l.id));
 
   async function addPhoto(file) {
-    if (!file.type.startsWith("image/")) {
-      Object.assign(ui, { message: "Photos only here.", messageKind: "error" });
-      return render();
-    }
+    if (!file.type.startsWith("image/")) return say("Photos only here.");
+    if (!navigator.onLine) return say(friendlyError({ code: "offline" }), () => addPhoto(file));
     const safe = file.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-80);
     const task = uploadBytesResumable(ref(storage, `uploads/${me.emp}/${Date.now()}_${safe}`), file, { contentType: file.type });
-    ui.busy = true;
+    Object.assign(ui, { busy: true, message: "", retry: null });
+    let ok = false;
     await new Promise((resolve) => {
       task.on(
         "state_changed",
         (s) => { ui.upload = `Uploading photo: ${Math.round((s.bytesTransferred / s.totalBytes) * 100)}%`; render(); },
-        (err) => { Object.assign(ui, { message: friendlyError(err), messageKind: "error" }); resolve(); },
-        async () => { d.photos.push(await getDownloadURL(task.snapshot.ref)); resolve(); }
+        (err) => { Object.assign(ui, { message: friendlyError(err), messageKind: "error", retry: () => addPhoto(file) }); resolve(); },
+        async () => { d.photos.push(await getDownloadURL(task.snapshot.ref)); ok = true; resolve(); }
       );
     });
     Object.assign(ui, { busy: false, upload: "" });
     render();
+    if (ok) toast("Photo added");
   }
 
   async function send() {
     if (!d.machineId) return say("Pick the machine.");
     if (d.lineDown === null) return say("Is the line down? Tap Yes or No.");
     if (d.description.trim().length < 3) return say("Say what's wrong.");
-    Object.assign(ui, { busy: true, message: "" });
+    Object.assign(ui, { busy: true, message: "", retry: null });
     render();
     try {
       const { data: r } = await callReportProblem({ ...d });
@@ -204,14 +209,15 @@ export function openReportForm(container, { me, onExit, onDone, machineTypes = n
       Object.assign(ui, { busy: false });
       render();
       window.scrollTo(0, 0);
+      toast("Sent to maintenance");
     } catch (err) {
-      Object.assign(ui, { busy: false, message: friendlyError(err), messageKind: "error" });
+      Object.assign(ui, { busy: false, message: friendlyError(err), messageKind: "error", retry: send });
       render();
     }
   }
 
-  function say(message) {
-    Object.assign(ui, { message, messageKind: "error" });
+  function say(message, retry = null) {
+    Object.assign(ui, { message, messageKind: "error", retry });
     render();
   }
 
@@ -222,10 +228,10 @@ export function openReportForm(container, { me, onExit, onDone, machineTypes = n
     if (ui.sent) {
       container.replaceChildren(
         ...[
-          el("h1", {}, "Sent ✔"),
-          el("p", { class: "message ok" }, `Maintenance has it. Odoo request #${ui.sent.odooId} — it's on the Open issues board now.`),
-          el("button", { class: "btn", type: "button", onclick: onDone }, "See open issues"),
-          el("button", { class: "btn secondary", type: "button", onclick: onExit }, "Done"),
+          el("h1", {}, "✔ Sent to maintenance"),
+          el("p", { class: "message" }, `Odoo request #${ui.sent.odooId} — it's on the Open issues board now.`),
+          el("button", { class: "btn", type: "button", onclick: onDone }, "🚨 See open issues"),
+          el("button", { class: "btn secondary", type: "button", onclick: onExit }, "✔ Done"),
         ]
       );
       return;
@@ -237,7 +243,9 @@ export function openReportForm(container, { me, onExit, onDone, machineTypes = n
       el("button", { class: "link-btn", type: "button", onclick: onExit, disabled: ui.busy }, "← Back"),
       el("h1", {}, "🚨 Report a problem"),
       el("p", { class: "hint" }, "Goes straight to maintenance as an Odoo request."),
-      ui.message ? el("p", { class: `message ${ui.messageKind}`, role: "alert" }, ui.message) : null,
+      // Before a machine is picked, problems show at the top; after, right above Send (where you're looking).
+      !d.machineId ? banner(ui) : null,
+      !data.lines || !data.machines ? spinner("Loading machines…") : null,
 
       el("p", { class: "field-label" }, "1. Which line?"),
       el("div", { class: "choices" },
@@ -281,11 +289,12 @@ export function openReportForm(container, { me, onExit, onDone, machineTypes = n
               el("textarea", { class: "field", id: "rp-act", rows: "2", maxlength: "1000", value: d.actions, oninput: (e) => { d.actions = e.target.value; } }),
               el("p", { class: "field-label" }, "Photos"),
               d.photos.map((u, n) => el("div", { class: "import-row" }, el("span", {}, `Photo ${n + 1}`), el("button", { class: "link-btn", type: "button", onclick: () => { d.photos.splice(n, 1); render(); } }, "Remove"))),
-              ui.upload ? el("p", { class: "message ok" }, ui.upload) : null,
+              ui.upload ? spinner(ui.upload) : null,
               el("label", { class: "btn secondary file-btn" }, "📷 Add a photo",
                 el("input", { type: "file", accept: "image/*", hidden: true, disabled: ui.busy, onchange: (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) addPhoto(f); } }))
             ),
-            el("button", { class: "btn big", type: "button", disabled: ui.busy, onclick: send }, ui.busy ? "Sending to Odoo…" : "Send to maintenance"),
+            banner(ui),
+            el("button", { class: "btn big", type: "button", disabled: ui.busy, onclick: send }, ui.busy ? "Sending to Odoo…" : "📨 Send to maintenance"),
           ]
         : null,
     ];

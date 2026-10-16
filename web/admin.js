@@ -1,7 +1,7 @@
 // Admin "People" screens: list everyone, add a person, reset PINs, unlock, edit, turn accounts off/on.
 // Every action is checked again on the server (admins only), so hiding buttons here is just tidiness.
 
-import { el, friendlyError } from "./ui.js";
+import { el, friendlyError, spinner, banner, toast, confirmSheet } from "./ui.js";
 import { data, onDataChange } from "./data.js";
 import {
   callAdminListEmployees,
@@ -27,12 +27,16 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
     draft: null, // what's typed in the add/edit form, so a failed save doesn't wipe it
     message: "",
     messageKind: "",
+    retry: null, // "Try again" for the last thing that failed
+    loadError: "",
     busy: false,
   };
 
+  // Success goes to a toast; errors and notes stay on the screen.
   function show(view, message = "", messageKind = "") {
-    Object.assign(ui, { view, message, messageKind, busy: false });
+    Object.assign(ui, { view, busy: false, retry: null, message: messageKind === "ok" ? "" : message, messageKind });
     render();
+    if (messageKind === "ok" && message) toast(message);
   }
 
   function person() {
@@ -43,18 +47,23 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
     try {
       const { data } = await callAdminListEmployees();
       ui.people = data.employees;
+      ui.loadError = "";
     } catch (err) {
-      ui.people = ui.people || [];
-      ui.message = friendlyError(err);
-      ui.messageKind = "error";
+      ui.loadError = friendlyError(err);
     }
     render();
   }
 
+  function reload() {
+    Object.assign(ui, { people: null, loadError: "" });
+    render();
+    load();
+  }
+
   // Runs a server action, then refreshes the list. Returns the result, or null if it failed.
-  async function act(fn) {
-    ui.busy = true;
-    ui.message = ui.messageKind = "";
+  // `again` is what "Try again" runs if it fails.
+  async function act(fn, again = null) {
+    Object.assign(ui, { busy: true, message: "", messageKind: "", retry: null });
     render();
     try {
       const { data } = await fn();
@@ -62,17 +71,13 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
       ui.busy = false;
       return data;
     } catch (err) {
-      Object.assign(ui, { busy: false, message: friendlyError(err), messageKind: "error" });
+      Object.assign(ui, { busy: false, message: friendlyError(err), messageKind: "error", retry: again });
       render();
       return null;
     }
   }
 
-  function messageBox() {
-    return ui.message
-      ? el("p", { class: `message ${ui.messageKind}`, role: ui.messageKind === "error" ? "alert" : null }, ui.message)
-      : null;
-  }
+  const messageBox = () => banner(ui);
 
   function backBar(label, onclick) {
     return el("button", { class: "link-btn", type: "button", onclick, disabled: ui.busy }, `← ${label}`);
@@ -90,8 +95,10 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
 
   function renderList() {
     const rows =
-      ui.people === null
-        ? [el("p", { class: "hint" }, "Loading…")]
+      ui.loadError && !ui.people
+        ? []
+        : ui.people === null
+        ? [spinner("Loading people…")]
         : ui.people.map((p) =>
             el(
               "button",
@@ -105,6 +112,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
       backBar("Admin", onExit),
       el("h1", {}, "People"),
       el("p", { class: "hint" }, ui.people ? `${ui.people.length} ${ui.people.length === 1 ? "person" : "people"}` : ""),
+      ui.loadError ? banner({ message: `Couldn't load the people list. ${ui.loadError}`, messageKind: "error", retry: reload }) : null,
       messageBox(),
       el("button", { class: "btn", type: "button", onclick: startAdd }, "+ Add a person"),
       el("div", { class: "person-list" }, rows),
@@ -151,15 +159,17 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
             el("span", {}, r.active === false ? `${r.name} (retired)` : r.name)
           )
         )
-      : [el("p", { class: "message error" }, data.roles ? "No roles yet. Go to Admin → Roles and tap \"Add the starting roles\" first." : "Loading roles…")];
+      : [data.roles
+          ? banner({ message: "No roles yet. Go to Admin → Roles and tap \"Add the starting roles\" first.", messageKind: "error" })
+          : spinner("Loading roles…")];
 
     async function save(e) {
-      e.preventDefault();
+      e?.preventDefault();
       if (existing) {
-        const ok = await act(() => callAdminUpdateEmployee({ employeeNumber: existing.employeeNumber, name: d.name, roles: d.roles }));
-        if (ok) show("person", "Saved.", "ok");
+        const ok = await act(() => callAdminUpdateEmployee({ employeeNumber: existing.employeeNumber, name: d.name, roles: d.roles }), save);
+        if (ok) show("person", "Saved", "ok");
       } else {
-        const data = await act(() => callAdminCreateEmployee({ employeeNumber: d.number, name: d.name, roles: d.roles }));
+        const data = await act(() => callAdminCreateEmployee({ employeeNumber: d.number, name: d.name, roles: d.roles }), save);
         if (data) {
           ui.tempPin = { name: d.name.trim(), pin: data.tempPin };
           ui.selected = data.employeeNumber;
@@ -200,7 +210,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
         { class: "card" },
         "They'll pick their own PIN the first time they sign in. This PIN won't be shown again — if it's lost, just reset it."
       ),
-      el("button", { class: "btn", type: "button", onclick: () => { ui.tempPin = null; show("person"); } }, "Done"),
+      el("button", { class: "btn", type: "button", onclick: () => { ui.tempPin = null; show("person"); } }, "✔ Done"),
     ];
   }
 
@@ -211,9 +221,14 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
     if (!p) return renderList();
     const isMe = p.employeeNumber === myEmployeeNumber;
 
-    async function resetPin() {
-      if (!confirm(`Reset ${p.name}'s PIN? They'll be signed out on every device and get a new temporary PIN.`)) return;
-      const data = await act(() => callAdminResetPin({ employeeNumber: p.employeeNumber }));
+    async function resetPin(askFirst = true) {
+      const ok = !askFirst || (await confirmSheet({
+        title: `Reset ${p.name}'s PIN?`,
+        text: "They'll be signed out on every device and get a new temporary PIN.",
+        confirmLabel: "Reset PIN",
+      }));
+      if (!ok) return;
+      const data = await act(() => callAdminResetPin({ employeeNumber: p.employeeNumber }), () => resetPin(false));
       if (data) {
         ui.tempPin = { name: p.name, pin: data.tempPin };
         show("tempPin");
@@ -221,16 +236,16 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
     }
 
     async function unlock() {
-      if (await act(() => callAdminUnlock({ employeeNumber: p.employeeNumber }))) show("person", "Unlocked. They can sign in now.", "ok");
+      if (await act(() => callAdminUnlock({ employeeNumber: p.employeeNumber }), unlock)) show("person", "Unlocked — they can sign in now", "ok");
     }
 
-    async function setActive(active) {
-      const question = active
-        ? `Turn ${p.name}'s account back on?`
-        : `Turn off ${p.name}'s account? They'll be signed out everywhere and can't sign in until it's turned back on.`;
-      if (!confirm(question)) return;
-      if (await act(() => callAdminUpdateEmployee({ employeeNumber: p.employeeNumber, active }))) {
-        show("person", active ? "Account is on." : "Account is off.", "ok");
+    async function setActive(active, askFirst = true) {
+      const ok = !askFirst || (await confirmSheet(active
+        ? { title: `Turn ${p.name}'s account back on?`, confirmLabel: "Turn back on" }
+        : { title: `Turn off ${p.name}'s account?`, text: "They'll be signed out everywhere and can't sign in until it's turned back on.", confirmLabel: "Turn off account", danger: true }));
+      if (!ok) return;
+      if (await act(() => callAdminUpdateEmployee({ employeeNumber: p.employeeNumber, active }), () => setActive(active, false))) {
+        show("person", active ? "Account is on" : "Account is off", "ok");
       }
     }
 
@@ -240,15 +255,15 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
       el("p", { class: "roles" }, `#${p.employeeNumber} · ${roleNames(p.roles)}`),
       el("p", { class: "tags center" }, tags(p)),
       messageBox(),
-      p.locked ? el("button", { class: "btn", type: "button", onclick: unlock, disabled: ui.busy }, "Unlock now") : null,
-      el("button", { class: "btn secondary", type: "button", onclick: resetPin, disabled: ui.busy || !p.active }, "Reset PIN"),
-      el("button", { class: "btn secondary", type: "button", onclick: startEdit, disabled: ui.busy }, "Edit name and roles"),
+      p.locked ? el("button", { class: "btn", type: "button", onclick: () => unlock(), disabled: ui.busy }, "🔓 Unlock now") : null,
+      el("button", { class: "btn secondary", type: "button", onclick: () => resetPin(), disabled: ui.busy || !p.active }, "🔑 Reset PIN"),
+      el("button", { class: "btn secondary", type: "button", onclick: startEdit, disabled: ui.busy }, "✎ Edit name and roles"),
       isMe
         ? null
         : el(
             "button",
             { class: p.active ? "btn danger" : "btn secondary", type: "button", onclick: () => setActive(!p.active), disabled: ui.busy },
-            p.active ? "Turn off account" : "Turn account back on"
+            p.active ? "⛔ Turn off account" : "↺ Turn account back on"
           ),
     ];
   }
