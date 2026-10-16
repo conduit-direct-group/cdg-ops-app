@@ -23,6 +23,7 @@ const pin = require("./pin");
 const records = require("./records");
 const fixesLib = require("./fixes");
 const odoo = require("./odoo");
+const checklistsLib = require("./checklists");
 const { defineSecret } = require("firebase-functions/params");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 
@@ -48,6 +49,19 @@ const fixCategories = db.collection("fixCategories");
 const searchGaps = db.collection("searchGaps");
 const issues = db.collection("issues");
 const odooSyncStatus = db.collection("meta").doc("odooSync");
+const checklistTemplates = db.collection("checklistTemplates");
+
+// Our Storage bucket (photos, videos, documents). Public name, same as in the web config.
+const BUCKET = "cdg-ops-app.firebasestorage.app";
+
+// Test mode: the dev test site sends { test: true }. Its reports, fixes, checklist sign-offs, and trash go
+// into test_ collections that the live app never reads, and nothing is sent to Odoo.
+function isTest(req) {
+  return req.data?.test === true;
+}
+function col(name, test) {
+  return db.collection(test ? `test_${name}` : name);
+}
 
 const WRONG_LOGIN = "Wrong employee number or PIN.";
 
@@ -431,9 +445,18 @@ exports.adminSaveMachine = onCall(async (req) => {
 // ---------------------------------------------------------------------------
 // Fix Library (Plan Decisions 25–28)
 //
-// Each fix is its own record in `fixes`. Status: approved | pending | rejected | retired | merged.
-// Everyone signed in reads approved fixes (firestore.rules); pending ones only approvers + the author.
+// Each fix is its own record in `fixes`. Status: approved | pending | rejected | retired | merged | trashed.
+// Everyone signed in reads approved fixes (firestore.rules); pending ones only admins + the author.
 // All changes come through these functions, which check the person's LIVE roles — no shared PIN.
+//
+// Safety net (nothing is lost by a bad edit or delete):
+//   - Before every change, the fix as it was is saved in fixes/{id}/versions (admins can restore any of them).
+//   - Delete moves a fix to the trash bin (status "trashed") for 30 days; admins can bring it back.
+//   - Our own photos/videos/documents taken off a fix go to the `trash` list for 30 days, then purgeTrash
+//     removes them for good (only if no fix or checklist still uses them).
+//
+// Test mode (the dev test site sends test: true): everything is saved in test_ collections the live app
+// never reads, and real records can't be changed.
 // ---------------------------------------------------------------------------
 
 // Signed in with their own PIN, account on. Returns { employeeNumber, roles, approver }.
@@ -443,7 +466,13 @@ async function requireMember(req) {
   const snap = await employees.doc(employeeNumber).get();
   if (!snap.exists || snap.get("active") === false) throw new HttpsError("permission-denied", "Your account is turned off.");
   const roles = snap.get("roles") || [];
-  return { employeeNumber, roles, approver: fixesLib.isApprover(roles) };
+  return { employeeNumber, roles, approver: fixesLib.isApprover(roles), name: snap.get("name") || `Employee ${employeeNumber}` };
+}
+
+async function requireApprover(req, what) {
+  const me = await requireMember(req);
+  if (!me.approver) throw new HttpsError("permission-denied", `Only Admins can ${what}.`);
+  return me;
 }
 
 function requireFix(data) {
@@ -465,118 +494,258 @@ async function checkFixRefs(tx, fix) {
 
 const FIX_FIELDS = ["title", "body", "categoryId", "tags", "photos", "videos", "docLink", "machineIds"];
 
-// New fix:   { title, body, categoryId, tags, photos, videos, docLink, machineIds }
+// Reads a fix for a change. On the test site, real fixes are read-only.
+async function getFixForChange(tx, test, id) {
+  const snap = await tx.get(col("fixes", test).doc(id));
+  if (snap.exists) return snap;
+  if (test && (await tx.get(fixes.doc(id))).exists) {
+    throw new HttpsError("failed-precondition", "This is the test site — real fixes can't be changed here. Add a test fix to try this.");
+  }
+  throw new HttpsError("not-found", "That fix no longer exists.");
+}
+
+// Saves the fix as it is now, before it changes.
+function saveVersion(tx, ref, fixData, by, reason) {
+  tx.create(ref.collection("versions").doc(), { ...fixesLib.versionOf(fixData), savedAt: FieldValue.serverTimestamp(), savedBy: by, reason });
+}
+
+function purgeDate() {
+  return new Date(Date.now() + fixesLib.TRASH_DAYS * 86400000);
+}
+
+// Our own files that came off a fix go to the trash list (kept 30 days).
+function trashDroppedFiles(tx, test, before, after, fixId, by) {
+  for (const url of fixesLib.droppedFiles(before, after, BUCKET)) {
+    tx.create(col("trash", test).doc(), {
+      kind: "file", url, path: fixesLib.storagePath(url, BUCKET), fixId, title: before.title || "",
+      trashedBy: by, trashedAt: FieldValue.serverTimestamp(), purgeAfter: purgeDate(),
+    });
+  }
+}
+
+// New fix:   { title, body, categoryId, tags, photos, videos, docLink, machineIds, test? }
 // Edit:      same plus { id }.
 // Approvers' changes go live. Others: new fixes and edits become pending suggestions
 // (an edit to an approved fix is a separate pending record with editOf = the original's id).
 exports.submitFix = onCall(async (req) => {
   const me = await requireMember(req);
+  const test = isTest(req);
   const fix = requireFix(req.data);
   const now = FieldValue.serverTimestamp();
   const editId = req.data?.id ? String(req.data.id) : null;
+  const list = col("fixes", test);
 
   return db.runTransaction(async (tx) => {
-    const original = editId ? await tx.get(fixes.doc(editId)) : null;
+    const original = editId ? await getFixForChange(tx, test, editId) : null;
     await checkFixRefs(tx, fix);
 
     if (!editId) {
-      const ref = fixes.doc();
+      const ref = list.doc();
       const status = me.approver ? "approved" : "pending";
       tx.create(ref, {
         ...fix, status, editOf: null, helpfulYes: 0, helpfulNo: 0, votes: {},
         createdBy: me.employeeNumber, createdAt: now, updatedAt: now,
+        ...(test ? { test: true } : {}),
         ...(status === "approved" ? { approvedBy: me.employeeNumber, approvedAt: now } : {}),
       });
-      auditRecord(tx, "created", "fix", ref.id, me.employeeNumber, { status, title: fix.title });
+      auditRecord(tx, "created", "fix", ref.id, me.employeeNumber, { status, title: fix.title, test });
       return { id: ref.id, status };
     }
 
-    if (!original.exists) throw new HttpsError("not-found", "That fix no longer exists.");
     const o = original.data();
+    if (o.status === "trashed") throw new HttpsError("failed-precondition", "That fix is in the trash. Bring it back first.");
     const ownPending = o.status === "pending" && o.createdBy === me.employeeNumber;
     if (me.approver || ownPending) {
+      saveVersion(tx, original.ref, o, me.employeeNumber, "edited");
+      trashDroppedFiles(tx, test, o, fix, editId, me.employeeNumber);
       tx.update(original.ref, { ...fix, updatedBy: me.employeeNumber, updatedAt: now });
-      auditRecord(tx, "updated", "fix", editId, me.employeeNumber, { title: fix.title });
+      auditRecord(tx, "updated", "fix", editId, me.employeeNumber, { title: fix.title, test });
       return { id: editId, status: o.status };
     }
-    if (o.status !== "approved") throw new HttpsError("permission-denied", "Only approvers can change this fix.");
-    const ref = fixes.doc();
+    if (o.status !== "approved") throw new HttpsError("permission-denied", "Only Admins can change this fix.");
+    const ref = list.doc();
     tx.create(ref, {
       ...fix, status: "pending", editOf: editId, helpfulYes: 0, helpfulNo: 0, votes: {},
       createdBy: me.employeeNumber, createdAt: now, updatedAt: now,
+      ...(test ? { test: true } : {}),
     });
-    auditRecord(tx, "suggested-edit", "fix", ref.id, me.employeeNumber, { editOf: editId, title: fix.title });
+    auditRecord(tx, "suggested-edit", "fix", ref.id, me.employeeNumber, { editOf: editId, title: fix.title, test });
     return { id: ref.id, status: "pending", editOf: editId };
   });
 });
 
-// Approvers: { id, approve: true|false }. Approving an edit suggestion copies it onto the original.
+// Admins: { id, approve: true|false }. Approving an edit suggestion copies it onto the original.
 exports.reviewFix = onCall(async (req) => {
-  const me = await requireMember(req);
-  if (!me.approver) throw new HttpsError("permission-denied", "Only Admins can approve fixes.");
+  const me = await requireApprover(req, "approve fixes");
+  const test = isTest(req);
   const id = String(req.data?.id || "");
   const approve = req.data?.approve === true;
   const now = FieldValue.serverTimestamp();
 
   return db.runTransaction(async (tx) => {
-    const snap = await tx.get(fixes.doc(id));
-    if (!snap.exists || snap.get("status") !== "pending") throw new HttpsError("failed-precondition", "That suggestion was already handled.");
+    const snap = await getFixForChange(tx, test, id);
+    if (snap.get("status") !== "pending") throw new HttpsError("failed-precondition", "That suggestion was already handled.");
     const p = snap.data();
-    const original = p.editOf ? await tx.get(fixes.doc(p.editOf)) : null;
+    const original = p.editOf ? await tx.get(col("fixes", test).doc(p.editOf)) : null;
 
     if (!approve) {
       tx.update(snap.ref, { status: "rejected", reviewedBy: me.employeeNumber, reviewedAt: now });
-      auditRecord(tx, "rejected", "fix", id, me.employeeNumber, { title: p.title });
+      auditRecord(tx, "rejected", "fix", id, me.employeeNumber, { title: p.title, test });
       return { id, status: "rejected" };
     }
     if (p.editOf) {
       if (!original.exists) throw new HttpsError("not-found", "The fix this edit was for no longer exists.");
       const fields = Object.fromEntries(FIX_FIELDS.map((k) => [k, p[k]]));
+      saveVersion(tx, original.ref, original.data(), me.employeeNumber, "approved a suggested change");
+      trashDroppedFiles(tx, test, original.data(), fields, p.editOf, me.employeeNumber);
       tx.update(original.ref, { ...fields, updatedBy: p.createdBy, updatedAt: now, approvedBy: me.employeeNumber, approvedAt: now });
       tx.update(snap.ref, { status: "merged", reviewedBy: me.employeeNumber, reviewedAt: now });
-      auditRecord(tx, "approved-edit", "fix", p.editOf, me.employeeNumber, { suggestion: id, title: p.title });
+      auditRecord(tx, "approved-edit", "fix", p.editOf, me.employeeNumber, { suggestion: id, title: p.title, test });
       return { id: p.editOf, status: "approved" };
     }
     tx.update(snap.ref, { status: "approved", approvedBy: me.employeeNumber, approvedAt: now, updatedAt: now });
-    auditRecord(tx, "approved", "fix", id, me.employeeNumber, { title: p.title });
+    auditRecord(tx, "approved", "fix", id, me.employeeNumber, { title: p.title, test });
     return { id, status: "approved" };
   });
 });
 
-// Approvers: { id, retire: true|false }. Retired fixes are hidden, never deleted.
+// Admins: { id, retire: true|false }. Retired fixes are hidden, never deleted.
 exports.retireFix = onCall(async (req) => {
-  const me = await requireMember(req);
-  if (!me.approver) throw new HttpsError("permission-denied", "Only Admins can retire fixes.");
+  const me = await requireApprover(req, "retire fixes");
+  const test = isTest(req);
   const id = String(req.data?.id || "");
   const retire = req.data?.retire !== false;
   await db.runTransaction(async (tx) => {
-    const snap = await tx.get(fixes.doc(id));
+    const snap = await getFixForChange(tx, test, id);
     const status = snap.get("status");
-    if (!snap.exists || !(retire ? status === "approved" : status === "retired")) {
+    if (!(retire ? status === "approved" : status === "retired")) {
       throw new HttpsError("failed-precondition", "That fix can't be changed that way.");
     }
+    saveVersion(tx, snap.ref, snap.data(), me.employeeNumber, retire ? "retired" : "brought back");
     tx.update(snap.ref, { status: retire ? "retired" : "approved", updatedBy: me.employeeNumber, updatedAt: FieldValue.serverTimestamp() });
-    auditRecord(tx, retire ? "retired" : "restored", "fix", id, me.employeeNumber, { title: snap.get("title") });
+    auditRecord(tx, retire ? "retired" : "restored", "fix", id, me.employeeNumber, { title: snap.get("title"), test });
   });
   return { id, status: retire ? "retired" : "approved" };
+});
+
+// Admins: { id } — to the trash bin for 30 days (then gone for good). Any status except already trashed.
+exports.deleteFix = onCall(async (req) => {
+  const me = await requireApprover(req, "delete fixes");
+  const test = isTest(req);
+  const id = String(req.data?.id || "");
+  await db.runTransaction(async (tx) => {
+    const snap = await getFixForChange(tx, test, id);
+    const status = snap.get("status");
+    if (status === "trashed") throw new HttpsError("failed-precondition", "That fix is already in the trash.");
+    saveVersion(tx, snap.ref, snap.data(), me.employeeNumber, "deleted");
+    tx.update(snap.ref, {
+      status: "trashed", statusBeforeTrash: status, trashedBy: me.employeeNumber,
+      trashedAt: FieldValue.serverTimestamp(), purgeAfter: purgeDate(),
+    });
+    auditRecord(tx, "deleted", "fix", id, me.employeeNumber, { title: snap.get("title"), test });
+  });
+  return { id, status: "trashed" };
+});
+
+// Admins: { id } — out of the trash, back to how it was.
+exports.restoreFix = onCall(async (req) => {
+  const me = await requireApprover(req, "restore fixes");
+  const test = isTest(req);
+  const id = String(req.data?.id || "");
+  return db.runTransaction(async (tx) => {
+    const snap = await getFixForChange(tx, test, id);
+    if (snap.get("status") !== "trashed") throw new HttpsError("failed-precondition", "That fix isn't in the trash.");
+    const status = snap.get("statusBeforeTrash") || "approved";
+    tx.update(snap.ref, {
+      status, statusBeforeTrash: FieldValue.delete(), trashedBy: FieldValue.delete(), trashedAt: FieldValue.delete(),
+      purgeAfter: FieldValue.delete(), updatedBy: me.employeeNumber, updatedAt: FieldValue.serverTimestamp(),
+    });
+    auditRecord(tx, "restored-from-trash", "fix", id, me.employeeNumber, { title: snap.get("title"), test });
+    return { id, status };
+  });
+});
+
+// Admins: { id, versionId } — put a fix back the way it was in one of its saved versions.
+// (What it looks like now is saved as a version first, so this can be undone too.)
+exports.restoreFixVersion = onCall(async (req) => {
+  const me = await requireApprover(req, "restore old versions");
+  const test = isTest(req);
+  const id = String(req.data?.id || "");
+  const versionId = String(req.data?.versionId || "");
+  return db.runTransaction(async (tx) => {
+    const snap = await getFixForChange(tx, test, id);
+    const v = await tx.get(snap.ref.collection("versions").doc(versionId));
+    if (!v.exists) throw new HttpsError("not-found", "That version no longer exists.");
+    const current = snap.data();
+    if (current.status === "trashed") throw new HttpsError("failed-precondition", "Bring the fix back from the trash first.");
+    const old = v.data();
+    const fields = Object.fromEntries(FIX_FIELDS.map((k) => [k, old[k] ?? (k === "docLink" ? "" : [])]));
+    // Status only goes back between live states (approved / retired); suggestions keep their own status.
+    const status = ["approved", "retired"].includes(current.status) && ["approved", "retired"].includes(old.status) ? old.status : current.status;
+    saveVersion(tx, snap.ref, current, me.employeeNumber, "before restoring an older version");
+    trashDroppedFiles(tx, test, current, fields, id, me.employeeNumber);
+    tx.update(snap.ref, { ...fields, status, updatedBy: me.employeeNumber, updatedAt: FieldValue.serverTimestamp() });
+    auditRecord(tx, "restored-version", "fix", id, me.employeeNumber, { versionId, title: old.title, test });
+    return { id, status };
+  });
+});
+
+// Admins: { trashId } — put a photo/video/document from the trash back on its fix.
+exports.restoreTrashedFile = onCall(async (req) => {
+  const me = await requireApprover(req, "restore files");
+  const test = isTest(req);
+  const trashRef = col("trash", test).doc(String(req.data?.trashId || ""));
+  return db.runTransaction(async (tx) => {
+    const t = await tx.get(trashRef);
+    if (!t.exists || t.get("kind") !== "file") throw new HttpsError("not-found", "That file is no longer in the trash.");
+    const url = t.get("url");
+    const isVideo = /\.(mov|mp4|m4v|webm)$/i.test(t.get("path") || "");
+
+    // A checklist item's training photo/video.
+    if (t.get("templateId")) {
+      const tRef = checklistTemplates.doc(t.get("templateId"));
+      const tSnap = await tx.get(tRef);
+      const items = tSnap.exists ? tSnap.get("items") || [] : [];
+      const item = items.find((i) => i.id === t.get("itemId"));
+      if (!item) throw new HttpsError("not-found", "The checklist item this file was on no longer exists.");
+      const kind = isVideo ? "videos" : "photos";
+      item[kind] = [...new Set([...(item[kind] || []), url])];
+      tx.update(tRef, { items, updatedAt: FieldValue.serverTimestamp() });
+      tx.delete(trashRef);
+      auditRecord(tx, "restored-file", "checklist", tRef.id, me.employeeNumber, { path: t.get("path") });
+      return { templateId: tRef.id };
+    }
+
+    const fixSnap = await tx.get(col("fixes", test).doc(t.get("fixId")));
+    if (!fixSnap.exists) throw new HttpsError("not-found", "The fix this file was on no longer exists.");
+    const f = fixSnap.data();
+    const isPdf = /\.pdf$/i.test(t.get("path") || "");
+    saveVersion(tx, fixSnap.ref, f, me.employeeNumber, "put a file back");
+    const update = isPdf ? { docLink: url } : isVideo ? { videos: [...(f.videos || []), url] } : { photos: [...(f.photos || []), url] };
+    tx.update(fixSnap.ref, { ...update, updatedBy: me.employeeNumber, updatedAt: FieldValue.serverTimestamp() });
+    tx.delete(trashRef);
+    auditRecord(tx, "restored-file", "fix", fixSnap.id, me.employeeNumber, { path: t.get("path"), test });
+    return { id: fixSnap.id };
+  });
 });
 
 // "Was this helpful?" — { id, helpful: true|false }. One vote per person; voting again changes it.
 // Votes carried over from the old library (counts only, no names) are kept on top.
 exports.voteFix = onCall(async (req) => {
   const me = await requireMember(req);
+  const test = isTest(req);
   const id = String(req.data?.id || "");
-  const helpful = req.data?.helpful === true;
   return db.runTransaction(async (tx) => {
-    const snap = await tx.get(fixes.doc(id));
-    if (!snap.exists || snap.get("status") !== "approved") throw new HttpsError("not-found", "That fix isn't available.");
-    const votes = { ...(snap.get("votes") || {}), [me.employeeNumber]: helpful };
+    const snap = await getFixForChange(tx, test, id);
+    if (snap.get("status") !== "approved") throw new HttpsError("not-found", "That fix isn't available.");
+    const votes = { ...(snap.get("votes") || {}), [me.employeeNumber]: req.data?.helpful === true };
     const yes = Object.values(votes).filter(Boolean).length + (snap.get("legacyHelpfulYes") || 0);
     const no = Object.values(votes).filter((v) => !v).length + (snap.get("legacyHelpfulNo") || 0);
     tx.update(snap.ref, { votes, helpfulYes: yes, helpfulNo: no });
     return { helpfulYes: yes, helpfulNo: no };
   });
 });
+
 
 // Admins, one-time (safe to run again): copy the old Line Fix Library into the new app (Decisions 25, 28).
 // Reads the old library (read-only — it is never changed), creates fix categories, copies photos/videos
@@ -710,6 +879,7 @@ exports.adminImportOldLibrary = onCall({ timeoutSeconds: 540, memory: "2GiB" }, 
 // once per search, 1.5 s after typing stops. Admins read the list (firestore.rules) to see what's missing.
 exports.logSearchGap = onCall(async (req) => {
   await requireMember(req);
+  if (isTest(req)) return { ok: true }; // test-site searches aren't counted
   const term = fixesLib.cleanSearchTerm(req.data?.term);
   if (!term) return { ok: false };
   const ref = searchGaps.doc(fixesLib.searchGapId(term));
@@ -727,11 +897,15 @@ exports.logSearchGap = onCall(async (req) => {
 
 // Admins: { id, done: true|false } — tick off a no-results search once the missing fix is written.
 exports.adminMarkSearchGap = onCall(async (req) => {
-  await requireAdmin(req);
+  const adminNumber = await requireAdmin(req);
   const ref = searchGaps.doc(String(req.data?.id || ""));
-  const snap = await ref.get();
-  if (!snap.exists) throw new HttpsError("not-found", "That search is no longer on the list.");
-  await ref.update({ done: req.data?.done !== false });
+  const done = req.data?.done !== false;
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "That search is no longer on the list.");
+    tx.update(ref, { done });
+    auditRecord(tx, done ? "marked-done" : "marked-not-done", "search", ref.id, adminNumber, { term: snap.get("term") });
+  });
   return { ok: true };
 });
 
@@ -856,6 +1030,20 @@ exports.reportProblem = onCall({ secrets: [odooKey] }, async (req) => {
   const lineName = lineSnap?.exists ? lineSnap.get("name") : "";
   const reporter = await employeeName(me.employeeNumber);
 
+  // Test site: practice report only — never reaches Odoo, and only the test site's board shows it.
+  if (isTest(req)) {
+    const ref = col("issues", true).doc();
+    await ref.set({
+      odooId: null, open: true, source: "app", test: true,
+      title: `[TEST] ${report.lineDown ? "⛔ LINE DOWN" : "🚨 Machine issue"} – ${machine.id} ${machine.name}`,
+      machineId: machine.id, lineDown: report.lineDown, unsafe: report.unsafe, severity: report.severity,
+      priority: odoo.SEVERITY[report.severity].priority, description: report.description, actions: report.actions,
+      failureCategory: report.failureCategory, rootCause: report.rootCause, photos: report.photos,
+      stage: "New Request", reportedBy: reporter, reportedByEmp: me.employeeNumber, reportedAt: FieldValue.serverTimestamp(),
+    });
+    return { id: ref.id, odooId: null, test: true };
+  }
+
   const key = odooKey.value();
   let odooId;
   try {
@@ -893,11 +1081,19 @@ exports.reportProblem = onCall({ secrets: [odooKey] }, async (req) => {
 exports.markIssueFixed = onCall({ secrets: [odooKey] }, async (req) => {
   const me = await requireMember(req);
   if (!me.roles.some((r) => FIXER_ROLES.includes(r))) throw new HttpsError("permission-denied", "Only Maintenance and Admins can mark issues fixed.");
-  const ref = issues.doc(String(req.data?.id || ""));
+  const test = isTest(req);
+  const ref = col("issues", test).doc(String(req.data?.id || ""));
   const snap = await ref.get();
-  if (!snap.exists || snap.get("open") !== true) throw new HttpsError("failed-precondition", "That issue is already closed.");
+  if (!snap.exists) {
+    throw new HttpsError("failed-precondition", test ? "This is the test site — real Odoo requests can't be closed here. Report a test problem to try this." : "That issue no longer exists.");
+  }
+  if (snap.get("open") !== true) throw new HttpsError("failed-precondition", "That issue is already closed.");
   const note = typeof req.data?.note === "string" ? req.data.note.trim().slice(0, 1000) : "";
   const name = await employeeName(me.employeeNumber);
+  if (test) {
+    await ref.update({ open: false, stage: "Repaired", closedAt: FieldValue.serverTimestamp(), closedBy: name, closedByEmp: me.employeeNumber, fixNote: note });
+    return { ok: true, test: true };
+  }
   const today = plantToday();
   const key = odooKey.value();
   try {
@@ -982,10 +1178,276 @@ exports.syncOdoo = onSchedule({ schedule: "every 5 minutes", timeZone: "America/
 
 // Admins: "Sync now" — also the quickest check that the Odoo connection works.
 exports.adminSyncOdoo = onCall({ secrets: [odooKey] }, async (req) => {
-  await requireAdmin(req);
+  const adminNumber = await requireAdmin(req);
+  await auditLog.add({ type: "synced", kind: "odoo", recordId: "sync", by: adminNumber, at: FieldValue.serverTimestamp() });
   try {
     return await syncAndRecord(odooKey.value());
   } catch (err) {
     throw new HttpsError("unavailable", `Odoo sync failed: ${String(err.message || err).slice(0, 300)}`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Operator checklists (Plan Phase 3) — the old library's checklists, now signed by the signed-in person.
+//
+//   checklistTemplates/{id}      name, machineTypes, perLine, everyDays, items [{ id, text, photos, videos }]
+//   checklistUnits/{unitId}      items { [itemId]: { at (ms), by (employee #), byName } } — latest per item
+//   checklistSignoffs/{auto}     every sign-off ever (history): unitId, items, by, byName, at
+// Test site: test_checklistUnits / test_checklistSignoffs, so practice sign-offs never change real due dates.
+// ---------------------------------------------------------------------------
+
+async function liveUnits() {
+  const [t, l, m] = await Promise.all([checklistTemplates.get(), lines.get(), machines.get()]);
+  const templates = t.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const units = checklistsLib.checklistUnits(templates, l.docs.map((d) => ({ id: d.id, ...d.data() })), m.docs.map((d) => d.data()));
+  return { templates, units };
+}
+
+// Anyone signed in: { unitId, itemIds: [...], test? } — "I did these items", signed with their own sign-in.
+exports.signChecklist = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const unitIdIn = String(req.data?.unitId || "");
+  const itemIds = Array.isArray(req.data?.itemIds) ? [...new Set(req.data.itemIds.map(String))] : [];
+  if (!itemIds.length) throw new HttpsError("invalid-argument", "Check at least one item you did.");
+  const { templates, units } = await liveUnits();
+  const unit = units.find((u) => u.id === unitIdIn);
+  if (!unit) throw new HttpsError("not-found", "That checklist isn't in use any more.");
+  const template = templates.find((t) => t.id === unit.templateId);
+  const known = new Set((template.items || []).map((i) => i.id));
+  if (!itemIds.every((id) => known.has(id))) throw new HttpsError("invalid-argument", "That checklist changed. Close it and open it again.");
+
+  const at = Date.now();
+  const done = Object.fromEntries(itemIds.map((id) => [id, { at, by: me.employeeNumber, byName: me.name }]));
+  const batch = db.batch();
+  batch.set(
+    col("checklistUnits", test).doc(unit.id),
+    { templateId: unit.templateId, lineId: unit.lineId, items: done, updatedAt: FieldValue.serverTimestamp() },
+    { merge: true }
+  );
+  batch.create(col("checklistSignoffs", test).doc(), {
+    unitId: unit.id, templateId: unit.templateId, lineId: unit.lineId, items: itemIds,
+    by: me.employeeNumber, byName: me.name, at: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}),
+  });
+  await batch.commit();
+  return { ok: true, count: itemIds.length, test };
+});
+
+function requireTemplate(data, existing) {
+  const { template, error } = checklistsLib.cleanTemplate(data, existing);
+  if (error) throw new HttpsError("invalid-argument", error);
+  return template;
+}
+
+// Our own training files that came off a checklist go to the trash list (kept 30 days).
+function trashTemplateFiles(tx, before, after, templateId, by) {
+  const keep = new Set((after?.items || []).flatMap((i) => [...(i.photos || []), ...(i.videos || [])]));
+  for (const item of before?.items || []) {
+    for (const url of [...(item.photos || []), ...(item.videos || [])]) {
+      if (keep.has(url) || !fixesLib.storagePath(url, BUCKET)) continue;
+      tx.create(db.collection("trash").doc(), {
+        kind: "file", url, path: fixesLib.storagePath(url, BUCKET), templateId, itemId: item.id, title: `${before.name}: ${item.text}`,
+        trashedBy: by, trashedAt: FieldValue.serverTimestamp(), purgeAfter: purgeDate(),
+      });
+    }
+  }
+}
+
+// Admins: create { create: true, name, machineTypes, perLine, everyDays, items: [{ text }] }
+// or update { id, ...same, active? }. Items keep their history and training media when reworded.
+exports.adminSaveChecklist = onCall(async (req) => {
+  const adminNumber = await requireAdmin(req);
+  const isNew = req.data?.create === true;
+  return db.runTransaction(async (tx) => {
+    if (isNew) {
+      const template = requireTemplate(req.data, null);
+      const id = records.idFromName(template.name);
+      if (!records.isRecordId(id)) throw new HttpsError("invalid-argument", "Name must start with a letter.");
+      const ref = checklistTemplates.doc(id);
+      if ((await tx.get(ref)).exists) throw new HttpsError("already-exists", `"${template.name}" already exists.`);
+      tx.create(ref, { ...template, createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+      auditRecord(tx, "created", "checklist", id, adminNumber, { name: template.name });
+      return { id };
+    }
+    const ref = checklistTemplates.doc(String(req.data?.id || ""));
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "That checklist no longer exists.");
+    const template = requireTemplate(req.data, snap.data());
+    trashTemplateFiles(tx, snap.data(), template, ref.id, adminNumber);
+    tx.update(ref, { ...template, updatedAt: FieldValue.serverTimestamp() });
+    auditRecord(tx, "updated", "checklist", ref.id, adminNumber, { name: template.name, items: template.items.length, active: template.active });
+    return { id: ref.id };
+  });
+});
+
+// Admins: { templateId, itemId, photos, videos } — training photos/videos for one checklist item.
+exports.adminSetChecklistMedia = onCall(async (req) => {
+  const adminNumber = await requireAdmin(req);
+  const photos = fixesLib.cleanLinks(req.data?.photos);
+  const videos = fixesLib.cleanLinks(req.data?.videos);
+  if (!photos || !videos) throw new HttpsError("invalid-argument", "Photo and video links must be full https:// links (20 max each).");
+  const ref = checklistTemplates.doc(String(req.data?.templateId || ""));
+  const itemIdIn = String(req.data?.itemId || "");
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "That checklist no longer exists.");
+    const before = snap.data();
+    if (!(before.items || []).some((i) => i.id === itemIdIn)) throw new HttpsError("not-found", "That item is no longer on the checklist.");
+    const after = { ...before, items: before.items.map((i) => (i.id === itemIdIn ? { ...i, photos, videos } : i)) };
+    trashTemplateFiles(tx, before, after, ref.id, adminNumber);
+    tx.update(ref, { items: after.items, updatedAt: FieldValue.serverTimestamp() });
+    auditRecord(tx, "updated-media", "checklist", ref.id, adminNumber, { itemId: itemIdIn, photos: photos.length, videos: videos.length });
+  });
+  return { ok: true };
+});
+
+// Adds the old library's six checklists (only the ones not here yet).
+async function addStartingChecklists(adminNumber) {
+  const added = [];
+  for (const t of checklistsLib.STARTING_CHECKLISTS) {
+    const ref = checklistTemplates.doc(t.id);
+    if ((await ref.get()).exists) continue;
+    await ref.set({ ...checklistsLib.startingTemplate(t), createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+    added.push(t.id);
+  }
+  if (added.length) await auditLog.add({ type: "created", kind: "checklist", recordId: added.join(","), by: adminNumber, at: FieldValue.serverTimestamp() });
+  return added;
+}
+
+// Admins: "Add the starting checklists".
+exports.adminStartChecklists = onCall(async (req) => {
+  const adminNumber = await requireAdmin(req);
+  return { added: await addStartingChecklists(adminNumber) };
+});
+
+// Admins, safe to run again: copy the old library's checklist dates and training media (read-only there),
+// so due dates carry on at switch-over. Only newer dates replace what's here.
+exports.adminImportOldChecklists = onCall({ timeoutSeconds: 540, memory: "1GiB" }, async (req) => {
+  const adminNumber = await requireAdmin(req);
+  await addStartingChecklists(adminNumber);
+  const read = async (name) => {
+    const res = await fetch(OLD_LIBRARY_DOC.replace(/library$/, name));
+    if (res.status === 404) return {};
+    if (!res.ok) throw new HttpsError("unavailable", `Couldn't read the old library (HTTP ${res.status}).`);
+    const doc = await res.json();
+    return fixesLib.plainValue({ mapValue: { fields: doc.fields || {} } });
+  };
+  const oldState = (await read("checklists")).state || {};
+  const oldMedia = (await read("checklistMedia")).media || {};
+  const lineIds = new Set((await lines.get()).docs.map((d) => d.id));
+  const units = db.collection("checklistUnits");
+
+  // 1. Dates: "L1-extruder" -> "line-1__extruder", "chiller" -> "plant__chiller".
+  let datesCopied = 0;
+  for (const [key, items] of Object.entries(oldState)) {
+    const m = key.match(/^L(\d+)-(.+)$/);
+    const lineId = m ? `line-${m[1]}` : null;
+    const templateId = m ? m[2] : key;
+    if (lineId && !lineIds.has(lineId)) continue;
+    const ref = units.doc(checklistsLib.unitId(templateId, lineId));
+    const current = (await ref.get()).get("items") || {};
+    const newer = {};
+    for (const [itemIdOld, rec] of Object.entries(items || {})) {
+      const at = Number(rec?.at);
+      if (!at || (current[itemIdOld]?.at || 0) >= at) continue;
+      newer[itemIdOld] = { at, by: null, byName: String(rec.by || "").slice(0, 20) };
+    }
+    if (Object.keys(newer).length) {
+      await ref.set({ templateId, lineId, items: newer, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+      datesCopied += Object.keys(newer).length;
+    }
+  }
+
+  // 2. Training media: "extruder__clean_die_head" -> that item's photos/videos (files copied into our Storage).
+  const bucket = getStorage().bucket();
+  let filesCopied = 0;
+  const fileProblems = [];
+  async function copyFile(url) {
+    if (!fixesLib.isOldLibraryFile(url)) return url;
+    const file = bucket.file(`checklists/legacy/${fixesLib.oldFileName(url)}`);
+    try {
+      const [exists] = await file.exists();
+      if (!exists) {
+        const r = await fetch(url);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        await file.save(Buffer.from(await r.arrayBuffer()), { contentType: r.headers.get("content-type") || undefined, resumable: false });
+        filesCopied++;
+      }
+      return await getDownloadURL(file);
+    } catch (err) {
+      fileProblems.push(`${fixesLib.oldFileName(url)}: ${err.message}`);
+      return url;
+    }
+  }
+  let itemsWithMedia = 0;
+  for (const [key, m] of Object.entries(oldMedia)) {
+    const [templateId, itemIdOld] = key.split("__");
+    const ref = checklistTemplates.doc(templateId);
+    const snap = await ref.get();
+    if (!snap.exists) continue;
+    const items = snap.get("items") || [];
+    const item = items.find((i) => i.id === itemIdOld);
+    if (!item) continue;
+    const photos = [];
+    for (const u of (m?.photos || []).filter(Boolean)) photos.push(await copyFile(u));
+    const videos = [];
+    for (const u of (m?.videos || []).filter(Boolean)) videos.push(await copyFile(u));
+    item.photos = [...new Set([...(item.photos || []), ...photos])];
+    item.videos = [...new Set([...(item.videos || []), ...videos])];
+    await ref.update({ items, updatedAt: FieldValue.serverTimestamp() });
+    itemsWithMedia++;
+  }
+  await auditLog.add({
+    type: "imported", kind: "checklist", recordId: "old-library", by: adminNumber, at: FieldValue.serverTimestamp(),
+    datesCopied, itemsWithMedia, filesCopied,
+  });
+  return { datesCopied, itemsWithMedia, filesCopied, fileProblems };
+});
+
+// ---------------------------------------------------------------------------
+// Trash bin cleanup: every night, things in the trash for more than 30 days are removed for good.
+// A file is only deleted if no fix and no checklist still uses it.
+// ---------------------------------------------------------------------------
+
+async function purgeOnce(test) {
+  const now = new Date();
+  const bucket = getStorage().bucket();
+  const [allFixes, templates, oldFiles, oldFixes] = await Promise.all([
+    col("fixes", test).get(),
+    checklistTemplates.get(),
+    col("trash", test).where("purgeAfter", "<", now).get(),
+    col("fixes", test).where("status", "==", "trashed").where("purgeAfter", "<", now).get(),
+  ]);
+  const goingIds = new Set(oldFixes.docs.map((d) => d.id));
+  const inUse = new Set([
+    ...allFixes.docs.filter((d) => !goingIds.has(d.id)).flatMap((d) => fixesLib.fileLinks(d.data())),
+    ...templates.docs.flatMap((d) => (d.get("items") || []).flatMap((i) => [...(i.photos || []), ...(i.videos || [])])),
+  ]);
+  const removeFile = async (url) => {
+    const path = fixesLib.storagePath(url, BUCKET);
+    if (path && !inUse.has(url)) await bucket.file(path).delete({ ignoreNotFound: true });
+  };
+  let files = 0;
+  for (const t of oldFiles.docs) {
+    await removeFile(t.get("url"));
+    await t.ref.delete();
+    files++;
+  }
+  for (const f of oldFixes.docs) {
+    for (const url of fixesLib.fileLinks(f.data())) await removeFile(url);
+    await db.recursiveDelete(f.ref); // the fix and its version history
+  }
+  if (files || oldFixes.size) {
+    await auditLog.add({
+      type: "purged", kind: "trash", recordId: test ? "test" : "live", by: "system", at: FieldValue.serverTimestamp(),
+      files, fixes: oldFixes.size,
+    });
+  }
+  return { files, fixes: oldFixes.size };
+}
+
+// Every night at 3 a.m. plant time.
+exports.purgeTrash = onSchedule({ schedule: "every day 03:00", timeZone: "America/Chicago", retryCount: 0 }, async () => {
+  await purgeOnce(false);
+  await purgeOnce(true);
 });

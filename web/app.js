@@ -9,7 +9,7 @@
 // On a line tablet, 5 minutes with no taps signs the person out (and clears any half-typed
 // number or PIN), so the next person never acts as the last one.
 
-import { auth, callPinLogin, callChangePin } from "./firebase.js";
+import { auth, callPinLogin, callChangePin, TEST_MODE } from "./firebase.js";
 import { signInWithCustomToken, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
 import { el, friendlyError, spinner, toast, watchConnection } from "./ui.js";
 import { openAdmin } from "./admin.js";
@@ -17,10 +17,15 @@ import { openLines, openRoles } from "./setup.js";
 import { openFixLibrary } from "./fixlib.js";
 import { startData, stopData, data, onDataChange } from "./data.js";
 import { openIssueBoard, openReportForm } from "./issues.js";
+import { openChecklist, openChecklistAdmin, overdueBanner } from "./checklists.js";
+import { openActivity } from "./activity.js";
 
 const screen = document.getElementById("screen");
 const deviceBadge = document.getElementById("device-badge");
 watchConnection(document.getElementById("offline-banner"));
+
+// Test site: a solid orange bar on every screen, so nobody mistakes it for the real app.
+document.getElementById("test-banner").hidden = !TEST_MODE;
 
 const IDLE_LIMIT_MS = 5 * 60 * 1000;
 const LINE_TABLET_KEY = "cdg.lineTablet";
@@ -223,6 +228,7 @@ function renderHome() {
     el("h1", {}, `Hi, ${name}`),
     roles ? el("p", { class: "roles" }, `Employee ${state.claims.emp} · ${roles}`) : null,
     messageBox(),
+    overdueBanner((id) => openChecklistScreen(id, () => go("home"))),
     el("button", { class: "btn big danger", type: "button", onclick: () => openReport() }, "🚨 Report a problem"),
     issuesButton(),
     el("button", { class: "btn big", type: "button", onclick: () => openFixes() }, "🔧 Fix Library"),
@@ -292,7 +298,7 @@ function installCard() {
 }
 
 function isAdmin() {
-  return (state.claims.roles || []).includes("admin");
+  return me().admin;
 }
 
 // Admin screens live in admin.js (People) and setup.js (Lines & machines, Roles). They draw into the
@@ -306,8 +312,10 @@ const APPROVER_ROLES = ["admin"]; // Plan Decision 27 (updated: admins only appr
 
 const FIXER_ROLES = ["maintenance", "admin"]; // can mark issues fixed (moves the Odoo request to Repaired)
 
+// Roles come from the live employee record (data.myself) once it loads, so removing a role hides its
+// buttons right away; until then, from the sign-in pass. The server checks live roles on every change either way.
 function me() {
-  const roles = state.claims.roles || [];
+  const roles = data.myself?.roles || state.claims.roles || [];
   return {
     emp: state.claims.emp,
     admin: roles.includes("admin"),
@@ -317,12 +325,25 @@ function me() {
 }
 
 // Fix Library for everyone. `category` (id or name, any case) opens it filtered, e.g. from a QR code (?cat=Die).
-function openFixes(category = null) {
+// `machine` (e.g. "M-001", from a machine's QR code ?m=M-001) opens that machine's page.
+function openFixes(category = null, machine = null) {
+  if (closeModule) closeModule();
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openFixLibrary(screen, {
-    me: me(), onExit: () => go("home"), startCategory: category,
-    onReport: (machineTypes) => openReport(machineTypes, () => openFixes(category)),
+    me: me(), onExit: () => go("home"), startCategory: category, startMachine: machine,
+    onReport: (machineTypes, machineId) => openReport(machineTypes, () => openFixes(category, machineId || machine), machineId),
     onIssues: () => openIssues(),
+    onChecklist: (unitId) => openChecklistScreen(unitId, () => openFixes(category, machine)),
+  });
+}
+
+// One operator checklist (signed as the signed-in person). `back` returns where it was opened from.
+function openChecklistScreen(unitId, back) {
+  if (closeModule) closeModule();
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  closeModule = openChecklist(screen, {
+    me: me(), unitId,
+    onExit: (message) => { back(); if (message) toast(message); },
   });
 }
 
@@ -334,10 +355,10 @@ function openIssues() {
 }
 
 // Report a problem -> Odoo request. `machineTypes` narrows the machine list (from a Fix Library category).
-function openReport(machineTypes = null, back = () => go("home")) {
+function openReport(machineTypes = null, back = () => go("home"), machineId = null) {
   if (closeModule) closeModule();
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
-  closeModule = openReportForm(screen, { me: me(), machineTypes, onExit: back, onDone: () => openIssues() });
+  closeModule = openReportForm(screen, { me: me(), machineTypes, machineId, onExit: back, onDone: () => openIssues() });
 }
 
 function issuesButton() {
@@ -357,6 +378,8 @@ function renderAdminMenu() {
     el("button", { class: "btn", type: "button", onclick: () => openModule(openAdmin) }, "👥 People"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openLines) }, "🏭 Lines & machines"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openRoles) }, "🏷 Roles"),
+    el("button", { class: "btn", type: "button", onclick: () => openModule((c, o) => openChecklistAdmin(c, { ...o, me: me() })) }, "📋 Checklists"),
+    el("button", { class: "btn", type: "button", onclick: () => openModule(openActivity) }, "📜 Admin activity"),
     deviceCard(), // one-time device setup, so it lives here rather than on Home
   ];
 }
@@ -520,11 +543,13 @@ onAuthStateChanged(auth, async (user) => {
   } else {
     startData(me());
     go("home");
-    // Opened from a QR code or link like ?cat=Die: go straight to that Fix Library category (once).
-    const cat = new URLSearchParams(location.search).get("cat");
-    if (cat) {
+    // Opened from a QR code: ?m=M-001 goes straight to that machine; older ?cat=Die codes to that category (once).
+    const params = new URLSearchParams(location.search);
+    const cat = params.get("cat");
+    const machine = params.get("m");
+    if (cat || machine) {
       history.replaceState(null, "", location.pathname);
-      openFixes(cat);
+      openFixes(cat, machine);
     }
   }
 });

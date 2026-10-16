@@ -2,7 +2,13 @@ rules_version = '2';
 
 // Firestore (database) security rules for cdg-ops-app.
 // Default: everything is locked. Each feature opens only the access it needs.
-// Server code (Cloud Functions) is not limited by these rules — all changes go through it.
+//
+// Phones and tablets can only READ. Every change goes through the server code (Cloud Functions), which
+// checks the person's live role first and writes the audit log — so the database rejects any direct
+// change from anyone, admin or not.
+//
+// Roles are checked against the LIVE employee record on every read (not the sign-in pass), so turning
+// someone off or removing their Admin role takes effect immediately.
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -11,53 +17,111 @@ service cloud.firestore {
       return request.auth != null && request.auth.token.pinTemp != true;
     }
 
-    // Admins approve fixes and see admin-only lists (Plan Decision 27, updated: admins only).
-    function approver() {
-      return signedIn() && request.auth.token.roles.hasAny(['admin']);
+    function employee() {
+      return get(/databases/$(database)/documents/employees/$(request.auth.token.emp)).data;
     }
 
-    // Lines, machines, roles: everyone signed in can read (shop map, checklists, Fix Library need them).
-    // Only the server changes them (admin screens call adminSaveLine / adminSaveMachine / adminSaveRole).
+    // Signed in and the account is on right now.
+    function member() {
+      return signedIn() && employee().active != false;
+    }
+
+    // Has the Admin role right now.
+    function admin() {
+      return member() && employee().roles.hasAny(['admin']);
+    }
+
+    // Your own employee record (name, roles, on/off) — so the app shows the right buttons the moment an
+    // admin changes your roles. Never anyone else's, and never PIN records.
+    match /employees/{employeeNumber} {
+      allow read: if signedIn() && request.auth.token.emp == employeeNumber;
+    }
+
+    // Lines, machines, roles, checklists: everyone signed in can read (shop map, checklists, Fix Library).
+    // Only the server changes them (admin screens).
     match /lines/{id} {
-      allow read: if signedIn();
+      allow read: if member();
     }
     match /machines/{id} {
-      allow read: if signedIn();
+      allow read: if member();
     }
     match /roles/{id} {
-      allow read: if signedIn();
+      allow read: if member();
+    }
+    match /checklistTemplates/{id} {
+      allow read: if member();
     }
 
-    // Fix Library. Everyone signed in reads approved fixes and categories. Pending/rejected/retired
-    // fixes: approvers see all; others see only their own suggestions. Changes: server only (submitFix, …).
+    // Checklist due dates (latest sign-off per item). The test site uses test_checklistUnits.
+    match /checklistUnits/{id} {
+      allow read: if member();
+    }
+    match /test_checklistUnits/{id} {
+      allow read: if member();
+    }
+
+    // Every sign-off ever (history) — admins only.
+    match /checklistSignoffs/{id} {
+      allow read: if admin();
+    }
+    match /test_checklistSignoffs/{id} {
+      allow read: if admin();
+    }
+
+    // Fix Library. Everyone reads approved fixes. Pending/rejected/retired/trashed: admins see all;
+    // others see only their own suggestions. Version history: admins only.
     match /fixCategories/{id} {
-      allow read: if signedIn();
+      allow read: if member();
     }
     match /fixes/{id} {
-      allow read: if signedIn() && (
+      allow read: if member() && (
         resource.data.status == 'approved'
-        || approver()
+        || admin()
         || resource.data.createdBy == request.auth.token.emp
       );
+      match /versions/{v} {
+        allow read: if admin();
+      }
+    }
+    match /test_fixes/{id} {
+      allow read: if member() && (
+        resource.data.status == 'approved'
+        || admin()
+        || resource.data.createdBy == request.auth.token.emp
+      );
+      match /versions/{v} {
+        allow read: if admin();
+      }
     }
 
-    // Open issues (mirrored from Odoo maintenance requests): everyone signed in can read.
-    // Changes come only from the server (reportProblem, markIssueFixed, the 5-minute Odoo sync).
+    // Trash bin (photos/videos taken off fixes and checklists, kept 30 days) — admins only.
+    match /trash/{id} {
+      allow read: if admin();
+    }
+    match /test_trash/{id} {
+      allow read: if admin();
+    }
+
+    // Open issues (mirrored from Odoo maintenance requests). Test-site practice reports: test_issues.
     match /issues/{id} {
-      allow read: if signedIn();
+      allow read: if member();
+    }
+    match /test_issues/{id} {
+      allow read: if member();
     }
 
-    // Odoo sync status — admins only.
+    // Admin-only lists: who did what (every admin action), Odoo sync status, searches with no results.
+    match /auditLog/{id} {
+      allow read: if admin();
+    }
     match /meta/odooSync {
-      allow read: if approver();
+      allow read: if admin();
     }
-
-    // Searches that found no fixes — admins only (tells you what fixes to write next).
     match /searchGaps/{id} {
-      allow read: if approver();
+      allow read: if admin();
     }
 
-    // Everything else — employees, PIN records, audit log, counters — stays locked.
+    // Everything else — employees, PIN records, counters — stays locked.
     match /{document=**} {
       allow read, write: if false;
     }

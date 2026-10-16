@@ -59,6 +59,7 @@ h2 { font-size: var(--text-section); line-height: 1.25; margin: var(--s4) 0 var(
 strong { font-weight: bold; }
 small, .small-print { font-size: var(--text-small); }
 .hint { color: var(--muted); text-align: center; margin: 0 0 var(--s3); }
+.fix-title + .hint { text-align: left; }
 .muted { color: var(--muted); }
 .roles { color: var(--muted); text-align: center; margin: 0 0 var(--s2); }
 .small-print { margin-top: var(--s4); }
@@ -103,6 +104,22 @@ small, .small-print { font-size: var(--text-small); }
   text-align: center;
 }
 .offline-banner[hidden] { display: none; }
+
+/* Test site only: solid orange, on every screen. */
+.test-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: var(--s2) var(--s3);
+  background: var(--orange);
+  color: var(--black);
+  font-weight: bold;
+  text-align: center;
+}
+.test-banner[hidden] { display: none; }
+.tag.test { background: var(--orange); color: var(--black); font-weight: bold; }
+.message.test-note { border-left-color: var(--orange); background: var(--orange-tint); font-weight: bold; }
 
 /* ---- Page area ---------------------------------------------------------- */
 main {
@@ -519,6 +536,92 @@ details.fold[open] .fold-arrow { transform: rotate(180deg); }
 .helpful { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; margin: var(--s3) 0; }
 .related { margin-top: var(--s4); }
 
+/* ---- Fix Library: Maintenance Request banner, overdue banner, machines ------------- */
+/* Full-width red banner — always the whole width, on every screen size. */
+.mr-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 72px;
+  margin: var(--s3) 0;
+  padding: var(--s2) var(--s3);
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--red);
+  color: var(--white);
+  font-family: inherit;
+  font-size: var(--text-section);
+  font-weight: bold;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: filter var(--fast), transform var(--fast);
+}
+.mr-banner:active { transform: scale(0.99); filter: brightness(0.88); }
+
+/* Overdue checklists — red, at the top, never folded away. */
+.alert-banner {
+  margin: var(--s3) 0;
+  padding: var(--s3);
+  border-radius: var(--radius);
+  border-left: 6px solid var(--red);
+  background: var(--red-tint);
+}
+.alert-banner > strong { display: block; font-size: var(--text-section); }
+.alert-pills { display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s2); }
+.alert-pill {
+  min-height: var(--tap);
+  padding: var(--s2) var(--s3);
+  border: var(--border-width) solid var(--red);
+  border-radius: var(--radius);
+  background: var(--black);
+  color: var(--white);
+  font-family: inherit;
+  font-size: var(--text-body);
+  font-weight: bold;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background var(--fast), transform var(--fast);
+}
+.alert-pill:active { transform: scale(0.97); }
+
+.machine-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--s2); }
+.machine-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s1);
+  min-height: 80px;
+  padding: var(--s3);
+  border: var(--border-width) solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  color: var(--white);
+  font-family: inherit;
+  font-size: var(--text-body);
+  text-align: left;
+  overflow-wrap: break-word;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background var(--fast), border-color var(--fast), transform var(--fast);
+}
+.machine-tile:active { transform: scale(0.98); background: var(--surface-3); }
+.machine-tile.down { border-color: var(--red); background: var(--red-tint); }
+.row-between { display: flex; justify-content: space-between; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+
+/* ---- Checklist ---------------------------------------------------------------- */
+.ck-list { display: flex; flex-direction: column; gap: var(--s2); margin: var(--s3) 0; }
+.ck-item { border-radius: var(--radius); background: var(--surface-1); border: var(--border-width) solid transparent; transition: border-color var(--fast); }
+.ck-item.on { border-color: var(--orange); }
+.ck-item .check-row { margin: 0; min-height: 64px; padding: var(--s2) var(--s3); background: transparent; }
+.ck-item .check-row > span { display: flex; flex-direction: column; gap: 2px; }
+.ck-item .link-btn { margin-left: calc(28px + var(--s3) * 2); }
+.ck-last { color: var(--muted); font-size: var(--text-small); }
+.ck-last.late { color: var(--white); font-weight: bold; }
+.ck-last.late::before { content: "⚠ "; }
+
 /* ---- Open issues ---------------------------------------------------------------- */
 .issue-grid { display: grid; gap: var(--s2); margin: var(--s3) 0; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
 .issue-card {
@@ -584,7 +687,9 @@ details.fold[open] .fold-arrow { transform: rotate(180deg); }
   .btn.secondary:hover:not(:disabled) { border-color: var(--orange); }
   .person-row:hover, .issue-card:hover, .check-row:hover { background: var(--surface-2); }
   .issue-card.down:hover { background: var(--red-tint); filter: brightness(1.15); }
-  .chip:hover, .choice:hover, .picker:hover, .picker-option:hover { border-color: var(--orange); }
+  .chip:hover, .choice:hover, .picker:hover, .picker-option:hover, .machine-tile:hover { border-color: var(--orange); }
+  .mr-banner:hover { filter: brightness(1.1); }
+  .alert-pill:hover { background: var(--red); }
   details.fold > summary:hover { color: var(--orange); }
   .key:hover:not(:disabled) { background: var(--surface-3); }
   .link-btn:hover { color: var(--white); }
@@ -624,6 +729,8 @@ details.fold[open] .fold-arrow { transform: rotate(180deg); }
     vertical-align: top;
   }
   main[data-width="wide"] .btn.big { min-width: 320px; }
+  main[data-width="wide"] .machine-grid { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+  main[data-width="wide"] .ck-list { max-width: 820px; }
   .sheet .btn { display: flex; width: 100%; }
 
   /* Lists flow into columns. */

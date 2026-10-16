@@ -2,15 +2,17 @@
 // Approved fixes come live from the database (data.js). Every change goes through the server
 // (submitFix, reviewFix, retireFix, voteFix), which checks the person's live role.
 
-import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, picker, collapsible } from "./ui.js";
+import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, picker, collapsible, breakable } from "./ui.js";
 import { data, onDataChange, lineName } from "./data.js";
 import {
-  db, storage, callSubmitFix, callReviewFix, callRetireFix, callVoteFix, callAdminImportOldLibrary,
-  callLogSearchGap, callAdminMarkSearchGap, callAdminBulkAddFixes,
+  db, storage, TEST_MODE, LIVE_HOST, callSubmitFix, callReviewFix, callRetireFix, callVoteFix, callAdminImportOldLibrary,
+  callLogSearchGap, callAdminMarkSearchGap, callAdminBulkAddFixes, callDeleteFix, callRestoreFix, callRestoreFixVersion,
+  callRestoreTrashedFile, callAdminListEmployees,
 } from "./firebase.js";
 import { ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-storage.js";
-import { collection, onSnapshot } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
+import { collection, onSnapshot, getDocs, query, where, orderBy, limit } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 import { issueCard } from "./issues.js";
+import { overdueBanner, overdueUnits, unitsForMachine, checklistCard } from "./checklists.js";
 
 const BODY_TEMPLATE = "Symptom:\n\nCause:\n\nFix (steps):\n1. \n";
 
@@ -18,8 +20,8 @@ const BODY_TEMPLATE = "Symptom:\n\nCause:\n\nFix (steps):\n1. \n";
 const MAINTENANCE_FORM_URL =
   "https://forms.cloud.microsoft/pages/responsepage.aspx?id=RYTjE-lToUWZ7ucD-FImerLtIR47y8VNk3kCsQnMjW1UMU9UUFlJNkRaRE9LMk9BOEk5NDQzS080RC4u&origin=QRCode&route=shorturl";
 
-// QR codes always point at the live app, even when printed from a test copy.
-const APP_URL = "https://cdg-ops.netlify.app";
+// QR codes always point at the live app, even when printed from the test site.
+const APP_URL = `https://${LIVE_HOST}`;
 
 // Local QR code maker (no outside service sees the links). Loaded only when the QR page opens.
 const QR_LIBRARY = "https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js";
@@ -60,17 +62,22 @@ export function parseBulkFixes(raw) {
     .filter((i) => i.title);
 }
 
-// `me` = { emp, approver, admin }. `startCategory` opens the library filtered (e.g. from a QR code).
-export function openFixLibrary(container, { me, onExit, startCategory = null, onReport = null, onIssues = null }) {
+// `me` = { emp, approver, admin }. Opens on the machine picker. `startMachine` (e.g. "M-001", from a machine's
+// QR code) opens that machine; `startCategory` (old category QR codes, ?cat=Die) opens that category's fixes.
+export function openFixLibrary(container, { me, onExit, startCategory = null, startMachine = null, onReport = null, onIssues = null, onChecklist = null }) {
   const ui = {
-    view: "list", // list | fix | form | gaps | qr | bulk
+    view: startMachine ? "machine" : "list", // list | machine | fix | form | gaps | qr | bulk | trash | history
+    machineId: startMachine,
     search: "",
-    category: startCategory || "all", // all | pending | <categoryId>
+    category: startCategory || "none", // none | pending | <categoryId> — "Browse by category" (fixes stay hidden until picked)
     attach: "all", // all | photo | video | doc | needsVideo
     gaps: null, // admins: searches with no results (live)
     bulkText: "",
     fixId: null,
     draft: null,
+    trash: null, // admins: { fixes, files } while the trash bin is open
+    versions: null, // admins: a fix's saved versions while History is open
+    names: null, // admins: employee # -> name, for history and trash
     busy: false,
     message: "",
     messageKind: "",
@@ -109,13 +116,24 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
   const categories = () => (data.fixCategories || []).filter((c) => c.active !== false);
   const categoryName = (id) => data.fixCategories?.find((c) => c.id === id)?.name || "General";
   const allFixes = () => [...(data.fixes || []), ...(data.myFixes || []).filter((f) => f.status !== "approved")];
-  const fix = () => allFixes().find((f) => f.id === ui.fixId);
+  const fix = () => allFixes().find((f) => f.id === ui.fixId) || ui.trash?.fixes.find((f) => f.id === ui.fixId);
   const pending = () => (data.myFixes || []).filter((f) => f.status === "pending");
+  const machine = () => data.machines?.find((m) => m.id === ui.machineId);
+  const activeMachines = () => (data.machines || []).filter((m) => m.active !== false);
+  // On the test site, real fixes are read-only (the server refuses changes too).
+  const readOnly = (f) => TEST_MODE && !f.test;
+  const who = (emp) => (emp === "system" ? "Automatic" : ui.names?.get(emp) || (emp ? `#${emp}` : ""));
 
   // Machines a fix applies to: every machine of the category's types, plus any pinned ones.
   function machinesFor(f) {
     const types = data.fixCategories?.find((c) => c.id === f.categoryId)?.machineTypes || [];
-    return (data.machines || []).filter((m) => m.active !== false && (types.includes(m.type) || (f.machineIds || []).includes(m.id)));
+    return activeMachines().filter((m) => types.includes(m.type) || (f.machineIds || []).includes(m.id));
+  }
+
+  // Fixes for one machine: its type's categories, plus fixes pinned to it.
+  function fixesForMachine(m) {
+    const cats = new Set((data.fixCategories || []).filter((c) => (c.machineTypes || []).includes(m.type)).map((c) => c.id));
+    return (data.fixes || []).filter((f) => cats.has(f.categoryId) || (f.machineIds || []).includes(m.id));
   }
 
   // All words must appear somewhere in the title, write-up, tags, or category.
@@ -133,134 +151,191 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
     return m ? m[1] : null;
   }
 
-  // ---- library list -------------------------------------------------------
+  // Admins: employee names for history/trash (one call, then kept).
+  async function loadNames() {
+    if (ui.names || !me.admin) return;
+    try {
+      const { data: r } = await callAdminListEmployees();
+      ui.names = new Map(r.employees.map((e) => [e.employeeNumber, e.name]));
+      render();
+    } catch {
+      ui.names = new Map(); // numbers still show
+    }
+  }
+
+  const fmtDay = (d) => {
+    if (!d) return "—";
+    const [y, mo, da] = d.split("-").map(Number);
+    const date = new Date(y, mo - 1, da);
+    const days = Math.round((new Date().setHours(0, 0, 0, 0) - date) / 86400000);
+    return `${date.toLocaleDateString("en-US", { month: "short", day: "numeric", ...(y !== new Date().getFullYear() ? { year: "numeric" } : {}) })} · ${days <= 0 ? "today" : days === 1 ? "1 day ago" : `${days} days ago`}`;
+  };
+
+  // ---- the red Maintenance Request banner (full width, every library screen) ---------------
+
+  function maintenanceBanner(m = null) {
+    const label = m ? `🚨 Submit a Maintenance Request — ${m.name}` : "🚨 Submit a Maintenance Request";
+    if (onReport) return el("button", { class: "mr-banner", type: "button", onclick: () => onReport(null, m?.id || null) }, label);
+    return el("a", { class: "mr-banner", href: MAINTENANCE_FORM_URL, target: "_blank", rel: "noopener" }, label);
+  }
+
+  // Overdue checklists, at the top and never hidden.
+  const overdue = () => overdueBanner((id) => onChecklist && onChecklist(id));
+
+  // Attachment filters (photos, videos, documents, needs video) — tucked under "More filters".
+  function attachFilters() {
+    const on = ui.attach !== "all" ? ATTACH_FILTERS[ui.attach].label : "";
+    const chip = (id, label) =>
+      el("button", { class: ui.attach === id ? "chip on" : "chip", type: "button", onclick: () => { ui.attach = ui.attach === id ? "all" : id; render(); } }, label);
+    return collapsible("fix-more-filters", on ? `More filters · ${on}` : "More filters",
+      el("div", { class: "chips" }, Object.entries(ATTACH_FILTERS).map(([id, f]) => chip(id, f.label))));
+  }
+  const attachFilter = (list) => (ui.attach === "all" ? list : list.filter(ATTACH_FILTERS[ui.attach].test));
+
+  // ---- library home: overdue, Maintenance Request, search, machines by line ----------------
 
   function renderList() {
-    if (!data.fixes || !data.fixCategories) return [back("Home", onExit), el("h1", {}, "Fix Library"), spinner("Loading fixes…")];
+    if (!data.fixes || !data.fixCategories || !data.machines || !data.lines) {
+      return [back("Home", onExit), el("h1", {}, "Fix Library"), overdue(), maintenanceBanner(), spinner("Loading the library…")];
+    }
 
-    // A category from a link/QR code may be a name ("Die", "vacuum tank") rather than an id.
-    if (!["all", "pending"].includes(ui.category) && !data.fixCategories.some((c) => c.id === ui.category)) {
+    // A category from an old QR code may be a name ("Die", "vacuum tank") rather than an id.
+    if (!["none", "pending"].includes(ui.category) && !data.fixCategories.some((c) => c.id === ui.category)) {
       const wanted = String(ui.category).trim().toLowerCase();
-      ui.category = data.fixCategories.find((c) => c.name.toLowerCase() === wanted)?.id || "all";
+      ui.category = data.fixCategories.find((c) => c.name.toLowerCase() === wanted)?.id || "none";
     }
 
     const counts = new Map();
     for (const f of data.fixes) counts.set(f.categoryId, (counts.get(f.categoryId) || 0) + 1);
     const waiting = me.approver ? pending().length : 0;
 
-    // Search box keeps its place while typing: only the results redraw.
-    const results = el("div", { class: "person-list" });
-    const drawResults = () => {
+    // Fixes stay hidden until someone searches or picks a machine (or a category below).
+    // The search box keeps its place while typing: only this part redraws.
+    const body = el("div", {});
+    const drawBody = () => {
       const w = ui.search.toLowerCase().split(/\s+/).filter(Boolean);
-      let l = ui.category === "pending" ? pending() : data.fixes;
-      if (ui.category !== "all" && ui.category !== "pending") l = l.filter((f) => f.categoryId === ui.category);
-      if (ui.attach !== "all") l = l.filter(ATTACH_FILTERS[ui.attach].test);
-      if (w.length) l = l.filter((f) => matches(f, w));
-      results.replaceChildren(
-        ...(l.length
-          ? l.map(fixRow)
-          : [w.length
-              ? emptyState("No fixes match", "Try fewer or different words. If the fix isn't written yet, add it with “+ Add a fix”.")
-              : ui.category === "pending"
-              ? emptyState("Nothing waiting for approval", "New suggestions show up here.")
-              : emptyState("No fixes here yet", "Tap “+ Add a fix” to write the first one.")])
-      );
-      if (w.length && !l.length) noteSearchGap(ui.search);
+      if (w.length) {
+        const l = attachFilter(data.fixes.filter((f) => matches(f, w)));
+        body.replaceChildren(
+          el("p", { class: "hint" }, `${l.length} fix${l.length === 1 ? "" : "es"} found`),
+          l.length
+            ? el("div", { class: "person-list" }, l.map(fixRow))
+            : emptyState("No fixes match", "Try fewer or different words. If the fix isn't written yet, add it with “+ Add a fix”.")
+        );
+        if (!l.length) noteSearchGap(ui.search);
+        return;
+      }
+      if (ui.category !== "none") {
+        const l = attachFilter(ui.category === "pending" ? pending() : data.fixes.filter((f) => f.categoryId === ui.category));
+        body.replaceChildren(
+          el("h2", {}, ui.category === "pending" ? "⏳ Waiting for approval" : categoryName(ui.category)),
+          el("button", { class: "btn secondary", type: "button", onclick: () => { ui.category = "none"; render(); } }, "← Back to machines"),
+          l.length ? el("div", { class: "person-list" }, l.map(fixRow))
+            : ui.category === "pending" ? emptyState("Nothing waiting for approval", "New suggestions show up here.")
+            : emptyState("No fixes here yet", "Tap “+ Add a fix” to write the first one.")
+        );
+        return;
+      }
+      body.replaceChildren(...machinePicker().flat(3));
     };
 
     const searchBox = el("input", {
       class: "field search", type: "search", placeholder: "Search fixes (e.g. die heater)", value: ui.search,
       "aria-label": "Search fixes", autocomplete: "off",
-      oninput: (e) => { ui.search = e.target.value; drawResults(); },
+      oninput: (e) => { ui.search = e.target.value; drawBody(); },
     });
-    drawResults();
-
-    const attachChip = (id, label) =>
-      el("button", { class: ui.attach === id ? "chip on" : "chip", type: "button", onclick: () => { ui.attach = ui.attach === id ? "all" : id; render(); } }, label);
-
-    // Category is one big picker instead of a wall of buttons; attachment filters fold away under
-    // "More filters" (the summary says which one is on). Sign-offs due stay in plain sight.
-    const categoryPicker = picker({
-      id: "fx-filter-cat",
-      title: "Show fixes for",
-      value: ui.category,
-      options: [
-        { value: "all", label: `All categories (${data.fixes.length})` },
-        ...(waiting ? [{ value: "pending", label: `⏳ Waiting for approval (${waiting})` }] : []),
-        ...categories().filter((c) => counts.get(c.id)).map((c) => ({ value: c.id, label: `${c.name} (${counts.get(c.id)})` })),
-      ],
-      onChange: (v) => { ui.category = v; render(); },
-    });
-    const attachOn = ui.attach !== "all" ? ATTACH_FILTERS[ui.attach].label : "";
+    drawBody();
 
     const myOwn = !me.approver ? (data.myFixes || []).filter((f) => f.status !== "approved") : [];
     return [
       back("Home", onExit),
       el("h1", {}, "Fix Library"),
+      overdue(),
+      maintenanceBanner(),
       messageBox(),
       waiting && ui.category !== "pending"
-        ? el("button", { class: "btn secondary", type: "button", onclick: () => { ui.category = "pending"; render(); } }, `⏳ ${waiting} waiting for your approval`)
+        ? el("button", { class: "btn secondary", type: "button", onclick: () => { ui.search = ""; ui.category = "pending"; render(); } }, `⏳ ${waiting} waiting for your approval`)
         : null,
       searchBox,
-      el(
-        "div",
-        { class: "filter-row" },
-        categoryPicker,
-        collapsible("fix-more-filters", attachOn ? `More filters · ${attachOn}` : "More filters",
-          el("div", { class: "chips" }, Object.entries(ATTACH_FILTERS).map(([id, f]) => attachChip(id, f.label))))
+      attachFilters(),
+      body,
+      myOwn.length ? el("div", { class: "card" }, el("strong", {}, "Your suggestions"), myOwn.map((f) => fixRow(f))) : null,
+      el("button", { class: "btn secondary", type: "button", onclick: () => startForm(null) }, "+ Add a fix"),
+      collapsible(
+        "fix-by-category",
+        "Browse all fixes by category",
+        picker({
+          id: "fx-filter-cat", title: "Show fixes for", value: ui.category, placeholder: "Pick a category…",
+          options: categories().filter((c) => counts.get(c.id)).map((c) => ({ value: c.id, label: `${c.name} (${counts.get(c.id)})` })),
+          onChange: (v) => { ui.search = ""; ui.category = v; render(); window.scrollTo(0, 0); },
+        })
       ),
-      el("button", { class: "btn", type: "button", onclick: () => startForm(null) }, "+ Add a fix"),
-      maintenanceRequestButton(data.fixCategories.find((c) => c.id === ui.category)?.machineTypes),
-      !["all", "pending"].includes(ui.category) ? maintenancePanel(machinesOfCategory(ui.category)) : null,
-      myOwn.length
-        ? el("div", { class: "card" }, el("strong", {}, "Your suggestions"), myOwn.map((f) => fixRow(f)))
-        : null,
-      results,
       me.admin ? adminTools() : null,
     ];
   }
 
-  // In the app: opens Report a problem (creates the Odoo request), narrowed to these machine types.
-  // Without the in-app form available, falls back to the old Microsoft Form.
-  function maintenanceRequestButton(machineTypes = null) {
-    if (onReport) {
-      return el("button", { class: "btn secondary", type: "button", onclick: () => onReport(machineTypes && machineTypes.length ? machineTypes : null) }, "🚨 Report a problem");
-    }
-    return el("a", { class: "btn secondary", href: MAINTENANCE_FORM_URL, target: "_blank", rel: "noopener" }, "🚨 Report a problem");
-  }
-
-  // Last PM / last repair (from Odoo) and open issues for a set of machines — like the old library's panel.
-  function maintenancePanel(machineList) {
-    if (!machineList.length) return null;
-    const ids = new Set(machineList.map((m) => m.id));
-    const open = (data.openIssues || []).filter((i) => ids.has(i.machineId));
-    const fmt = (d) => {
-      if (!d) return el("span", { class: "muted" }, "—");
-      const [y, mo, da] = d.split("-").map(Number);
-      const date = new Date(y, mo - 1, da);
-      const days = Math.round((new Date().setHours(0, 0, 0, 0) - date) / 86400000);
-      return [date.toLocaleDateString("en-US", { month: "short", day: "numeric", ...(y !== new Date().getFullYear() ? { year: "numeric" } : {}) }),
-        el("small", { class: "muted" }, ` ${days <= 0 ? "today" : days === 1 ? "1 day ago" : `${days} days ago`}`)];
+  // Machines grouped by line. Each tile shows what needs attention (issue open, checklist overdue).
+  function machinePicker() {
+    const late = new Set(overdueUnits().map((u) => u.id));
+    const issueOn = new Set((data.openIssues || []).map((i) => i.machineId));
+    const tile = (m) => {
+      const down = (data.openIssues || []).some((i) => i.machineId === m.id && i.lineDown);
+      const ckLate = unitsForMachine(m).some((u) => late.has(u.id));
+      return el(
+        "button",
+        { class: down ? "machine-tile down" : "machine-tile", type: "button", onclick: () => { ui.machineId = m.id; show("machine"); } },
+        el("span", { class: "person-name" }, breakable(m.name)),
+        el("span", { class: "person-meta" }, m.id),
+        issueOn.has(m.id) || ckLate
+          ? el("span", { class: "tags" },
+              issueOn.has(m.id) ? el("span", { class: "tag off" }, down ? "⛔ Line down" : "🚨 Open issue") : null,
+              ckLate ? el("span", { class: "tag warn" }, "⚠ Checklist due") : null)
+          : null
+      );
     };
-    return el(
-      "div",
-      { class: "card maint-panel" },
-      open.length
-        ? [el("strong", {}, `🚨 Open issues (${open.length})`), el("div", { class: "issue-grid" }, open.map((i) => issueCard(i, () => onIssues && onIssues())))]
-        : null,
-      el("strong", {}, "🔧 Last maintenance ", el("small", { class: "muted" }, "from Odoo")),
-      el(
-        "table",
-        { class: "info-table" },
-        el("tr", {}, el("th", {}, "Machine"), el("th", {}, "Last PM"), el("th", {}, "Last repair")),
-        machineList.map((m) => el("tr", {}, el("td", {}, `${m.id} · ${m.lineId ? lineName(m.lineId) : m.name}`), el("td", {}, fmt(m.lastPmDate)), el("td", {}, fmt(m.lastRepairDate))))
-      )
-    );
+    const groups = (data.lines || []).filter((l) => l.active !== false)
+      .map((l) => [l.name, activeMachines().filter((m) => m.lineId === l.id)])
+      .concat([["Plant / other", activeMachines().filter((m) => !m.lineId)]])
+      .filter(([, list]) => list.length);
+    if (!groups.length) return [emptyState("No machines yet", "An admin adds them in Admin → Lines & machines.")];
+    return [
+      el("p", { class: "hint" }, "Tap a machine to see its fixes, last service, and checklist — or search above."),
+      groups.map(([name, list]) => [el("h2", {}, name), el("div", { class: "machine-grid" }, list.map(tile))]),
+    ];
   }
 
-  function machinesOfCategory(categoryId) {
-    const types = data.fixCategories?.find((c) => c.id === categoryId)?.machineTypes || [];
-    return (data.machines || []).filter((m) => m.active !== false && types.includes(m.type));
+  // ---- one machine ------------------------------------------------------------------
+
+  function renderMachine() {
+    const m = machine();
+    if (!data.machines || !data.fixes) return [back("Fix Library", () => show("list")), spinner()];
+    if (!m) return [back("Fix Library", () => show("list")), emptyState("Machine not found", `There's no machine ${ui.machineId || ""} in the app.`)];
+    const open = (data.openIssues || []).filter((i) => i.machineId === m.id);
+    const list = attachFilter(fixesForMachine(m));
+    return [
+      back("Fix Library", () => { ui.machineId = null; show("list"); }),
+      el("h1", { class: "fix-title" }, breakable(m.name)),
+      el("p", { class: "hint" }, [m.id, m.lineId ? lineName(m.lineId) : "Plant / other", m.type].filter(Boolean).join(" · ")),
+      overdue(),
+      maintenanceBanner(m),
+      messageBox(),
+      el(
+        "div",
+        { class: "card" },
+        el("strong", {}, "🔧 Last service ", el("small", { class: "muted" }, "from Odoo")),
+        el("table", { class: "info-table" },
+          el("tr", {}, el("th", {}, "Last PM"), el("td", {}, fmtDay(m.lastPmDate))),
+          el("tr", {}, el("th", {}, "Last repair"), el("td", {}, fmtDay(m.lastRepairDate))))
+      ),
+      open.length
+        ? el("div", { class: "card" }, el("strong", {}, `🚨 Open issues (${open.length})`), el("div", { class: "issue-grid" }, open.map((i) => issueCard(i, () => onIssues && onIssues()))))
+        : null,
+      checklistCard(m, (id) => onChecklist && onChecklist(id)),
+      el("h2", {}, `Fixes for ${m.name} (${list.length})`),
+      attachFilters(),
+      list.length ? el("div", { class: "person-list" }, list.map(fixRow)) : emptyState("No fixes for this machine yet", "Tap “+ Add a fix” to write the first one."),
+      el("button", { class: "btn secondary", type: "button", onclick: () => startForm(null) }, "+ Add a fix"),
+    ];
   }
 
   // Searches with no results: sent once per search, 1.5 s after typing stops (like the old library).
@@ -285,11 +360,112 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
       "fix-admin-tools",
       "⚙ Admin tools",
       el("button", { class: "btn secondary", type: "button", onclick: () => show("gaps") }, `🔍 Searches with no results (${ui.gaps ? open : "…"})`),
-      el("button", { class: "btn secondary", type: "button", onclick: () => show("qr") }, "🖨 Print QR codes"),
-      el("button", { class: "btn secondary", type: "button", onclick: () => { downloadCsv(); toast("Downloading all fixes (CSV)"); } }, "⇩ Download all fixes (CSV)"),
+      el("button", { class: "btn secondary", type: "button", onclick: openTrash }, "🗑 Trash bin (30 days)"),
+      el("button", { class: "btn secondary", type: "button", onclick: () => show("qr") }, "🖨 Print machine QR codes"),
+      el("button", { class: "btn secondary", type: "button", onclick: () => { downloadCsv(); toast("Downloading all fixes (CSV)"); } }, "⇩ Download all fixes (CSV, optional)"),
       el("button", { class: "btn secondary", type: "button", onclick: () => show("bulk") }, "📋 Bulk add fixes"),
       importCard()
     );
+  }
+
+  // ---- trash bin (admins) ----------------------------------------------------------------
+
+  async function openTrash() {
+    loadNames();
+    ui.trash = null;
+    show("trash");
+    try {
+      const reads = [getDocs(query(collection(db, "fixes"), where("status", "==", "trashed"))), getDocs(collection(db, "trash"))];
+      if (TEST_MODE) reads.push(getDocs(query(collection(db, "test_fixes"), where("status", "==", "trashed"))), getDocs(collection(db, "test_trash")));
+      const [f, t, tf, tt] = await Promise.all(reads);
+      const rows = (snap, test) => (snap ? snap.docs.map((d) => ({ id: d.id, ...d.data(), ...(test ? { test: true } : {}) })) : []);
+      ui.trash = { fixes: [...rows(f), ...rows(tf, true)], files: [...rows(t), ...rows(tt, true)] };
+      render();
+    } catch (err) {
+      ui.trash = { fixes: [], files: [] };
+      Object.assign(ui, { message: friendlyError(err), messageKind: "error", retry: openTrash });
+      render();
+    }
+  }
+
+  function renderTrash() {
+    const daysLeft = (x) => {
+      const ms = (x.purgeAfter?.toMillis?.() || 0) - Date.now();
+      return ms > 0 ? `${Math.ceil(ms / 86400000)} days left` : "goes tonight";
+    };
+    const when = (x) => x.trashedAt?.toDate?.().toLocaleDateString("en-US", { month: "short", day: "numeric" }) || "";
+    async function restore(f) {
+      if (await act(() => callRestoreFix({ id: f.id }), () => restore(f))) { toast(`“${f.title}” is back`); openTrash(); }
+    }
+    async function restoreFile(t) {
+      if (await act(() => callRestoreTrashedFile({ trashId: t.id }), () => restoreFile(t))) { toast("File put back"); openTrash(); }
+    }
+    const t = ui.trash;
+    return [
+      back("Fix Library", () => { ui.trash = null; show("list"); }),
+      el("h1", {}, "🗑 Trash bin"),
+      el("p", { class: "hint" }, "Deleted fixes and removed photos/videos stay here for 30 days, then they're gone for good. Tap Restore to bring one back."),
+      messageBox(),
+      !t ? spinner("Loading the trash…") : null,
+      t && !t.fixes.length && !t.files.length ? emptyState("The trash is empty", "Deleted fixes and removed files show up here for 30 days.") : null,
+      t?.fixes.length ? [el("h2", {}, `Fixes (${t.fixes.length})`), el("div", { class: "import-preview" }, t.fixes.map((f) =>
+        el("div", { class: "import-row" },
+          el("span", { class: "gap-term" }, f.title, f.test ? " [TEST]" : "", el("small", {}, ` · deleted ${when(f)} by ${who(f.trashedBy)} · ${daysLeft(f)}`)),
+          el("button", { class: "link-btn", type: "button", disabled: ui.busy, onclick: () => restore(f) }, "Restore"))))] : null,
+      t?.files.length ? [el("h2", {}, `Photos, videos, documents (${t.files.length})`), el("div", { class: "import-preview" }, t.files.map((x) =>
+        el("div", { class: "import-row" },
+          el("a", { href: x.url, target: "_blank", rel: "noopener", class: "gap-term" }, (x.path || "").split("/").pop()),
+          el("span", { class: "gap-term" }, el("small", {}, `from “${x.title}” · ${when(x)} by ${who(x.trashedBy)} · ${daysLeft(x)}`)),
+          el("button", { class: "link-btn", type: "button", disabled: ui.busy, onclick: () => restoreFile(x) }, "Put back"))))] : null,
+    ];
+  }
+
+  // ---- version history (admins) ----------------------------------------------------------
+
+  async function openHistory() {
+    const f = fix();
+    loadNames();
+    ui.versions = null;
+    show("history");
+    try {
+      const snap = await getDocs(query(collection(db, f.test ? "test_fixes" : "fixes", f.id, "versions"), orderBy("savedAt", "desc"), limit(50)));
+      ui.versions = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      render();
+    } catch (err) {
+      ui.versions = [];
+      Object.assign(ui, { message: friendlyError(err), messageKind: "error", retry: openHistory });
+      render();
+    }
+  }
+
+  function renderHistory() {
+    const f = fix();
+    if (!f) return renderList();
+    async function restore(v, askFirst = true) {
+      if (askFirst && !(await confirmSheet({
+        title: "Restore this version?",
+        text: `“${f.title}” goes back to how it was on ${v.savedAt?.toDate?.().toLocaleString() || "that date"}. What it says now is saved as a version too, so you can undo this.`,
+        confirmLabel: "↺ Restore this version",
+      }))) return;
+      if (await act(() => callRestoreFixVersion({ id: f.id, versionId: v.id }), () => restore(v, false))) show("fix", "Older version restored", "ok");
+    }
+    return [
+      back("Back to the fix", () => show("fix")),
+      el("h1", { class: "fix-title" }, "🕘 History"),
+      el("p", { class: "hint" }, `“${f.title}” — a copy is saved before every change. Newest first.`),
+      messageBox(),
+      !ui.versions ? spinner("Loading history…") : !ui.versions.length ? emptyState("No changes yet", "Each time this fix changes, the old version is saved here.") : null,
+      (ui.versions || []).map((v) =>
+        collapsible(
+          `ver-${f.id}-${v.id}`,
+          `${v.savedAt?.toDate?.().toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) || ""} · before “${v.reason}” by ${who(v.savedBy)}`,
+          el("p", { class: "person-name" }, v.title || ""),
+          el("div", { class: "fix-body" }, v.body || ""),
+          el("p", { class: "hint" }, `${categoryName(v.categoryId)} · ${(v.photos || []).length} photos · ${(v.videos || []).length} videos${v.docLink ? " · document" : ""} · ${v.status || ""}`),
+          readOnly(f) ? null : el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => restore(v) }, "↺ Restore this version")
+        )
+      ),
+    ];
   }
 
   function renderGaps() {
@@ -319,21 +495,21 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
     ];
   }
 
-  // One QR code per category, printable — scanning opens the app on that category (?cat=Name).
+  // One QR code per machine, printable — scanning opens the app on that machine (?m=M-001):
+  // its fixes, last service, open issues, and checklist. (Old category codes, ?cat=Die, still work.)
   function renderQr() {
-    const list = categories().filter((c) => (data.fixes || []).some((f) => f.categoryId === c.id));
+    const list = activeMachines();
     const grid = el("div", { class: "qr-grid" }, spinner("Making QR codes…"));
     loadQrLibrary().then(
       () => {
         grid.replaceChildren(
-          ...list.map((c) => {
-            const url = `${APP_URL}/?cat=${encodeURIComponent(c.name)}`;
+          ...list.map((m) => {
             const qr = window.qrcode(0, "M");
-            qr.addData(url);
+            qr.addData(`${APP_URL}/?m=${encodeURIComponent(m.id)}`);
             qr.make();
             const box = el("div", { class: "qr-card" });
             box.innerHTML = qr.createSvgTag({ cellSize: 5, margin: 2, scalable: true }); // made locally from our own link
-            box.append(el("strong", {}, c.name), el("small", {}, "Scan for fixes"));
+            box.append(el("strong", {}, breakable(m.name)), el("small", {}, `${m.id} · ${m.lineId ? lineName(m.lineId) : "Plant"}`));
             return box;
           })
         );
@@ -341,8 +517,8 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
       () => grid.replaceChildren(banner({ message: "Couldn't load the QR code maker. Check Wi-Fi and try again.", messageKind: "error", retry: () => show("qr") }))
     );
     return [
-      el("div", { class: "no-print" }, back("Fix Library", () => show("list")), el("h1", {}, "QR codes"),
-        el("p", { class: "hint" }, "One per category. Scanning opens CDG Ops straight to that category's fixes."),
+      el("div", { class: "no-print" }, back("Fix Library", () => show("list")), el("h1", {}, "Machine QR codes"),
+        el("p", { class: "hint" }, "One per machine. Post it on the machine — scanning opens CDG Ops straight to that machine."),
         el("button", { class: "btn", type: "button", onclick: () => window.print() }, "🖨 Print")),
       grid,
     ];
@@ -424,13 +600,14 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
       f.status === "pending" ? el("span", { class: "tag warn" }, f.editOf ? "Suggested change" : "Waiting for approval")
       : f.status === "rejected" ? el("span", { class: "tag off" }, "Not approved")
       : f.status === "retired" ? el("span", { class: "tag off" }, "Retired")
+      : f.status === "trashed" ? el("span", { class: "tag off" }, "In the trash")
       : null;
     return el(
       "button",
       { class: "person-row", type: "button", onclick: () => { ui.fixId = f.id; show("fix"); } },
       el("span", { class: "person-name" }, f.title),
       el("span", { class: "person-meta" }, [categoryName(f.categoryId), icons].filter(Boolean).join(" · ")),
-      el("span", { class: "tags" }, tag)
+      el("span", { class: "tags" }, tag, f.test ? el("span", { class: "tag test" }, "TEST") : null)
     );
   }
 
@@ -517,6 +694,15 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
         show(approve ? "fix" : "list", approve ? "Approved — everyone can see it now" : "Suggestion rejected", "ok");
       }
     }
+    async function remove(askFirst = true) {
+      if (askFirst && !(await confirmSheet({
+        title: "Delete this fix?", text: "It goes to the trash bin. An admin can restore it for 30 days; after that it's gone for good.", confirmLabel: "🗑 Delete fix", danger: true,
+      }))) return;
+      if (await act(() => callDeleteFix({ id: f.id }), () => remove(false))) show(ui.machineId ? "machine" : "list", "Fix moved to the trash (30 days)", "ok");
+    }
+    async function bringBack() {
+      if (await act(() => callRestoreFix({ id: f.id }), bringBack)) { ui.trash = null; show("fix", "Fix restored from the trash", "ok"); }
+    }
     async function retire(retiring, askFirst = true) {
       if (retiring && askFirst && !(await confirmSheet({
         title: "Retire this fix?", text: "It's hidden from the library but kept in history. You can bring it back.", confirmLabel: "Retire fix", danger: true,
@@ -526,20 +712,26 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
       }
     }
 
+    const m = machine();
+    const locked = readOnly(f);
+    const trashed = f.status === "trashed";
     return [
-      back("Fix Library", () => show("list")),
+      trashed ? back("Trash bin", openTrash) : m ? back(m.name, () => show("machine")) : back("Fix Library", () => show("list")),
       el("h1", { class: "fix-title" }, f.title),
       appliesTo(f),
+      f.test ? el("p", { class: "message test-note" }, "TEST fix — made on the test site. Only the test site shows it.") : null,
+      locked ? el("p", { class: "message" }, "Real fix — read-only on the test site. Add a test fix to try editing, approving, or deleting.") : null,
       f.status === "pending"
         ? el("p", { class: "message" }, f.editOf ? `⏳ Suggested change to "${original?.title || "a fix"}" — waiting for an Admin to approve.` : "⏳ Waiting for an Admin to approve.")
         : null,
       f.status === "rejected" ? el("p", { class: "message error" }, "✖ This suggestion wasn't approved.") : null,
       f.status === "retired" ? el("p", { class: "message error" }, "Retired — hidden from the library.") : null,
+      trashed ? el("p", { class: "message error" }, "🗑 In the trash — gone for good after 30 days unless restored.") : null,
       messageBox(),
       el("div", { class: "fix-body" }, f.body),
       media(f),
       (f.tags || []).length ? el("p", { class: "tags" }, f.tags.map((t) => el("span", { class: "tag" }, t))) : null,
-      f.status === "approved"
+      f.status === "approved" && !locked
         ? el(
             "div",
             { class: "helpful" },
@@ -548,27 +740,33 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
             el("button", { class: myVote === false ? "chip on" : "chip", type: "button", disabled: ui.busy, onclick: () => vote(false) }, `👎 No · ${f.helpfulNo || 0}`)
           )
         : null,
-      me.approver && f.status === "pending"
+      trashed && me.approver
+        ? el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: bringBack }, "↺ Restore from the trash")
+        : null,
+      !locked && !trashed && me.approver && f.status === "pending"
         ? [
             el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: () => review(true) }, "✔ Approve"),
             el("button", { class: "btn danger", type: "button", disabled: ui.busy, onclick: () => review(false) }, "✖ Reject"),
           ]
         : null,
-      f.status === "approved" || (f.status === "pending" && (me.approver || f.createdBy === me.emp))
+      !locked && (f.status === "approved" || (f.status === "pending" && (me.approver || f.createdBy === me.emp)))
         ? el(
             "button",
             { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => startForm(f) },
             me.approver || f.status === "pending" ? "✎ Edit" : "✎ Suggest a change"
           )
         : null,
-      me.approver && f.status === "approved"
-        ? el("button", { class: "btn danger", type: "button", disabled: ui.busy, onclick: () => retire(true) }, "Retire fix")
+      maintenanceBanner(m),
+      !locked && !trashed && me.approver
+        ? collapsible(
+            "fix-admin-actions",
+            "⚙ Admin: history, retire, delete",
+            el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: openHistory }, "🕘 History — restore an older version"),
+            f.status === "approved" ? el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => retire(true) }, "Retire fix (hide, keep)") : null,
+            f.status === "retired" ? el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => retire(false) }, "↺ Bring fix back") : null,
+            el("button", { class: "btn danger", type: "button", disabled: ui.busy, onclick: () => remove() }, "🗑 Delete fix")
+          )
         : null,
-      me.approver && f.status === "retired"
-        ? el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => retire(false) }, "↺ Bring fix back")
-        : null,
-      maintenanceRequestButton(data.fixCategories?.find((c) => c.id === f.categoryId)?.machineTypes),
-      maintenancePanel(machinesFor(f)),
       relatedFixes(f),
     ];
   }
@@ -582,6 +780,13 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
 
   // ---- add / edit ---------------------------------------------------------
 
+  // A new fix starts in the category being browsed, or the first category for the machine being viewed.
+  function defaultCategory() {
+    if (!["none", "pending"].includes(ui.category)) return ui.category;
+    const m = ui.view === "machine" ? machine() : null;
+    return m ? categories().find((c) => (c.machineTypes || []).includes(m.type))?.id || "" : "";
+  }
+
   function startForm(existing) {
     ui.draft = existing
       ? {
@@ -590,7 +795,7 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
           docLink: existing.docLink || "", machineIds: [...(existing.machineIds || [])], link: "",
         }
       : {
-          id: null, title: "", categoryId: ui.category !== "all" && ui.category !== "pending" ? ui.category : "",
+          id: null, title: "", categoryId: defaultCategory(),
           body: BODY_TEMPLATE, tags: "", photos: [], videos: [], docLink: "", machineIds: [], link: "",
         };
     show("form");
@@ -687,7 +892,7 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
     }
 
     return [
-      back(d.id ? "Back" : "Fix Library", () => show(d.id ? "fix" : "list")),
+      back(d.id ? "Back" : machine() ? machine().name : "Fix Library", () => show(d.id ? "fix" : machine() ? "machine" : "list")),
       el("h1", {}, d.id ? (me.approver || fix()?.status === "pending" ? "Edit fix" : "Suggest a change") : "Add a fix"),
       me.approver ? null : el("p", { class: "hint" }, "An Admin approves it before everyone sees it."),
       messageBox(),
@@ -761,14 +966,17 @@ export function openFixLibrary(container, { me, onExit, startCategory = null, on
   }
 
   function render() {
-    const views = { list: renderList, fix: renderFix, form: renderForm, gaps: renderGaps, qr: renderQr, bulk: renderBulk };
+    const views = {
+      list: renderList, machine: renderMachine, fix: renderFix, form: renderForm, gaps: renderGaps, qr: renderQr, bulk: renderBulk,
+      trash: renderTrash, history: renderHistory,
+    };
     container.replaceChildren(...[(views[ui.view] || renderList)()].flat(2).filter(Boolean));
   }
 
   // Live updates redraw the screen — but not while typing (form, search box, bulk add) or on the QR page.
   const redraw = () => {
     const typing =
-      ["form", "bulk", "qr"].includes(ui.view) || (ui.view === "list" && document.activeElement?.classList.contains("search"));
+      ["form", "bulk", "qr", "history"].includes(ui.view) || (ui.view === "list" && document.activeElement?.classList.contains("search"));
     if (!ui.busy && !typing) render();
   };
   const stops = [onDataChange(redraw)];

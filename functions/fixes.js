@@ -127,7 +127,42 @@ function searchGapId(term) {
   return term.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "term";
 }
 
+// ---- Trash bin and version history -------------------------------------------------
+
+const TRASH_DAYS = 30;
+
+// Our own uploaded files (not SharePoint/YouTube links): "…/v0/b/<bucket>/o/<path>?…" -> "<path>".
+function storagePath(url, bucketName) {
+  if (typeof url !== "string") return null;
+  const m = url.match(/^https:\/\/firebasestorage\.googleapis\.com\/v0\/b\/([^/]+)\/o\/([^?]+)/);
+  if (!m || (bucketName && m[1] !== bucketName)) return null;
+  return decodeURIComponent(m[2]);
+}
+
+// Every file link on a fix (photos, videos, document).
+function fileLinks(fix) {
+  return [...(fix?.photos || []), ...(fix?.videos || []), ...(fix?.docLink ? [fix.docLink] : [])];
+}
+
+// Our own files that were on `before` but aren't on `after` — they go to the trash bin, not away.
+function droppedFiles(before, after, bucketName) {
+  const kept = new Set(fileLinks(after));
+  return [...new Set(fileLinks(before))].filter((u) => !kept.has(u) && storagePath(u, bucketName));
+}
+
+// The part of a fix saved in its version history.
+const VERSION_FIELDS = ["title", "body", "categoryId", "tags", "photos", "videos", "docLink", "machineIds", "status"];
+function versionOf(fix) {
+  return Object.fromEntries(VERSION_FIELDS.map((k) => [k, fix?.[k] ?? null]));
+}
+
 module.exports = {
+  TRASH_DAYS,
+  storagePath,
+  fileLinks,
+  droppedFiles,
+  VERSION_FIELDS,
+  versionOf,
   cleanSearchTerm,
   searchGapId,
   APPROVER_ROLES,

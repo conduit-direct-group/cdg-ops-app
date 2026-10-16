@@ -1,18 +1,26 @@
-// Live lists shared by every screen: lines, machines, roles, fix categories, and fixes.
+// Live lists shared by every screen: lines, machines, roles, fix categories, fixes, open issues, checklists.
 // They update by themselves within a second of a change, on every device, and keep an offline copy.
+//
+// Test mode (dev test site): practice records from the test_ collections are shown next to the real ones
+// (marked TEST), and practice checklist sign-offs sit on top of the real due dates. The live app never reads them.
 
-import { db } from "./firebase.js";
-import { collection, onSnapshot, query, where } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
+import { db, TEST_MODE } from "./firebase.js";
+import { collection, doc, onSnapshot, query, where } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 
-const LISTS = ["roles", "lines", "machines", "fixCategories"];
+const LISTS = ["roles", "lines", "machines", "fixCategories", "checklistTemplates"];
 
 // null = still loading; [] = loaded and empty.
-// fixes = approved fixes; myFixes = pending suggestions I can see (approvers: everyone's; others: my own).
-// openIssues = open breakdowns from Odoo (line down first, newest first).
-export const data = { roles: null, lines: null, machines: null, fixCategories: null, fixes: null, myFixes: null, openIssues: null };
+// myself = my own employee record (live roles). fixes = approved fixes; myFixes = pending suggestions I can see
+// (admins: everyone's; others: my own). openIssues = open breakdowns (line down first, newest first).
+// checklistUnits = { [unitId]: { [itemId]: { at, by, byName } } } — when each checklist item was last done.
+export const data = {
+  myself: null, roles: null, lines: null, machines: null, fixCategories: null, checklistTemplates: null,
+  fixes: null, myFixes: null, openIssues: null, checklistUnits: null,
+};
 
 const listeners = new Set();
 let stopFns = [];
+const parts = {}; // real and test halves of the merged lists
 
 // "Line 2" before "Line 10"; machines by ID (M-002 before M-010).
 const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true });
@@ -25,19 +33,54 @@ function changed() {
   for (const fn of listeners) fn();
 }
 
-function watch(name, source, sort) {
+function listen(source, onDocs, label) {
   return onSnapshot(
     source,
-    (snap) => {
-      data[name] = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort(sort);
-      changed();
-    },
+    (snap) => onDocs(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
     (err) => {
-      console.warn(`Couldn't load ${name}:`, err.code || err);
-      data[name] = data[name] || [];
-      changed();
+      console.warn(`Couldn't load ${label}:`, err.code || err);
+      onDocs(null);
     }
   );
+}
+
+function watch(name, source, sort) {
+  return listen(source, (docs) => {
+    data[name] = docs ? docs.sort(sort) : data[name] || [];
+    changed();
+  }, name);
+}
+
+// A list made of the real records plus (test mode) the practice ones, each tagged test: true.
+function watchMerged(name, realSource, testSource, sort) {
+  const merge = () => {
+    if (parts[`${name}:real`] === undefined || (TEST_MODE && parts[`${name}:test`] === undefined)) return;
+    data[name] = [...(parts[`${name}:real`] || []), ...(parts[`${name}:test`] || []).map((x) => ({ ...x, test: true }))].sort(sort);
+    changed();
+  };
+  const stops = [listen(realSource, (docs) => { parts[`${name}:real`] = docs || []; merge(); }, name)];
+  if (TEST_MODE) stops.push(listen(testSource, (docs) => { parts[`${name}:test`] = docs || []; merge(); }, `test ${name}`));
+  return () => stops.forEach((s) => s());
+}
+
+// Checklist due dates: real sign-offs, with test-site practice sign-offs on top (test mode only).
+function watchChecklistUnits() {
+  const merge = () => {
+    if (parts["units:real"] === undefined || (TEST_MODE && parts["units:test"] === undefined)) return;
+    const out = {};
+    for (const u of parts["units:real"] || []) out[u.id] = { ...(u.items || {}) };
+    for (const u of parts["units:test"] || []) {
+      out[u.id] = { ...(out[u.id] || {}) };
+      for (const [k, v] of Object.entries(u.items || {})) {
+        if (!out[u.id][k] || (v.at || 0) > (out[u.id][k].at || 0)) out[u.id][k] = { ...v, test: true };
+      }
+    }
+    data.checklistUnits = out;
+    changed();
+  };
+  const stops = [listen(collection(db, "checklistUnits"), (docs) => { parts["units:real"] = docs || []; merge(); }, "checklists")];
+  if (TEST_MODE) stops.push(listen(collection(db, "test_checklistUnits"), (docs) => { parts["units:test"] = docs || []; merge(); }, "test checklists"));
+  return () => stops.forEach((s) => s());
 }
 
 // Called once signed in with a real PIN (the database refuses temporary-PIN accounts).
@@ -45,21 +88,27 @@ function watch(name, source, sort) {
 export function startData(me) {
   stopData();
   stopFns = LISTS.map((name) => watch(name, collection(db, name), name === "machines" ? byId : byName));
-  const fixes = collection(db, "fixes");
-  stopFns.push(watch("fixes", query(fixes, where("status", "==", "approved")), byTitle));
   stopFns.push(
-    watch(
-      "myFixes",
-      me.approver ? query(fixes, where("status", "==", "pending")) : query(fixes, where("createdBy", "==", me.emp)),
-      byTitle
+    onSnapshot(
+      doc(db, "employees", me.emp),
+      (snap) => { data.myself = snap.exists() ? snap.data() : { roles: [], active: false }; changed(); },
+      () => {} // keep the sign-in pass roles if this can't be read
     )
   );
-  stopFns.push(watch("openIssues", query(collection(db, "issues"), where("open", "==", true)), lineDownFirst));
+  const fixQuery = (name) => query(collection(db, name), where("status", "==", "approved"));
+  const mineQuery = (name) =>
+    me.approver ? query(collection(db, name), where("status", "==", "pending")) : query(collection(db, name), where("createdBy", "==", me.emp));
+  stopFns.push(watchMerged("fixes", fixQuery("fixes"), fixQuery("test_fixes"), byTitle));
+  stopFns.push(watchMerged("myFixes", mineQuery("fixes"), mineQuery("test_fixes"), byTitle));
+  const openQuery = (name) => query(collection(db, name), where("open", "==", true));
+  stopFns.push(watchMerged("openIssues", openQuery("issues"), openQuery("test_issues"), lineDownFirst));
+  stopFns.push(watchChecklistUnits());
 }
 
 export function stopData() {
   stopFns.forEach((stop) => stop());
   stopFns = [];
+  for (const k of Object.keys(parts)) delete parts[k];
   for (const name of Object.keys(data)) data[name] = null;
 }
 

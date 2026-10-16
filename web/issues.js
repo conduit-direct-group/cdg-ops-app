@@ -41,7 +41,7 @@ export function issueCard(issue, onclick) {
   return el(
     "button",
     { class: issue.lineDown ? "issue-card down" : "issue-card", type: "button", onclick },
-    el("span", { class: "issue-top" }, el("strong", {}, machineLabel(issue)), el("span", { class: "issue-tag" }, issue.lineDown ? "⛔ Line down" : "Running")),
+    el("span", { class: "issue-top" }, el("strong", {}, machineLabel(issue), issue.test ? el("span", { class: "tag test" }, "TEST") : null), el("span", { class: "issue-tag" }, issue.lineDown ? "⛔ Line down" : "Running")),
     short ? el("span", { class: "issue-desc" }, short) : null,
     el("span", { class: "person-meta" }, [issue.stage, issue.reportedBy ? `by ${issue.reportedBy}` : "", ago(toDate(issue.reportedAt))].filter(Boolean).join(" · "))
   );
@@ -121,7 +121,7 @@ export function openIssueBoard(container, { me, onExit, onReport }) {
       try {
         await callMarkIssueFixed({ id: i.id, note: ui.note });
         ui.note = "";
-        show("list", "Marked fixed — Odoo updated", "ok");
+        show("list", i.test ? "Test issue marked fixed (Odoo not touched)" : "Marked fixed — Odoo updated", "ok");
       } catch (err) {
         Object.assign(ui, { busy: false, message: friendlyError(err), messageKind: "error", retry: () => markFixed(false) });
         render();
@@ -145,7 +145,7 @@ export function openIssueBoard(container, { me, onExit, onReport }) {
             el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: () => markFixed() }, ui.busy ? "Updating Odoo…" : "✔ Mark fixed")
           )
         : null,
-      me.fixer || me.admin
+      (me.fixer || me.admin) && i.odooId
         ? el("a", { class: "btn secondary", href: odooRequestUrl(i.odooId), target: "_blank", rel: "noopener" }, `↗ Open request #${i.odooId} in Odoo`)
         : null,
     ];
@@ -167,9 +167,11 @@ export function openIssueBoard(container, { me, onExit, onReport }) {
 // ===========================================================================
 
 // `machineTypes` (optional) narrows the machine buttons, e.g. from the Fix Library's Die category.
-export function openReportForm(container, { me, onExit, onDone, machineTypes = null }) {
+// `machineId` (optional) starts with that machine picked (from a machine's page in the Fix Library).
+export function openReportForm(container, { me, onExit, onDone, machineTypes = null, machineId = null }) {
+  const preset = machineId ? data.machines?.find((m) => m.id === machineId) : null;
   const d = {
-    lineId: null, machineId: null, lineDown: null, description: "", unsafe: false, severity: "normal",
+    lineId: preset ? preset.lineId || "none" : null, machineId: preset ? preset.id : null, lineDown: null, description: "", unsafe: false, severity: "normal",
     failureCategory: "", rootCause: "", actions: "", photos: [],
   };
   const ui = { busy: false, upload: "", message: "", messageKind: "", retry: null, sent: null };
@@ -209,7 +211,7 @@ export function openReportForm(container, { me, onExit, onDone, machineTypes = n
       Object.assign(ui, { busy: false });
       render();
       window.scrollTo(0, 0);
-      toast("Sent to maintenance");
+      toast(r.test ? "Test report saved — not sent to Odoo" : "Sent to maintenance");
     } catch (err) {
       Object.assign(ui, { busy: false, message: friendlyError(err), messageKind: "error", retry: send });
       render();
@@ -228,8 +230,10 @@ export function openReportForm(container, { me, onExit, onDone, machineTypes = n
     if (ui.sent) {
       container.replaceChildren(
         ...[
-          el("h1", {}, "✔ Sent to maintenance"),
-          el("p", { class: "message" }, `Odoo request #${ui.sent.odooId} — it's on the Open issues board now.`),
+          el("h1", {}, ui.sent.test ? "✔ Test report saved" : "✔ Sent to maintenance"),
+          ui.sent.test
+            ? el("p", { class: "message test-note" }, "TEST — practice only. Nothing was sent to Odoo. It shows on the test site's Open issues board, marked TEST.")
+            : el("p", { class: "message" }, `Odoo request #${ui.sent.odooId} — it's on the Open issues board now.`),
           el("button", { class: "btn", type: "button", onclick: onDone }, "🚨 See open issues"),
           el("button", { class: "btn secondary", type: "button", onclick: onExit }, "✔ Done"),
         ]

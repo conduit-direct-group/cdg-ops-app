@@ -14,3 +14,6 @@ CDG_Operations_App_Plan*
 .env.*
 *service-account*.json
 *-firebase-adminsdk-*.json
+
+# Downloaded copy of the old live Fix Library (reference only, never committed)
+reference/

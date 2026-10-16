@@ -33,12 +33,20 @@ export const storage = getStorage(app);
 
 const functions = getFunctions(app, "us-central1");
 
+// Test mode: everywhere except the live site (the dev test site, a computer running it locally).
+// Reports, fixes, and checklist sign-offs made in test mode are practice only: the server keeps them
+// apart (test_ collections), the live app never shows them, and nothing goes to Odoo.
+export const LIVE_HOST = "cdg-ops.netlify.app";
+export const TEST_MODE = location.hostname !== LIVE_HOST;
+
 // Every save goes through one of these. While offline they stop right away with a plain message
-// (code "offline") instead of hanging — the red Offline bar explains why (Plan: save-later comes with checklists).
+// (code "offline") instead of hanging — the red Offline bar explains why.
 function call(name, options) {
   const fn = httpsCallable(functions, name, options);
-  return (data) =>
-    navigator.onLine ? fn(data) : Promise.reject(Object.assign(new Error("You're offline."), { code: "offline" }));
+  return (data = {}) =>
+    navigator.onLine
+      ? fn(TEST_MODE ? { ...data, test: true } : data)
+      : Promise.reject(Object.assign(new Error("You're offline."), { code: "offline" }));
 }
 
 export const callPinLogin = call("pinLogin");
@@ -58,6 +66,15 @@ export const callVoteFix = call("voteFix");
 export const callLogSearchGap = call("logSearchGap");
 export const callAdminMarkSearchGap = call("adminMarkSearchGap");
 export const callAdminBulkAddFixes = call("adminBulkAddFixes");
+export const callDeleteFix = call("deleteFix");
+export const callRestoreFix = call("restoreFix");
+export const callRestoreFixVersion = call("restoreFixVersion");
+export const callRestoreTrashedFile = call("restoreTrashedFile");
+export const callSignChecklist = call("signChecklist");
+export const callAdminSaveChecklist = call("adminSaveChecklist");
+export const callAdminSetChecklistMedia = call("adminSetChecklistMedia");
+export const callAdminStartChecklists = call("adminStartChecklists");
+export const callAdminImportOldChecklists = call("adminImportOldChecklists", { timeout: 540000 });
 export const callReportProblem = call("reportProblem");
 export const callMarkIssueFixed = call("markIssueFixed");
 export const callAdminSyncOdoo = call("adminSyncOdoo", { timeout: 120000 });
