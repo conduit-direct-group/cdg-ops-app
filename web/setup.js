@@ -237,7 +237,7 @@ export function openLines(container, { onExit }) {
     const m = machine();
     if (!m) return renderLine();
     return [
-      kit.back(lineName(m.lineId), () => { ui.lineId = m.lineId || null; show("line"); }),
+      kit.back(m.lineId ? lineName(m.lineId) : "Shared / not on a line", () => { ui.lineId = m.lineId || null; show("line"); }),
       el("div", { class: "machine-id" }, m.id),
       el("h1", {}, m.name),
       el("p", { class: "roles" }, [m.type, m.lineId ? lineName(m.lineId) : "Shared / not on a line"].filter(Boolean).join(" · ")),
@@ -313,7 +313,7 @@ export function openLines(container, { onExit }) {
     ];
 
     return [
-      kit.back(d.id ? d.id : lineName(d.lineId || null), () => show(d.id ? "machine" : "line")),
+      kit.back(d.id ? d.id : d.lineId ? lineName(d.lineId) : "Shared / not on a line", () => show(d.id ? "machine" : "line")),
       el("h1", {}, d.id ? `Edit ${d.id}` : "Add a machine"),
       d.id ? null : el("p", { class: "hint" }, `It will get ID ${nextMachineId()} when you save (IDs are permanent and never reused).`),
       kit.messageBox(),
