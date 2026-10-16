@@ -60,5 +60,11 @@ test("suggested roles from Gusto job titles", () => {
   assert.deepStrictEqual(s("Office Manager"), ["office"]);
   assert.deepStrictEqual(s("HR Generalist"), ["office"]);
   assert.deepStrictEqual(s("Safety & Training Coordinator"), ["training-safety"]);
+  assert.deepStrictEqual(s("Business Administrator"), ["office"]);
+  assert.deepStrictEqual(s("Shop Help"), ["operator"]);
+  assert.deepStrictEqual(s("Director of Operations"), ["supervisor"]);
+  assert.deepStrictEqual(s("Facilities & Maintenance Manager"), ["maintenance"]);
+  assert.deepStrictEqual(s("Supply Chain and Logistics Manager"), ["shipping"]);
   assert.deepStrictEqual(s("Owner"), []);
+  assert.deepStrictEqual(s("CEO"), []);
 });

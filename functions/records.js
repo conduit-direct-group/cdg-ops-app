@@ -60,15 +60,15 @@ function nextEmployeeNumber(numbers) {
 // A starting role from a Gusto job title — only a suggestion; Chris confirms every one.
 // Role ids: lead = Line Lead, shipping = Logistics & Distribution (renamed), training-safety = Training & Safety.
 const POSITION_RULES = [
-  [/supervisor|superintendent|plant manager|production manager|operations manager/i, "supervisor"],
+  [/supervisor|superintendent|plant manager|production manager|operations manager|director of operations/i, "supervisor"],
   [/line lead|lead operator|team lead|\blead\b/i, "lead"],
   [/maintenance|mechanic|technician|electrician|millwright/i, "maintenance"],
   [/quality|\bqc\b|\bqa\b|inspector|lab tech/i, "quality"],
   [/training|trainer|safety|\behs\b|\bhse\b/i, "training-safety"],
   [/logistic|distribution|shipping|receiving|warehouse|driver|forklift|material handler|inventory/i, "shipping"],
   [/sales|account manager|business development|estimator/i, "sales"],
-  [/office|account(ing|ant)|payroll|human resources|\bhr\b|reception|clerk|purchas|buyer|controller|finance|administrative|admin assistant|customer service|bookkeep|executive assistant/i, "office"],
-  [/operator|production|extru|machine|packer|assembler|helper|laborer|general labor/i, "operator"],
+  [/office|account(ing|ant)|payroll|human resources|\bhr\b|reception|clerk|purchas|buyer|controller|finance|administrat|admin assistant|customer service|bookkeep|executive assistant/i, "office"],
+  [/operator|production|extru|machine|packer|assembler|helper|shop help|laborer|general labor/i, "operator"],
 ];
 
 function suggestRoles(position) {
