@@ -143,7 +143,7 @@ function cardData(id, ctx) {
       if (!data.plantStatus) return null;
       const longest = down.reduce((a, [, v]) => (v.since && (!a || v.since < a) ? v.since : a), 0);
       return { icon: "⛔", title: "Lines down now", num: down.length,
-        line: down.length ? down.slice(0, 2).map(([l, v]) => `${lineName(l)}${v.since ? ` ${howLong(v.since)}` : ""} (${v.machineIds.join(", ")})`).join(" · ") : "All clear",
+        line: down.length ? down.slice(0, 2).map(([l, v]) => `${lineName(l)}${v.since ? ` ${howLong(v.since)}` : ""}${v.machineIds.length ? ` (${v.machineIds.join(", ")})` : ""}`).join(" · ") : "All clear",
         alert: down.length > 0, onOpen: down.length ? go.issues : null, longest };
     }
     case "maint-requests": {
