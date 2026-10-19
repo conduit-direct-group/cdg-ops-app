@@ -99,3 +99,8 @@ test("workbook jobs match what the old tablet sent", () => {
   assert.deepStrictEqual(t.workbookJob({ op: "revoke", name: "Pat", code: "C-01", level: 2 }), { t: "level", name: "Pat", code: "C-01", level: 1 });
   assert.strictEqual(t.workbookJob({ op: "check" }), null);
 });
+
+test("module codes: letters, number, and an optional small letter (L-03a)", () => {
+  for (const c of ["C-01", "LD-08", "L-03a", "Q-12"]) assert.ok(t.isCode(c), c);
+  for (const c of ["c-01", "L-03ab", "L03", "<x>"]) assert.ok(!t.isCode(c), c);
+});

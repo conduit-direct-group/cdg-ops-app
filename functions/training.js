@@ -17,7 +17,7 @@ const MAX_SIG_BYTES = 300000;
 
 const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 const str = (v, max) => typeof v === "string" && v.length <= max;
-const isCode = (v) => typeof v === "string" && /^[A-Z]{1,3}-\d{1,3}$/.test(v);
+const isCode = (v) => typeof v === "string" && /^[A-Z]{1,3}-\d{1,3}[a-z]?$/.test(v); // e.g. C-01, LD-08, L-03a
 const isIso = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
 const isTrainerId = (v) => typeof v === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,60}$/.test(v);
 const isPin = (v) => typeof v === "string" && /^\d{4}$/.test(v);
