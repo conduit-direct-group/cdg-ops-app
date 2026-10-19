@@ -5,7 +5,7 @@
 
 import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, picker } from "./ui.js";
 import { data, onDataChange, lineName } from "./data.js";
-import { callAdminSaveLine, callAdminSaveMachine, callAdminSaveRole, callAdminSaveTeam, callAdminSaveShift, callAdminSaveMachineType } from "./firebase.js";
+import { callAdminSaveLine, callAdminSaveMachine, callAdminSaveRole, callAdminSaveTeam, callAdminSaveMachineType, callAdminListEmployees } from "./firebase.js";
 
 // The starting roles from the plan (§5). Ids are permanent; names can be edited later.
 const STARTING_ROLES = [
@@ -524,6 +524,7 @@ function openNamedList(container, { onExit, cfg }) {
       cfg.meta ? el("p", { class: "roles" }, cfg.meta(r)) : null,
       el("p", { class: "tags center" }, retiredTag(r)),
       kit.messageBox(),
+      cfg.members ? cfg.members(r) : null,
       cfg.rename ? el("button", { class: "btn secondary", type: "button", onclick: () => startForm(r), disabled: kit.busy }, `✎ Rename ${cfg.noun}`) : el("p", { class: "hint" }, cfg.noRenameNote),
       locked
         ? el("p", { class: "hint" }, locked)
@@ -587,6 +588,7 @@ function openNamedList(container, { onExit, cfg }) {
   }
 
   render();
+  cfg.init?.(render);
   return () => kit.stop();
 }
 
@@ -605,26 +607,38 @@ export function openRoles(container, { onExit }) {
 }
 
 export function openTeams(container, { onExit }) {
+  // Everyone (from the People list) so each team's page can show who's on it.
+  let people = null;
+  let loadError = "";
+  const onTeam = (t) => (people || []).filter((p) => p.team === t.id && p.active).sort((a, b) => a.name.localeCompare(b.name));
+  const roleNames = (ids) => ids.map((id) => data.roles?.find((r) => r.id === id)?.name || id).join(", ");
   return openNamedList(container, {
     onExit,
     cfg: {
       title: "Teams", noun: "team", a: "a team", plural: "teams", nameLabel: "Team name (e.g. A)",
-      hint: "Crews (A, B, C, D). Each person can be on one team — set it in People.",
+      hint: "Crews (A, B, C, D) — A and C work days, B and D nights. Tap a team to see who's on it.",
       items: () => data.teams, save: callAdminSaveTeam, rename: true,
+      init: (redraw) => {
+        callAdminListEmployees().then(
+          ({ data: r }) => { people = r.employees; redraw(); },
+          () => { people = []; loadError = "Couldn't load the people list. Go back and open Teams again."; redraw(); }
+        );
+      },
+      meta: (t) => (people ? `${onTeam(t).length} ${onTeam(t).length === 1 ? "person" : "people"}` : "…"),
+      members: (t) => {
+        if (!people) return spinner("Loading who's on this team…");
+        if (loadError) return el("p", { class: "message error" }, loadError);
+        const list = onTeam(t);
+        if (!list.length) return emptyState("Nobody on this team yet", "Set a person's team in Admin → People.");
+        return [
+          el("h2", {}, `On Team ${t.name} (${list.length})`),
+          el("div", { class: "person-list" }, list.map((p) =>
+            el("div", { class: "person-row static" },
+              el("span", { class: "person-name" }, p.name),
+              el("span", { class: "person-meta" }, [`#${p.employeeNumber}`, p.roles.length ? roleNames(p.roles) : p.position, p.homeLineId ? lineName(p.homeLineId) : ""].filter(Boolean).join(" · "))))),
+        ];
+      },
       starters: () => STARTING_TEAMS, startersTitle: "Add teams A, B, C, D",
-      retireText: "It can't be given to anyone new. People on it stay on it until you edit them.",
-    },
-  });
-}
-
-export function openShifts(container, { onExit }) {
-  return openNamedList(container, {
-    onExit,
-    cfg: {
-      title: "Shifts", noun: "shift", a: "a shift", plural: "shifts", nameLabel: "Shift name (e.g. Days, Nights, 1st)",
-      hint: "The shifts people work. Each person can be on one shift — set it in People.",
-      items: () => data.shifts, save: callAdminSaveShift, rename: true,
-      starters: () => [], startersTitle: "",
       retireText: "It can't be given to anyone new. People on it stay on it until you edit them.",
     },
   });
