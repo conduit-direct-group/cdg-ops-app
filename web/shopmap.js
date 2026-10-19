@@ -515,7 +515,7 @@ export function openShopMap(container, { onExit, onFixes, onReport, startStation
         el("button", { type: "button", class: i === n - 1 ? "next done" : "next", onclick: i === n - 1 ? close : () => go(1) }, i === n - 1 ? "Done" : "Next step ›")));
   }
   function table(rows) {
-    return el("div", { class: "sm-table" }, rows.map((r) => el("div", { class: "sm-tr" }, el("span", { class: "a" }, r[0] ?? ""), el("span", { class: "b" }, r[1] ?? ""))));
+    return el("div", { class: "sm-table" }, rows.map((r) => el("div", { class: "sm-tr" }, el("span", { class: "a" }, (Array.isArray(r) ? r[0] : r.a) ?? ""), el("span", { class: "b" }, (Array.isArray(r) ? r[1] : r.b) ?? ""))));
   }
   function fullDoc(sop) {
     return el("div", { class: "sm-full" },

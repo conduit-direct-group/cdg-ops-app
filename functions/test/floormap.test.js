@@ -38,6 +38,15 @@ test("map file: bad zones, stations, or icons are refused", () => {
   assert.match(f.cleanMap(i).error, /Icon "bad"/);
 });
 
+test("SOP table rows are stored as { a, b } (the database cannot hold a list inside a list)", () => {
+  const d = small();
+  d.sops.cdgsop0003.parts = [{ title: "P1", blocks: [{ type: "table", title: "Temps", rows: [["Zone 1", "350"], ["Zone 2", "360"]] }] }];
+  const r = f.cleanMap(d);
+  assert.deepStrictEqual(r.sops.cdgsop0003.parts[0].blocks[0].rows, [{ a: "Zone 1", b: "350" }, { a: "Zone 2", b: "360" }]);
+  const nested = (v) => Array.isArray(v) ? v.some((x) => Array.isArray(x) || nested(x)) : v && typeof v === "object" ? Object.values(v).some(nested) : false;
+  assert.ok(!nested(r.sops) && !nested(r.stations) && !nested(r.layout));
+});
+
 test("Odoo equipment names match the existing ones", () => {
   assert.strictEqual(f.odooEquipmentName({ id: "M-039", name: "Cooling Tank 2" }, "Line 3"), "M-039 L3-Cooling Tank 2");
   assert.strictEqual(f.odooEquipmentName({ id: "M-031", name: "Outside Chiller" }, ""), "M-031 Outside Chiller");

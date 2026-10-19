@@ -1,12 +1,12 @@
-// Offline helper (service worker). Keeps a copy of the app's screens on the device so the app
-// still opens on bad Wi-Fi or none. Logins and other server calls are never cached — they always
+﻿// Offline helper (service worker). Keeps a copy of the app's screens on the device so the app
+// still opens on bad Wi-Fi or none. Logins and other server calls are never cached â€” they always
 // go to the server, and the app shows "Can't reach the server" when there's no connection.
 //
 // Strategy:
 //   - The app's own files: try the network first (so updates show up right away), fall back to the copy.
 //   - Firebase library from Google: the version is in the address and never changes, so use the copy if we have one.
 
-const CACHE = "cdg-ops-v16";
+const CACHE = "cdg-ops-v17";
 const FIREBASE_LIB = "https://www.gstatic.com/firebasejs/";
 
 const APP_FILES = [

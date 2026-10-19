@@ -59,12 +59,17 @@ function cleanMap(data) {
   for (const [k, s] of Object.entries(sops)) {
     if (!str(s.docNo, 40) || !str(s.docTitle, 300) || JSON.stringify(s).length > 60000) return { error: `SOP ${k} in the file doesn't look right.` };
   }
+  // The database cannot store a list inside a list: table rows ([cell, cell]) become { a, b }.
+  const rowsAsCells = (sop) => ({
+    ...sop,
+    parts: (sop.parts || []).map((p) => ({ ...p, blocks: (p.blocks || []).map((b) => (Array.isArray(b.rows) ? { ...b, rows: b.rows.map((r) => (Array.isArray(r) ? { a: String(r[0] ?? ""), b: String(r[1] ?? "") } : r)) } : b)) })),
+  });
   const pick = (o, keys) => Object.fromEntries(keys.filter((k) => o[k] !== undefined).map((k) => [k, o[k]]));
   return {
     layout: { W, H, building: pick(building, ["x", "y", "w", "h"]), band: pick(band, ["y", "h"]), laneY: laneY || {}, crowsY: crowsY ?? null,
       zones: zones.map((z) => pick(z, ["id", "label", "sub", "x", "y", "w", "h"])), icons },
     stations: stations.map((s) => pick(s, ["id", "label", "tag", "icon", "desc", "shape", "w", "h", "docs", "x", "y", "zone", "line", "kind", "nested", "step", "crows", "over", "room"])),
-    sops: Object.fromEntries(Object.entries(sops).map(([k, s]) => [k, pick(s, ["docNo", "docTitle", "full", "purpose", "scope", "ppe", "parts", "related", "type"])])),
+    sops: Object.fromEntries(Object.entries(sops).map(([k, s]) => [k, rowsAsCells(pick(s, ["docNo", "docTitle", "full", "purpose", "scope", "ppe", "parts", "related", "type"]))])),
   };
 }
 
