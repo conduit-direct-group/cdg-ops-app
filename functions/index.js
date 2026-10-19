@@ -1174,7 +1174,8 @@ async function employeeName(employeeNumber) {
 // Anyone signed in: { machineId, description, lineDown, unsafe, severity, actions, failureCategory, rootCause, photos }
 // New Maintenance Request → push alert to everyone with the Maintenance role (Admins if nobody has it yet),
 // not the person who reported it. Line down or unsafe is sent as urgent. Test site: only the person testing.
-async function alertMaintenance(me, machine, report, test) {
+// Each alert has its own link (so a new one never quietly replaces the last one on the device).
+async function alertMaintenance(me, machine, report, test, issueId) {
   const everyone = await activeEmployees();
   const crew = everyone.filter((e) => e.active !== false && e.roles.includes("maintenance")).map((e) => e.id);
   const { recipients, backup } = requestsLib.withBackup(crew, everyone);
@@ -1183,7 +1184,7 @@ async function alertMaintenance(me, machine, report, test) {
   return pushTo(test ? [me.employeeNumber] : recipients.filter((e) => e !== me.employeeNumber), {
     title: `${test ? "[TEST] " : ""}${tags} – ${machine.id} ${machine.name}${backup && !test ? " (no Maintenance role set — sent to Admins)" : ""}`,
     body: `${me.name}: ${report.description}`,
-    url: "/?issues=1",
+    url: `/?issues=1&i=${encodeURIComponent(issueId)}`,
     urgent,
   });
 }
@@ -1211,7 +1212,7 @@ exports.reportProblem = onCall({ secrets: [odooKey] }, async (req) => {
       failureCategory: report.failureCategory, rootCause: report.rootCause, photos: report.photos,
       stage: "New Request", reportedBy: reporter, reportedByEmp: me.employeeNumber, reportedAt: FieldValue.serverTimestamp(),
     });
-    const pushed = await alertMaintenance(me, machine, report, true);
+    const pushed = await alertMaintenance(me, machine, report, true, ref.id);
     return { id: ref.id, odooId: null, test: true, pushed };
   }
 
@@ -1245,7 +1246,7 @@ exports.reportProblem = onCall({ secrets: [odooKey] }, async (req) => {
     reportedAt: FieldValue.serverTimestamp(),
   }, { merge: true });
   await auditLog.add({ type: "reported", kind: "issue", recordId: issueRef.id, by: me.employeeNumber, at: FieldValue.serverTimestamp(), machineId: machine.id, lineDown: report.lineDown });
-  const pushed = await alertMaintenance(me, machine, report, false);
+  const pushed = await alertMaintenance(me, machine, report, false, issueRef.id);
   return { id: issueRef.id, odooId, pushed };
 });
 
