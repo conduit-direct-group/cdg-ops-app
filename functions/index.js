@@ -25,6 +25,7 @@ const fixesLib = require("./fixes");
 const odoo = require("./odoo");
 const checklistsLib = require("./checklists");
 const requestsLib = require("./requests");
+const floorMapLib = require("./floormap");
 const crypto = require("node:crypto");
 const { getMessaging } = require("firebase-admin/messaging");
 const { defineSecret } = require("firebase-functions/params");
@@ -1777,4 +1778,78 @@ exports.adminStartRequestTypes = onCall(async (req) => {
   }
   if (added.length) await auditLog.add({ type: "created", kind: "request type", recordId: added.join(","), by: adminNumber, at: FieldValue.serverTimestamp() });
   return { added };
+});
+
+// ---------------------------------------------------------------------------
+// Shop map (plant floor map). Company content — kept in the database only, read by signed-in people:
+//   floorMap/layout          size, building outline, zones, icons
+//   floorStations/{id}       position, shape, label, description, linked documents, machineId (M-number or null)
+//   sops/{key}               full SOP / safety / troubleshooting text
+// Admins load it from the original map file (Admin → Shop map) and link stations to machines.
+// ---------------------------------------------------------------------------
+
+const floorStations = db.collection("floorStations");
+const sopsCol = db.collection("sops");
+
+// Admins: { map } — the original's plant-data.json. Re-importing updates everything but keeps each
+// station's machine link. Stations no longer in the file are retired (kept in history), never deleted.
+exports.adminImportFloorMap = onCall({ memory: "512MiB" }, async (req) => {
+  const adminNumber = await requireAdmin(req);
+  const { layout, stations, sops, error } = floorMapLib.cleanMap(req.data?.map);
+  if (error) throw new HttpsError("invalid-argument", error);
+  const existing = await floorStations.get();
+  const now = FieldValue.serverTimestamp();
+  const writes = [
+    (b) => b.set(db.collection("floorMap").doc("layout"), { ...layout, importedAt: now, importedBy: adminNumber }),
+    ...stations.map((s) => (b) => b.set(floorStations.doc(s.id), { ...s, active: true, updatedAt: now }, { merge: true })),
+    ...existing.docs.filter((d) => !stations.some((s) => s.id === d.id)).map((d) => (b) => b.update(d.ref, { active: false, updatedAt: now })),
+    ...Object.entries(sops).map(([k, s]) => (b) => b.set(sopsCol.doc(k), { ...s, updatedAt: now })),
+  ];
+  for (let i = 0; i < writes.length; i += 400) {
+    const batch = db.batch();
+    writes.slice(i, i + 400).forEach((w) => w(batch));
+    await batch.commit();
+  }
+  await auditLog.add({ type: "imported", kind: "shop map", recordId: "layout", by: adminNumber, at: now, stations: stations.length, sops: Object.keys(sops).length });
+  return { zones: layout.zones.length, stations: stations.length, sops: Object.keys(sops).length };
+});
+
+// Admins: { stationId, machineId } — link a map station to a machine (M-number), or null for an area.
+exports.adminSetStationMachine = onCall(async (req) => {
+  const adminNumber = await requireAdmin(req);
+  const stationRef = floorStations.doc(String(req.data?.stationId || ""));
+  const machineId = req.data?.machineId ? String(req.data.machineId) : null;
+  if (machineId && !records.isMachineId(machineId)) throw new HttpsError("invalid-argument", "Unknown machine ID.");
+  await db.runTransaction(async (tx) => {
+    const [st, m] = await Promise.all([tx.get(stationRef), machineId ? tx.get(machines.doc(machineId)) : null]);
+    if (!st.exists) throw new HttpsError("not-found", "That station isn't on the map.");
+    if (machineId && !m.exists) throw new HttpsError("not-found", `There's no machine ${machineId}.`);
+    tx.update(stationRef, { machineId, updatedAt: FieldValue.serverTimestamp() });
+    auditRecord(tx, "linked", "map station", stationRef.id, adminNumber, { label: st.get("label"), machineId });
+  });
+  return { ok: true };
+});
+
+// Admins: { machineIds } — make sure Odoo has an equipment record for each ("M-031 Outside Chiller"),
+// so Maintenance Requests work for them. Existing ones are left alone.
+exports.adminEnsureOdooEquipment = onCall({ secrets: [odooKey] }, async (req) => {
+  const adminNumber = await requireAdmin(req);
+  const ids = Array.isArray(req.data?.machineIds) ? [...new Set(req.data.machineIds.map(String))] : [];
+  if (!ids.length || ids.length > 50 || !ids.every(records.isMachineId)) throw new HttpsError("invalid-argument", "List 1–50 machine IDs.");
+  const key = odooKey.value();
+  const refs = await getOdooRefs(key);
+  const created = [];
+  const already = [];
+  for (const id of ids) {
+    const snap = await machines.doc(id).get();
+    if (!snap.exists) throw new HttpsError("not-found", `There's no machine ${id} in the app.`);
+    const found = await odoo.odooCall(key, "maintenance.equipment", "search_read", { domain: [["name", "=like", `${id} %`]], fields: ["id", "name"], limit: 1 });
+    if (found.length) { already.push(found[0].name); continue; }
+    const lineSnap = snap.get("lineId") ? await lines.doc(snap.get("lineId")).get() : null;
+    const name = floorMapLib.odooEquipmentName({ id, name: snap.get("name") }, lineSnap?.exists ? lineSnap.get("name") : "");
+    await odoo.odooCall(key, "maintenance.equipment", "create", { vals_list: [{ name, maintenance_team_id: refs.teamId }] });
+    created.push(name);
+  }
+  if (created.length) await auditLog.add({ type: "created", kind: "odoo equipment", recordId: ids.join(","), by: adminNumber, at: FieldValue.serverTimestamp(), created });
+  return { created, already };
 });

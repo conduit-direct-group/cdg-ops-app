@@ -4,8 +4,20 @@
     {
       "name": "web",
       "runtimeExecutable": "C:\\Program Files\\nodejs\\node.exe",
-      "runtimeArgs": [".claude/serve-web.js"],
+      "runtimeArgs": [
+        ".claude/serve-web.js"
+      ],
       "port": 5173
+    },
+    {
+      "name": "floorplan-ref",
+      "runtimeExecutable": "C:\\Program Files\\nodejs\\node.exe",
+      "runtimeArgs": [
+        ".claude/serve-web.js",
+        "reference/floor-plan",
+        "5174"
+      ],
+      "port": 5174
     }
   ]
 }

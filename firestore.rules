@@ -71,6 +71,17 @@ service cloud.firestore {
       allow read: if member();
     }
 
+    // Shop map (company content: layout, stations, SOP text) — signed-in people only; admins change it via the server.
+    match /floorMap/{id} {
+      allow read: if member();
+    }
+    match /floorStations/{id} {
+      allow read: if member();
+    }
+    match /sops/{id} {
+      allow read: if member();
+    }
+
     // Checklist due dates (latest sign-off per item). The test site uses test_checklistUnits.
     match /checklistUnits/{id} {
       allow read: if member();

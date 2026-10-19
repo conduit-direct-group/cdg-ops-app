@@ -20,3 +20,6 @@ reference/
 
 # Private files (employee lists, exports) — never committed. This repo is public.
 private/
+
+# Zip files (e.g. a packed copy of the floor plan with SOP text) — never committed. This repo is public.
+*.zip

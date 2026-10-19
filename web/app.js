@@ -19,6 +19,8 @@ import { startData, stopData, data, onDataChange } from "./data.js";
 import { openIssueBoard, openReportForm } from "./issues.js";
 import { openChecklist, openChecklistAdmin, overdueBanner } from "./checklists.js";
 import { openActivity } from "./activity.js";
+import { openShopMap } from "./shopmap.js";
+import { openMapAdmin } from "./mapadmin.js";
 import { openNeedSomething, openRequest, openRequestTypesAdmin, inboxCard, myRequestsCard } from "./requests.js";
 import { pushState, turnOnPush, turnOffPush, refreshPush } from "./push.js";
 
@@ -237,6 +239,7 @@ function renderHome() {
     inboxCard(m, (id) => openRequestScreen(id)),
     el("button", { class: "btn big", type: "button", onclick: openNeed }, "🙋 Need something?"),
     m.fixer ? issuesButton() : null,
+    el("button", { class: "btn big secondary", type: "button", onclick: () => openMap() }, "🗺 Shop Map"),
     el("button", { class: "btn big secondary", type: "button", onclick: () => openFixes() }, "🔧 Fix Library"),
     myRequestsCard((id) => openRequestScreen(id)),
     isAdmin() ? el("button", { class: "btn secondary", type: "button", onclick: () => go("adminMenu") }, "⚙ Admin") : null,
@@ -244,6 +247,18 @@ function renderHome() {
     installCard(),
     el("button", { class: "btn secondary", type: "button", onclick: signOutNow }, "↪ Sign out"),
   ];
+}
+
+// Shop Map (plant floor map). A station linked to a machine opens its Fix Library page or a Maintenance Request.
+function openMap(station = null) {
+  if (closeModule) closeModule();
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  closeModule = openShopMap(screen, {
+    startStation: station,
+    onExit: () => go("home"),
+    onFixes: (machineId) => openFixes(null, machineId),
+    onReport: (machineId) => openReport(null, () => openMap(station), machineId),
+  });
 }
 
 // "Need something?" — app-only requests (types and routing set in Admin → Request types & routing).
@@ -447,6 +462,7 @@ function renderAdminMenu() {
     el("button", { class: "btn", type: "button", onclick: () => openModule(openRoles) }, "🏷 Roles"),
     el("button", { class: "btn", type: "button", onclick: () => openModule((c, o) => openChecklistAdmin(c, { ...o, me: me() })) }, "📋 Checklists"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openRequestTypesAdmin) }, "🙋 Request types & routing"),
+    el("button", { class: "btn", type: "button", onclick: () => openModule(openMapAdmin) }, "🗺 Shop map setup"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openActivity) }, "📜 Admin activity"),
     deviceCard(), // one-time device setup, so it lives here rather than on Home
   ];
