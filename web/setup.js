@@ -616,7 +616,7 @@ export function openTeams(container, { onExit }) {
     onExit,
     cfg: {
       title: "Teams", noun: "team", a: "a team", plural: "teams", nameLabel: "Team name (e.g. A)",
-      hint: "Crews (A, B, C, D) — A and C work days, B and D nights. Tap a team to see who's on it.",
+      hint: "Crews (A, B, C, D). Tap a team to see who's on it.",
       items: () => data.teams, save: callAdminSaveTeam, rename: true,
       init: (redraw) => {
         callAdminListEmployees().then(
