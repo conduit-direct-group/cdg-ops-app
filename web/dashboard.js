@@ -160,7 +160,7 @@ function cardData(id, ctx) {
       const open = data.requestsForMe.filter((r) => r.status !== "done");
       const urgent = open.filter((r) => r.urgent).length;
       const oldest = open.reduce((a, r) => Math.min(a, toMs(r.createdAt) || a), Date.now());
-      return { icon: "📥", title: ctx.admin ? "Open requests (everyone's)" : "Requests for you", num: open.length,
+      return { icon: "📥", title: ctx.admin && !ctx.viewAs ? "Open requests (everyone's)" : "Requests for you", num: open.length,
         line: open.length ? [urgent && `${urgent} urgent`, `oldest ${howLong(oldest)}`].filter(Boolean).join(" · ") : "All clear",
         alert: open.length > 0, onOpen: open.length ? () => go.request(open[0].id) : null };
     }

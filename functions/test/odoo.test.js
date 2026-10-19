@@ -47,3 +47,12 @@ test("last PM and last repair per machine come from closed requests", () => {
   ]);
   assert.deepEqual(dates, { "M-019": { repair: "2026-10-06", pm: "2026-10-02" } });
 });
+
+test("line number from a request title (Microsoft Form and equipment names)", () => {
+  const o = require("../odoo");
+  assert.strictEqual(o.lineNumberFromTitle("🚨 CDG MACHINE ISSUE - 3-Extruder-Urgent"), "3");
+  assert.strictEqual(o.lineNumberFromTitle("CDG MACHINE ISSUE - 2-Loader/Receiver/Mixer-Urgent"), "2");
+  assert.strictEqual(o.lineNumberFromTitle("M-014 L2-Winder"), "2");
+  assert.strictEqual(o.lineNumberFromTitle("⛔ LINE DOWN – M-001 Extruder – test"), null);
+  assert.strictEqual(o.lineNumberFromTitle(null), null);
+});

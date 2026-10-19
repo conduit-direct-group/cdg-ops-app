@@ -1144,14 +1144,15 @@ async function writePlantStatus(test) {
       // the line number written in the request's own title.
       let lineId = lineOf.get(d.get("machineId")) || null;
       if (!lineId) {
-        const n = String(d.get("title") || "").match(/MACHINE ISSUEs*-s*(d+)s*-|L(d+)-/i);
-        const guess = n ? `line-${n[1] || n[2]}` : null;
+        const n = odoo.lineNumberFromTitle(d.get("title"));
+        const guess = n ? `line-${n}` : null;
         if (guess && lineIds.has(guess)) lineId = guess;
       }
       if (!lineId) { unknown++; continue; }
       const at = d.get("reportedAt")?.toMillis?.() || null;
       const cur = (down[lineId] ||= { since: at, machineIds: [] });
-      if (!cur.machineIds.includes(d.get("machineId"))) cur.machineIds.push(d.get("machineId"));
+      const machineId = d.get("machineId");
+      if (machineId && !cur.machineIds.includes(machineId)) cur.machineIds.push(machineId);
       if (at && (!cur.since || at < cur.since)) cur.since = at;
     }
     await col("meta", test).doc("plantStatus").set({ down, unknown, updatedAt: FieldValue.serverTimestamp() });

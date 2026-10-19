@@ -146,7 +146,15 @@ function lastDatesByMachine(closedRequests) {
   return out;
 }
 
+// Line number written in a request's title, for requests with no machine linked:
+// "🚨 CDG MACHINE ISSUE - 3-Extruder-Urgent" (Microsoft Form) → "3"; "M-014 L2-Winder" → "2"; otherwise null.
+function lineNumberFromTitle(title) {
+  const m = String(title || "").match(/MACHINE ISSUE\s*-\s*(\d+)\s*-|\bL(\d+)-/i);
+  return m ? m[1] || m[2] : null;
+}
+
 module.exports = {
+  lineNumberFromTitle,
   ODOO_URL,
   odooCall,
   machineIdFromEquipmentName,

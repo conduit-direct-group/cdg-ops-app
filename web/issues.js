@@ -66,11 +66,13 @@ export function openIssueBoard(container, { me, onExit, onReport }) {
 
   function renderList() {
     const list = data.openIssues;
-    const down = (list || []).filter((i) => i.lineDown).length;
+    // Lines down (not line-down requests): the same summary as the Home status bar.
+    const down = Object.keys(data.plantStatus?.down || {}).length;
+    const ldRequests = (list || []).filter((i) => i.lineDown).length;
     return [
       back("Home", onExit),
       el("h1", {}, "Open issues"),
-      list && list.length ? el("p", { class: "hint" }, `${list.length} open · ${down ? `⛔ ${down} line${down === 1 ? "" : "s"} down` : "all lines running"}`) : null,
+      list && list.length ? el("p", { class: "hint" }, `${list.length} open · ${down ? `⛔ ${down} line${down === 1 ? "" : "s"} down` : "all lines running"}${ldRequests ? ` · ${ldRequests} line-down request${ldRequests === 1 ? "" : "s"}` : ""}`) : null,
       messageBox(),
       el("button", { class: "btn danger", type: "button", onclick: onReport }, "🚨 Maintenance Request"),
       !list
