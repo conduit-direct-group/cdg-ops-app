@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111111">
+<title>CDG Training</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="CDG Ops">
+<!-- Training keeps the training team's own look (Figtree, their colors), served from this app. -->
+<link rel="stylesheet" href="vendor/training-fonts.css">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: oklch(0.975 0.006 85); color: oklch(0.22 0.01 85); font-family: Figtree, system-ui, sans-serif; }
+  button, input, select { font-family: inherit; }
+  input::placeholder { color: oklch(0.6 0.01 85); }
+  .boot-msg { min-height: 100dvh; display: flex; flex-direction: column; gap: 16px; align-items: center; justify-content: center; padding: 24px; text-align: center; font-size: 16px; color: oklch(0.5 0.01 85); }
+  .boot-msg button { min-height: 56px; padding: 0 24px; border-radius: 12px; border: 0; background: #111; color: #fff; font-size: 16px; font-weight: 600; }
+</style>
+<!-- Libraries are copies kept in this app (no outside sites): React 18.3.1, Microsoft sign-in (MSAL 2.38.3), JSZip 3.10.1. -->
+<script src="vendor/react-18.3.1.production.min.js"></script>
+<script src="vendor/react-dom-18.3.1.production.min.js"></script>
+<script src="vendor/msal-browser-2.38.3.min.js" defer></script>
+<script src="vendor/jszip-3.10.1.min.js" defer></script>
+<script src="training/sync.js" defer></script>
+<script src="training/file.js" defer></script>
+<script type="module" src="training/app.js"></script>
+</head>
+<body>
+  <div id="root"><div class="boot-msg" role="status">Loading Training…</div></div>
+  <noscript><p class="boot-msg">This app needs JavaScript turned on.</p></noscript>
+</body>
+</html>

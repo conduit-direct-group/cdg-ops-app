@@ -1,0 +1,857 @@
+<!-- Training screens (the training team's trainer app). Drawn by training/runtime.js with values from training/app.js. No company content here: names, records, and SOP text come from the database. -->
+<div style="zoom:{{ fr.zoom }};width:{{ fr.w }};height:{{ fr.h }};background:oklch(0.975 0.006 85);color:oklch(0.22 0.01 85);font-family:Figtree,system-ui,sans-serif;border-radius:{{ fr.r }};border:{{ fr.b }};box-shadow:{{ fr.sh }};position:relative;overflow:hidden;display:flex;flex-direction:column">
+  <div style="height:44px;flex:none;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 14px;background:#111;color:#fff;font-weight:600;font-size:14px">
+    <a href="{{ opsHome }}" style="color:#fff;text-decoration:none;min-height:44px;display:flex;align-items:center;padding:0 6px">← CDG Ops</a>
+    <sc-if value="{{ offline }}" hint-placeholder-val="{{ false }}"><span style="font-size:12.5px;color:#ffb4a8">📡 Offline — you can look things up; signing needs a connection</span></sc-if>
+    <sc-if value="{{ testMode }}" hint-placeholder-val="{{ false }}"><span style="background:#f37021;color:#111;font-weight:800;font-size:12px;letter-spacing:.04em;padding:5px 10px;border-radius:8px">TEST MODE — practice only</span></sc-if>
+    <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:#bbb">Training</span>
+  </div>
+
+  <sc-if value="{{ loading }}" hint-placeholder-val="{{ false }}">
+    <div style="flex:1;display:flex;flex-direction:column;gap:16px;align-items:center;justify-content:center;padding:24px;text-align:center;font-size:15px;line-height:1.5;color:oklch(0.5 0.01 85)"><span>{{ loadMsg }}</span>
+      <sc-if value="{{ loadRetry }}" hint-placeholder-val="{{ false }}"><button onClick="{{ loadRetry }}" style="all:unset;cursor:pointer;min-height:48px;padding:0 22px;border-radius:14px;background:oklch(0.22 0.01 85);color:#fff;font-size:15px;font-weight:600;display:flex;align-items:center">Try again</button></sc-if></div>
+  </sc-if>
+
+  <sc-if value="{{ signedOut }}" hint-placeholder-val="{{ false }}">
+    <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:34px;padding:40px">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center">
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:oklch(0.5 0.01 85)">Conduit Direct · Extrusion Training</span>
+        <span style="font-size:36px;font-weight:700;letter-spacing:-0.02em">Who’s training today?</span>
+        <span style="font-size:15px;color:oklch(0.5 0.01 85)">Sign-offs are recorded under the trainer profile you choose.</span>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;justify-content:center;gap:16px;max-width:900px">
+        <sc-for list="{{ trainerCards }}" as="tc" hint-placeholder-count="2">
+          <button onClick="{{ tc.pick }}" style="all:unset;cursor:pointer;width:200px;background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:22px;padding:26px 18px;display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center" style-hover="border-color:oklch(0.58 0.12 165)">
+            <span style="width:72px;height:72px;border-radius:50%;background:oklch(0.58 0.12 165);color:#fff;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:700">{{ tc.initials }}</span>
+            <span style="font-size:18px;font-weight:600">{{ tc.name }}</span>
+            <span style="font-size:13px;color:oklch(0.5 0.01 85)">{{ tc.role }} · {{ tc.count }} sign-offs</span>
+          </button>
+        </sc-for>
+        <button onClick="{{ openAdd }}" style="all:unset;cursor:pointer;width:200px;border:2px dashed oklch(0.8 0.01 85);border-radius:22px;padding:26px 18px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:oklch(0.5 0.01 85)">
+          <span style="width:72px;height:72px;border-radius:50%;border:2px dashed oklch(0.8 0.01 85);display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:300">+</span>
+          <span style="font-size:16px;font-weight:600">Add trainer</span>
+        </button>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ signedIn }}" hint-placeholder-val="{{ true }}">
+    <div style="flex:1;display:flex;min-height:0">
+      <div style="width:92px;flex:none;border-right:1px solid oklch(0.9 0.008 85);background:oklch(0.985 0.004 85);display:flex;flex-direction:column;align-items:center;padding:14px 0 18px;gap:6px">
+        <sc-for list="{{ nav }}" as="n" hint-placeholder-count="3">
+          <button onClick="{{ n.go }}" style="all:unset;cursor:pointer;width:72px;height:64px;border-radius:16px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;font-size:12px;font-weight:600;color:{{ n.color }};background:{{ n.bg }}">
+            <span style="width:20px;height:20px;border:2px solid currentColor;border-radius:{{ n.shape }}"></span>{{ n.label }}</button>
+        </sc-for>
+        <div style="flex:1"></div>
+        <button onClick="{{ rail.open }}" title="{{ rail.detail }}" style="all:unset;cursor:pointer;width:72px;min-height:44px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;font-size:10.5px;font-weight:600;color:oklch(0.5 0.01 85);text-align:center;padding:4px 0 8px"><span style="width:10px;height:10px;border-radius:50%;background:{{ rail.dot }}"></span>{{ rail.rail }}</button>
+        <button onClick="{{ lockNow }}" title="Lock" style="all:unset;cursor:pointer;width:72px;height:56px;border-radius:16px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;font-size:12px;font-weight:600;color:oklch(0.5 0.01 85)"><span style="width:16px;height:13px;border:2px solid currentColor;border-radius:3px;margin-top:5px"></span>Lock</button>
+        <button onClick="{{ switchTrainer }}" title="Switch trainer" style="all:unset;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:5px;font-size:11px;color:oklch(0.5 0.01 85)">
+          <span style="width:46px;height:46px;border-radius:50%;background:oklch(0.58 0.12 165);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:16px">{{ me.initials }}</span>Switch</button>
+      </div>
+
+      <sc-if value="{{ isHome }}" hint-placeholder-val="{{ true }}">
+        <div style="flex:1;overflow-y:auto;padding:26px 32px calc(96px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:24px">
+          <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:20px">
+            <div style="display:flex;flex-direction:column;gap:4px">
+              <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:oklch(0.5 0.01 85)">{{ today }}</span>
+              <span style="font-size:32px;font-weight:700;letter-spacing:-0.02em">Morning, {{ me.first }}</span>
+            </div>
+            <span style="font-size:13px;color:oklch(0.5 0.01 85)">Source: CDGTRN0009 Rev 1 · CDGTRN0001 Rev 2</span>
+          </div>
+          <div style="display:grid;grid-template-columns:1.3fr repeat(4,1fr);gap:14px">
+            <div style="background:oklch(0.22 0.01 85);color:oklch(0.97 0.006 85);border-radius:22px;padding:20px;display:flex;align-items:center;gap:18px">
+              <div style="width:76px;height:76px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;background:conic-gradient(oklch(0.72 0.13 165) {{ home.deg }}, oklch(0.36 0.01 85) 0)">
+                <div style="width:60px;height:60px;border-radius:50%;background:oklch(0.22 0.01 85);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:17px">{{ home.pct }}%</div>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:4px"><span style="font-size:16px;font-weight:600;line-height:1.25">Required modules at minimum</span><span style="font-size:12.5px;color:oklch(0.76 0.01 85)">All crews, against each person’s position</span></div>
+            </div>
+            <sc-for list="{{ home.tiles }}" as="s" hint-placeholder-count="4">
+              <div style="background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:22px;padding:20px;display:flex;flex-direction:column;justify-content:center;gap:4px">
+                <span style="font-size:32px;font-weight:700;letter-spacing:-0.02em">{{ s.v }}</span>
+                <span style="font-size:13px;color:oklch(0.5 0.01 85)">{{ s.k }}</span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="display:grid;grid-template-columns:minmax(0,1fr);gap:28px;align-items:start">
+            <div style="display:flex;flex-direction:column;gap:10px">
+              <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:oklch(0.5 0.01 85)">In training &amp; scheduled</span>
+              <sc-for list="{{ home.active }}" as="p" hint-placeholder-count="5">
+                <button onClick="{{ p.open }}" style="all:unset;cursor:pointer;background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:18px;padding:12px 16px;display:flex;align-items:center;gap:14px" style-hover="border-color:oklch(0.8 0.01 85)">
+                  <span style="width:40px;height:40px;flex:none;border-radius:50%;background:oklch(0.93 0.04 165);color:oklch(0.4 0.1 165);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px">{{ p.initials }}</span>
+                  <div style="flex:1;display:flex;flex-direction:column;gap:2px;min-width:0"><span style="font-size:15.5px;font-weight:600">{{ p.name }}</span><span style="font-size:12.5px;color:oklch(0.5 0.01 85)">{{ p.position }} · {{ p.team }}</span></div>
+                  <div style="width:120px;height:6px;border-radius:6px;background:oklch(0.92 0.008 85);overflow:hidden"><div style="height:100%;width:{{ p.pctW }};background:oklch(0.58 0.12 165)"></div></div>
+                  <span style="width:70px;text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px;color:oklch(0.5 0.01 85)">{{ p.metLabel }}</span>
+                </button>
+              </sc-for>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:10px">
+              <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:14px">
+                <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap"><span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:oklch(0.5 0.01 85)">Team gap alerts · {{ gaps.count }}</span><span style="font-size:11.5px;color:oklch(0.55 0.01 85);max-width:520px;text-align:right">{{ gaps.rule }}</span></div>
+                <sc-if value="{{ gaps.none }}" hint-placeholder-val="{{ false }}"><div style="background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:16px;padding:14px 16px;font-size:13.5px;color:oklch(0.45 0.1 165);font-weight:600">No team has a shared gap right now.</div></sc-if>
+                <sc-if value="{{ gaps.has }}" hint-placeholder-val="{{ true }}">
+                  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px">
+                    <sc-for list="{{ gaps.list }}" as="g" hint-placeholder-count="3">
+                      <div style="background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:16px;padding:12px 14px;display:flex;flex-direction:column;gap:8px">
+                        <button onClick="{{ g.open }}" style="all:unset;cursor:pointer;display:flex;align-items:center;gap:8px"><span style="width:9px;height:9px;border-radius:50%;background:{{ g.dot }};flex:none"></span><span style="font-size:14px;font-weight:700">{{ g.team }}</span><span style="font-size:11.5px;color:oklch(0.55 0.01 85)">{{ g.shift }}</span><span style="margin-left:auto;font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;background:{{ g.tagBg }};color:{{ g.tagInk }}">{{ g.tag }}</span></button>
+                        <span style="font-size:12.5px;line-height:1.4;color:oklch(0.45 0.01 85)">{{ g.headline }}</span>
+                        <sc-for list="{{ g.rows }}" as="r" hint-placeholder-count="3">
+                          <button onClick="{{ r.go }}" style="all:unset;cursor:pointer;display:grid;grid-template-columns:52px minmax(0,1fr) 70px 34px;align-items:center;gap:8px;min-height:36px;border-top:1px solid oklch(0.95 0.006 85)"><span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;font-weight:600;color:oklch(0.45 0.01 85)">{{ r.code }}</span><span style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ r.title }}</span><div style="height:5px;border-radius:5px;background:oklch(0.93 0.008 85);overflow:hidden"><div style="height:100%;width:{{ r.bar }};background:{{ r.dot }}"></div></div><span style="font-size:12px;font-weight:700;text-align:right">{{ r.stat }}</span></button>
+                        </sc-for>
+                        <sc-if value="{{ g.hasMore }}" hint-placeholder-val="{{ false }}"><button onClick="{{ g.open }}" style="all:unset;cursor:pointer;font-size:12px;font-weight:600;color:oklch(0.45 0.11 165)">{{ g.more }}</button></sc-if>
+                      </div>
+                    </sc-for>
+                  </div>
+                </sc-if>
+              </div>
+              <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap"><span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:oklch(0.5 0.01 85)">Skills matrix by team</span><span style="font-size:12px;color:oklch(0.5 0.01 85)">{{ mx.summary }}</span></div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
+                <sc-for list="{{ mx.teams }}" as="t" hint-placeholder-count="4"><button onClick="{{ t.pick }}" style="all:unset;cursor:pointer;min-height:36px;padding:0 12px;border-radius:10px;font-size:13px;font-weight:600;display:flex;align-items:center;background:{{ t.bg }};color:{{ t.ink }};border:1px solid {{ t.border }}">{{ t.name }}<span style="margin-left:6px;font-size:11.5px;opacity:.7">{{ t.count }}</span><sc-if value="{{ t.hasAlarm }}" hint-placeholder-val="{{ false }}"><span style="margin-left:6px;min-width:18px;height:18px;padding:0 4px;border-radius:9px;background:oklch(0.55 0.17 25);color:#fff;font-size:10.5px;font-weight:700;display:flex;align-items:center;justify-content:center">{{ t.alarm }}</span></sc-if></button></sc-for>
+              </div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
+                <sc-for list="{{ mx.series }}" as="t" hint-placeholder-count="5"><button onClick="{{ t.pick }}" style="all:unset;cursor:pointer;min-height:36px;padding:0 12px;border-radius:10px;font-size:13px;font-weight:600;display:flex;align-items:center;min-height:32px;font-size:12px;background:{{ t.bg }};color:{{ t.ink }};border:1px solid {{ t.border }}">{{ t.label }}</button></sc-for>
+              </div>
+              <div style="background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:18px;overflow:auto;max-height:520px">
+                <sc-if value="{{ mx.empty }}" hint-placeholder-val="{{ false }}"><div style="padding:18px;font-size:13.5px;color:oklch(0.5 0.01 85)">No required modules in this series for this team.</div></sc-if>
+                <sc-if value="{{ mx.has }}" hint-placeholder-val="{{ true }}">
+                  <div style="display:grid;grid-template-columns:{{ mx.gridCols }};width:max-content;min-width:100%">
+                    <div style="position:sticky;top:0;left:0;z-index:3;background:#fff;border-bottom:1px solid oklch(0.92 0.008 85);padding:8px 12px;display:flex;align-items:flex-end;font-size:11.5px;font-weight:700;color:oklch(0.5 0.01 85)">Employee</div>
+                    <sc-for list="{{ mx.cols }}" as="c" hint-placeholder-count="12"><div title="{{ c.title }}" style="position:sticky;top:0;z-index:2;background:{{ c.headBg }};border-bottom:1px solid oklch(0.92 0.008 85);height:84px;display:flex;align-items:flex-end;justify-content:center;padding-bottom:6px"><div style="display:flex;flex-direction:column;align-items:center;gap:3px"><span style="writing-mode:vertical-rl;transform:rotate(180deg);font-family:'JetBrains Mono',monospace;font-size:10.5px;font-weight:600;color:oklch(0.4 0.01 85)">{{ c.code }}</span><sc-if value="{{ c.badge }}" hint-placeholder-val="{{ false }}"><span style="min-width:16px;height:16px;padding:0 3px;border-radius:8px;background:{{ c.badgeBg }};color:{{ c.badgeInk }};font-size:9.5px;font-weight:700;display:flex;align-items:center;justify-content:center">{{ c.badge }}</span></sc-if></div></div></sc-for>
+                    <sc-for list="{{ mx.rows }}" as="r" hint-placeholder-count="6">
+                      <button onClick="{{ r.open }}" style="all:unset;cursor:pointer;position:sticky;left:0;z-index:1;background:#fff;border-bottom:1px solid oklch(0.95 0.006 85);padding:4px 12px;display:flex;flex-direction:column;justify-content:center;min-height:40px"><span style="font-size:13px;font-weight:600;white-space:nowrap">{{ r.name }}</span><span style="font-size:10.5px;color:oklch(0.55 0.01 85);white-space:nowrap">{{ r.pos }} · {{ r.met }}</span></button>
+                      <sc-for list="{{ r.cells }}" as="x" hint-placeholder-count="12"><button onClick="{{ x.go }}" title="{{ x.tip }}" style="all:unset;cursor:pointer;border-bottom:1px solid oklch(0.95 0.006 85);display:flex;align-items:center;justify-content:center;background:{{ x.colBg }}"><span style="width:26px;height:26px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;background:{{ x.bg }};color:{{ x.ink }};box-shadow:inset 0 0 0 {{ x.ring }}">{{ x.t }}</span></button></sc-for>
+                    </sc-for>
+                  </div>
+                </sc-if>
+              </div>
+              <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;font-size:11.5px;color:oklch(0.5 0.01 85)">
+                <sc-for list="{{ mx.legend }}" as="l" hint-placeholder-count="5"><span style="display:flex;align-items:center;gap:5px"><span style="width:16px;height:16px;border-radius:5px;background:{{ l.bg }};color:{{ l.ink }};box-shadow:inset 0 0 0 {{ l.ring }};font-size:9.5px;font-weight:700;display:flex;align-items:center;justify-content:center">{{ l.t }}</span>{{ l.label }}</span></sc-for>
+              </div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isRoster }}" hint-placeholder-val="{{ false }}">
+        <div style="width:340px;flex:none;border-right:1px solid oklch(0.9 0.008 85);display:flex;flex-direction:column;min-height:0">
+          <div style="padding:20px 18px 12px;display:flex;flex-direction:column;gap:12px">
+            <div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:26px;font-weight:700;letter-spacing:-0.02em">Roster</span><span style="font-size:13px;color:oklch(0.5 0.01 85)">{{ listCount }}</span></div>
+            <input value="{{ q }}" onChange="{{ onSearch }}" placeholder="Search name or ID" style="height:44px;border-radius:14px;border:1px solid oklch(0.88 0.008 85);background:#fff;padding:0 14px;font-size:15px;color:oklch(0.22 0.01 85);outline:none"></input>
+            <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:3px;padding:3px;background:oklch(0.935 0.008 85);border-radius:12px">
+              <sc-for list="{{ filters }}" as="f" hint-placeholder-count="5">
+                <button onClick="{{ f.pick }}" style="all:unset;cursor:pointer;min-height:34px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;border-radius:9px;background:{{ f.bg }};color:{{ f.color }}">{{ f.label }}</button>
+              </sc-for>
+            </div>
+          </div>
+          <div style="flex:1;overflow-y:auto;padding:0 12px calc(96px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:4px">
+            <sc-for list="{{ rows }}" as="p" hint-placeholder-count="8">
+              <button onClick="{{ p.open }}" style="all:unset;cursor:pointer;border-radius:14px;padding:10px;display:flex;align-items:center;gap:12px;background:{{ p.bg }}">
+                <span style="width:38px;height:38px;flex:none;border-radius:50%;background:oklch(0.93 0.04 165);color:oklch(0.4 0.1 165);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px">{{ p.initials }}</span>
+                <div style="flex:1;display:flex;flex-direction:column;gap:4px;min-width:0">
+                  <div style="display:flex;justify-content:space-between;gap:8px"><span style="font-size:14.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ p.name }}</span><span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:oklch(0.5 0.01 85)">{{ p.metLabel }}</span></div>
+                  <div style="height:4px;border-radius:4px;background:oklch(0.92 0.008 85);overflow:hidden"><div style="height:100%;width:{{ p.pctW }};background:oklch(0.58 0.12 165)"></div></div>
+                  <span style="font-size:12px;color:oklch(0.5 0.01 85)">{{ p.position }} · {{ p.id }}</span>
+                </div>
+              </button>
+            </sc-for>
+          </div>
+        </div>
+
+        <div ref="{{ detailRef }}" style="flex:1;min-width:0;overflow-y:auto;position:relative">
+          <sc-if value="{{ showPerson }}" hint-placeholder-val="{{ true }}">
+            <div style="padding:22px 28px calc(96px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:18px">
+              <div style="display:flex;align-items:center;gap:18px">
+                <div style="width:72px;height:72px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;background:conic-gradient(oklch(0.58 0.12 165) {{ P.deg }}, oklch(0.92 0.008 85) 0)">
+                  <div style="width:58px;height:58px;border-radius:50%;background:oklch(0.975 0.006 85);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:16px">{{ P.pct }}%</div>
+                </div>
+                <div style="flex:1;display:flex;flex-direction:column;gap:5px;min-width:0">
+                  <span style="font-size:26px;font-weight:700;letter-spacing:-0.02em;line-height:1.1">{{ P.name }}</span>
+                  <span style="font-size:13.5px;color:oklch(0.5 0.01 85)">{{ P.position }} · {{ P.team }} · {{ P.shift }} · ID {{ P.id }}</span>
+                </div>
+                <span style="font-size:12px;font-weight:600;padding:5px 11px;border-radius:20px;background:{{ P.chipBg }};color:{{ P.chipInk }}">{{ P.status }}</span>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
+                <sc-for list="{{ P.facts }}" as="f" hint-placeholder-count="4">
+                  <div style="background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:14px;padding:12px 14px;display:flex;flex-direction:column;gap:3px"><span style="font-size:11.5px;color:oklch(0.5 0.01 85)">{{ f.k }}</span><span style="font-size:15px;font-weight:600">{{ f.v }}</span></div>
+                </sc-for>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;padding:4px;background:oklch(0.935 0.008 85);border-radius:14px;width:510px">
+                <button onClick="{{ showModules }}" style="all:unset;cursor:pointer;min-height:38px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600;border-radius:11px;background:{{ tabA.bg }};color:{{ tabA.color }}">Modules</button>
+                <button onClick="{{ showQual }}" style="all:unset;cursor:pointer;min-height:38px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600;border-radius:11px;background:{{ tabB.bg }};color:{{ tabB.color }}">Qualification</button>
+                <button onClick="{{ showSafety }}" style="all:unset;cursor:pointer;min-height:38px;display:flex;align-items:center;justify-content:center;gap:6px;font-size:14px;font-weight:600;border-radius:11px;background:{{ tabC.bg }};color:{{ tabC.color }}">Safety<span style="width:8px;height:8px;border-radius:50%;background:{{ tabC.dot }}"></span></button>
+              </div>
+
+              <sc-if value="{{ P.noPosition }}" hint-placeholder-val="{{ false }}">
+                <div style="border:1px dashed oklch(0.8 0.01 85);border-radius:18px;padding:20px;font-size:14px;line-height:1.5;color:oklch(0.5 0.01 85)">No current position on the Roster tab, so there are no required modules yet. Set the position in the workbook to load this person’s minimums.</div>
+              </sc-if>
+
+              <sc-if value="{{ viewModules }}" hint-placeholder-val="{{ true }}">
+                <div style="display:flex;flex-direction:column;gap:22px">
+                  <sc-for list="{{ P.groups }}" as="g" hint-placeholder-count="2">
+                    <div style="display:flex;flex-direction:column;gap:8px">
+                      <div style="display:flex;justify-content:space-between;align-items:baseline;padding:0 4px"><span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:oklch(0.5 0.01 85)">{{ g.title }}</span><span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:oklch(0.5 0.01 85)">{{ g.count }} at minimum</span></div>
+                      <sc-for list="{{ g.modules }}" as="m" hint-placeholder-count="3">
+                        <div style="background:#fff;border:1px solid {{ m.border }};border-radius:18px;overflow:hidden">
+                          <div style="display:flex;align-items:center;gap:6px;padding:8px 14px 8px 8px;min-height:64px">
+                            <span style="width:44px;height:44px;flex:none;display:flex;align-items:center;justify-content:center">
+                              <span style="width:26px;height:26px;border-radius:8px;border:2px solid {{ m.boxBorder }};background:{{ m.boxBg }};display:flex;align-items:center;justify-content:center"><span style="width:7px;height:12px;border-right:2.5px solid #fff;border-bottom:2.5px solid #fff;transform:translateY(-1px) rotate(45deg);opacity:{{ m.checkOp }}"></span></span>
+                            </span>
+                            <button onClick="{{ m.toggleOpen }}" style="all:unset;cursor:pointer;flex:1;display:flex;align-items:center;gap:14px;min-width:0;min-height:44px">
+                              <span style="width:58px;flex:none;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;color:oklch(0.45 0.01 85)">{{ m.code }}</span>
+                              <div style="flex:1;display:flex;flex-direction:column;gap:3px;min-width:0"><span style="font-size:15px;font-weight:600;line-height:1.3">{{ m.title }}</span><span style="font-size:12.5px;color:{{ m.metaColor }}">{{ m.meta }}</span></div>
+                              <div style="display:flex;gap:4px">
+                                <sc-for list="{{ m.pips }}" as="pp" hint-placeholder-count="4"><span style="width:14px;height:6px;border-radius:3px;background:{{ pp.bg }};outline:{{ pp.outline }};outline-offset:1px"></span></sc-for>
+                              </div>
+                              <span style="width:30px;height:30px;border-radius:50%;background:oklch(0.95 0.006 85);display:flex;align-items:center;justify-content:center;flex:none;transition:transform .25s;transform:{{ m.chev }}"><span style="width:7px;height:7px;border-right:2px solid oklch(0.45 0.01 85);border-bottom:2px solid oklch(0.45 0.01 85);transform:translateY(-2px) rotate(45deg)"></span></span>
+                            </button>
+                          </div>
+                          <sc-if value="{{ m.isOpen }}" hint-placeholder-val="{{ false }}">
+                            <div style="border-top:1px solid oklch(0.93 0.008 85);padding:6px 14px 12px 14px;display:flex;flex-direction:column">
+                              <sc-if value="{{ m.isExtra }}" hint-placeholder-val="{{ false }}">
+                                <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 10px 4px;font-size:12.5px;color:oklch(0.5 0.01 85)"><span>Added outside this person’s track</span><button onClick="{{ m.removeExtra }}" style="all:unset;cursor:pointer;min-height:36px;padding:0 12px;border-radius:10px;border:1px solid oklch(0.85 0.01 85);font-size:12.5px;font-weight:600;color:oklch(0.5 0.14 25);display:flex;align-items:center">Remove from plan</button></div>
+                              </sc-if>
+                              <sc-for list="{{ m.levels }}" as="lv" hint-placeholder-count="4">
+                                <div style="display:flex;align-items:center;gap:14px;min-height:56px;padding:6px 0;border-bottom:1px solid oklch(0.95 0.006 85);opacity:{{ lv.rowOp }}">
+                                  <span style="width:24px;height:24px;flex:none;border-radius:7px;border:2px solid {{ lv.boxBorder }};background:{{ lv.boxBg }};display:flex;align-items:center;justify-content:center;margin-left:10px"><span style="width:6px;height:11px;border-right:2px solid #fff;border-bottom:2px solid #fff;transform:translateY(-1px) rotate(45deg);opacity:{{ lv.checkOp }}"></span></span>
+                                  <div style="width:190px;flex:none;display:flex;flex-direction:column;gap:2px"><span style="font-size:14.5px;font-weight:600">Level {{ lv.k }} · {{ lv.name }}</span><span style="font-size:11.5px;color:{{ lv.tagColor }}">{{ lv.tag }}</span></div>
+                                  <div style="flex:1;display:flex;align-items:center;gap:12px;min-width:0">
+                                    <sc-if value="{{ lv.hasInk }}" hint-placeholder-val="{{ false }}">
+                                      <div style="display:flex;align-items:center;gap:8px">
+                                        <div style="display:flex;flex-direction:column;align-items:center;gap:1px"><img src="{{ lv.sig }}" alt="Trainer signature" style="height:30px;width:96px;object-fit:contain;border-bottom:1px solid oklch(0.85 0.01 85)"></img><span style="font-size:9.5px;color:oklch(0.55 0.01 85)">Trainer</span></div>
+                                      </div>
+                                    </sc-if>
+                                    <span style="font-size:12.5px;color:oklch(0.5 0.01 85);line-height:1.35">{{ lv.who }}</span>
+                                  </div>
+                                  <sc-if value="{{ lv.next }}" hint-placeholder-val="{{ false }}">
+                                    <button onClick="{{ lv.sign }}" style="all:unset;cursor:pointer;min-height:44px;padding:0 18px;border-radius:12px;background:oklch(0.22 0.01 85);color:#fff;font-size:14px;font-weight:600;display:flex;align-items:center" style-active="transform:scale(.97)">Sign off L{{ lv.k }}</button>
+                                  </sc-if>
+                                  <sc-if value="{{ lv.canRevoke }}" hint-placeholder-val="{{ false }}">
+                                    <button onClick="{{ lv.revoke }}" style="all:unset;cursor:pointer;min-height:44px;padding:0 10px;font-size:13px;font-weight:600;color:oklch(0.55 0.15 25)">Revoke</button>
+                                  </sc-if>
+                                </div>
+                              </sc-for>
+                              <button onClick="{{ m.openPage }}" style="all:unset;cursor:pointer;align-self:flex-start;margin-top:8px;min-height:40px;display:flex;align-items:center;font-size:14px;font-weight:600;color:oklch(0.45 0.11 165)">Open SOP, checklist &amp; sign-off criteria ›</button>
+                            </div>
+                          </sc-if>
+                        </div>
+                      </sc-for>
+                    </div>
+                  </sc-for>
+                  <div style="background:#fff;border:1.5px dashed oklch(0.82 0.01 85);border-radius:18px;padding:14px 16px;display:flex;flex-direction:column;gap:10px">
+                    <span style="font-size:14.5px;font-weight:700">Add a module outside {{ P.first }}’s track</span>
+                    <div style="display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr) auto;gap:8px">
+                      <select value="{{ P.addMod }}" onChange="{{ P.onAddMod }}" style="min-height:46px;border-radius:12px;border:1.5px solid oklch(0.85 0.01 85);background:#fff;padding:0 12px;font:inherit;font-size:14.5px;min-width:0"><sc-for list="{{ P.addOpts }}" as="o" hint-placeholder-count="2"><option value="{{ o.v }}">{{ o.label }}</option></sc-for></select>
+                      <select value="{{ P.addLvl }}" onChange="{{ P.onAddLvl }}" style="min-height:46px;border-radius:12px;border:1.5px solid oklch(0.85 0.01 85);background:#fff;padding:0 12px;font:inherit;font-size:14.5px;min-width:0"><sc-for list="{{ P.lvlOpts }}" as="o" hint-placeholder-count="4"><option value="{{ o.v }}">{{ o.label }}</option></sc-for></select>
+                      <button onClick="{{ P.doAddMod }}" style="all:unset;cursor:pointer;min-height:46px;padding:0 18px;border-radius:12px;background:{{ P.addBtnBg2 }};color:#fff;font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center">Add</button>
+                    </div>
+                    <span style="font-size:12px;color:oklch(0.55 0.01 85)">The level you pick is the target for this person. Sign-offs go to the workbook like any other module.</span>
+                  </div>
+                </div>
+              </sc-if>
+
+              <sc-if value="{{ viewQual }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;flex-direction:column;gap:14px">
+                  <sc-if value="{{ P.qualified }}" hint-placeholder-val="{{ false }}">
+                    <div style="background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:20px;padding:10px;max-width:620px">
+                      <div style="border:2px solid oklch(0.58 0.12 165);border-radius:14px;padding:34px 30px;display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center">
+                        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:oklch(0.5 0.01 85)">Position minimums met · CDGTRN0001</span>
+                        <span style="font-size:30px;font-weight:700;letter-spacing:-0.02em">{{ P.name }}</span>
+                        <span style="font-size:17px;font-weight:700;padding:6px 14px;border-radius:30px;background:oklch(0.58 0.12 165);color:#fff">{{ P.position }}</span>
+                        <span style="font-size:13.5px;line-height:1.5;color:oklch(0.5 0.01 85);max-width:420px">All {{ P.reqCount }} required modules are signed at or above the minimum. Mark the level Qualified on the Level Status tab once the qualification card is signed.</span>
+                      </div>
+                    </div>
+                    <sc-if value="{{ P.hasNext }}" hint-placeholder-val="{{ false }}">
+                      <div style="max-width:620px;background:#fff;border:1.5px solid oklch(0.8 0.07 165);border-radius:18px;padding:16px 18px;display:flex;flex-direction:column;gap:12px">
+                        <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+                          <div style="flex:1;min-width:220px;display:flex;flex-direction:column;gap:3px"><span style="font-size:16px;font-weight:700">Ready for the next level</span><span style="font-size:13px;line-height:1.45;color:oklch(0.5 0.01 85)">{{ P.nextSub }}</span></div>
+                          <button onClick="{{ P.askPromo }}" style="all:unset;cursor:pointer;min-height:48px;padding:0 20px;border-radius:12px;font-size:15px;font-weight:600;display:flex;align-items:center;justify-content:center;background:oklch(0.58 0.12 165);color:#fff">{{ P.nextLabel }} →</button>
+                        </div>
+                        <sc-if value="{{ P.promoAsk }}" hint-placeholder-val="{{ false }}">
+                          <div style="border-top:1px solid oklch(0.92 0.008 85);padding-top:12px;display:flex;flex-direction:column;gap:10px">
+                            <span style="font-size:14px;line-height:1.5">Change {{ P.name }}’s position to {{ P.nextPos }}? The Roster’s Current Position and Date in Current Position update in CDGTRN0009, and a to-do is added to update the paper card.</span>
+                            <div style="display:flex;gap:8px;justify-content:flex-end"><button onClick="{{ P.cancelPromo }}" style="all:unset;cursor:pointer;min-height:48px;padding:0 20px;border-radius:12px;font-size:15px;font-weight:600;display:flex;align-items:center;justify-content:center;border:1px solid oklch(0.8 0.01 85)">Cancel</button><button onClick="{{ P.doPromo }}" style="all:unset;cursor:pointer;min-height:48px;padding:0 20px;border-radius:12px;font-size:15px;font-weight:600;display:flex;align-items:center;justify-content:center;background:oklch(0.22 0.01 85);color:#fff">Confirm</button></div>
+                          </div>
+                        </sc-if>
+                      </div>
+                    </sc-if>
+                  </sc-if>
+                  <sc-if value="{{ P.notQualified }}" hint-placeholder-val="{{ true }}">
+                    <div style="background:#fff;border:1px dashed oklch(0.8 0.01 85);border-radius:18px;padding:18px 20px;display:flex;flex-direction:column;gap:4px">
+                      <span style="font-size:17px;font-weight:600">{{ P.belowCount }} modules below minimum for {{ P.position }}</span>
+                      <span style="font-size:13.5px;color:oklch(0.5 0.01 85)">Grid Check reads “Met” once every required module reaches its minimum level.</span>
+                    </div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                      <sc-for list="{{ P.below }}" as="r" hint-placeholder-count="4">
+                        <button onClick="{{ r.go }}" style="all:unset;cursor:pointer;display:flex;align-items:center;gap:12px;padding:12px 14px;background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:14px;min-height:44px">
+                          <span style="width:52px;flex:none;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600">{{ r.code }}</span>
+                          <div style="flex:1;display:flex;flex-direction:column;gap:2px;min-width:0"><span style="font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ r.title }}</span><span style="font-size:12px;color:oklch(0.5 0.01 85)">{{ r.meta }}</span></div>
+                          <span style="font-size:18px;color:oklch(0.5 0.01 85)">›</span>
+                        </button>
+                      </sc-for>
+                    </div>
+                  </sc-if>
+                </div>
+              </sc-if>
+              <sc-if value="{{ viewSafety }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;flex-direction:column;gap:18px">
+                  <sc-if value="{{ sf.hasWarn }}" hint-placeholder-val="{{ false }}">
+                    <div style="background:oklch(0.95 0.04 25);border:1px solid oklch(0.85 0.08 25);color:oklch(0.45 0.14 25);border-radius:14px;padding:12px 16px;font-size:14px;font-weight:600">{{ sf.warn }}</div>
+                  </sc-if>
+                  <div style="display:flex;flex-direction:column;gap:8px">
+                    <div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:oklch(0.5 0.01 85)">C-02 New Hire Safety Orientation · card Section 1</span><span style="font-size:12px;color:oklch(0.5 0.01 85)">Safety Orientation tab</span></div>
+                    <sc-if value="{{ sf.noOrient }}" hint-placeholder-val="{{ true }}">
+                      <div style="background:#fff;border:1px dashed oklch(0.8 0.01 85);border-radius:18px;padding:16px 18px;display:flex;align-items:center;gap:16px">
+                        <div style="flex:1;display:flex;flex-direction:column;gap:3px"><span style="font-size:16px;font-weight:600">Orientation outstanding</span><span style="font-size:13px;line-height:1.45;color:oklch(0.5 0.01 85)">No employee works unsupervised with orientation outstanding.</span></div>
+                        <button onClick="{{ sf.recordOrient }}" style="all:unset;cursor:pointer;min-height:44px;padding:0 18px;border-radius:12px;background:oklch(0.22 0.01 85);color:#fff;font-size:14px;font-weight:600;display:flex;align-items:center">Record C-02 today</button>
+                      </div>
+                    </sc-if>
+                    <sc-if value="{{ sf.hasOrient }}" hint-placeholder-val="{{ false }}">
+                      <div style="background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:18px;display:grid;grid-template-columns:repeat(3,1fr)">
+                        <sc-for list="{{ sf.orient }}" as="o" hint-placeholder-count="6">
+                          <div style="padding:12px 16px;border-bottom:1px solid oklch(0.94 0.006 85);display:flex;flex-direction:column;gap:3px"><span style="font-size:11.5px;color:oklch(0.5 0.01 85)">{{ o.k }}</span><span style="font-size:14.5px;font-weight:600">{{ o.v }}</span></div>
+                        </sc-for>
+                      </div>
+                      <sc-if value="{{ sf.canVerify }}" hint-placeholder-val="{{ false }}">
+                        <button onClick="{{ sf.verify }}" style="all:unset;cursor:pointer;align-self:flex-start;min-height:44px;padding:0 18px;border-radius:12px;background:oklch(0.58 0.12 165);color:#fff;font-size:14px;font-weight:600;display:flex;align-items:center">Coordinator verify</button>
+                      </sc-if>
+                    </sc-if>
+                  </div>
+                  <div style="display:flex;flex-direction:column;gap:8px">
+                    <div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:oklch(0.5 0.01 85)">Recurring &amp; annual refreshers</span><span style="font-size:12px;color:oklch(0.5 0.01 85)">Due 12 months after last completed</span></div>
+                    <div style="background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:18px;overflow:hidden">
+                      <div style="display:grid;grid-template-columns:minmax(0,1.6fr) 110px 110px 120px 130px;gap:12px;padding:10px 16px;background:oklch(0.965 0.006 85);font-size:12px;font-weight:600;color:oklch(0.45 0.01 85)"><span>Refresher</span><span>Last completed</span><span>Due</span><span>Status</span><span></span></div>
+                      <sc-for list="{{ sf.rows }}" as="rf" hint-placeholder-count="5">
+                        <div style="display:grid;grid-template-columns:minmax(0,1.6fr) 110px 110px 120px 130px;gap:12px;align-items:center;padding:8px 16px;min-height:56px;border-top:1px solid oklch(0.94 0.006 85)">
+                          <span style="font-size:14px;font-weight:600;line-height:1.3">{{ rf.label }}</span>
+                          <span style="font-size:13px">{{ rf.last }}</span>
+                          <span style="font-size:13px">{{ rf.due }}</span>
+                          <span style="justify-self:start;font-size:11.5px;font-weight:700;padding:4px 9px;border-radius:20px;background:{{ rf.bg }};color:{{ rf.ink }}">{{ rf.chip }}</span>
+                          <button onClick="{{ rf.record }}" style="all:unset;cursor:pointer;justify-self:end;min-height:40px;padding:0 12px;border-radius:10px;border:1px solid oklch(0.8 0.01 85);font-size:13px;font-weight:600;display:flex;align-items:center">Record today</button>
+                        </div>
+                      </sc-for>
+                    </div>
+                  </div>
+                </div>
+              </sc-if>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ showModule }}" hint-placeholder-val="{{ false }}">
+            <div style="padding:14px 28px 32px;display:flex;flex-direction:column;gap:16px">
+              <button onClick="{{ closeModule }}" style="all:unset;cursor:pointer;display:flex;align-items:center;font-size:15px;font-weight:600;color:oklch(0.45 0.11 165);min-height:44px">‹ {{ P.name }}</button>
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:oklch(0.5 0.01 85)">{{ mp.series }} · {{ mp.code }} · {{ mp.guideNo }}</span>
+                <span style="font-size:28px;font-weight:700;letter-spacing:-0.02em;line-height:1.15;text-wrap:pretty;max-width:760px">{{ mp.title }}</span>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
+                <sc-for list="{{ mp.facts }}" as="f" hint-placeholder-count="4">
+                  <div style="background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:14px;padding:12px 14px;display:flex;flex-direction:column;gap:3px"><span style="font-size:11.5px;color:oklch(0.5 0.01 85)">{{ f.k }}</span><span style="font-size:14.5px;font-weight:600;line-height:1.3">{{ f.v }}</span></div>
+                </sc-for>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px;padding:4px;background:oklch(0.935 0.008 85);border-radius:14px;position:sticky;top:0;z-index:2">
+                <sc-for list="{{ mp.tabs }}" as="tb" hint-placeholder-count="5">
+                  <button onClick="{{ tb.go }}" style="all:unset;cursor:pointer;min-height:40px;display:flex;align-items:center;justify-content:center;gap:6px;font-size:14px;font-weight:600;border-radius:11px;background:{{ tb.bg }};color:{{ tb.color }}">{{ tb.label }}<span style="font-size:11.5px;font-weight:500;color:oklch(0.55 0.01 85)">{{ tb.count }}</span></button>
+                </sc-for>
+              </div>
+
+              <sc-if value="{{ mp.isOv }}" hint-placeholder-val="{{ true }}">
+                <div style="display:flex;flex-direction:column;gap:18px">
+                  <sc-if value="{{ mp.noGuide }}" hint-placeholder-val="{{ false }}">
+                    <div style="border:1px dashed oklch(0.8 0.01 85);border-radius:16px;padding:16px 18px;font-size:13.5px;line-height:1.5;color:oklch(0.5 0.01 85)">Guide pending: the trainer guide for this series hasn’t been uploaded yet. Levels can still be signed from the qualification card.</div>
+                  </sc-if>
+                  <sc-if value="{{ mp.hasGuide }}" hint-placeholder-val="{{ true }}">
+                    <span style="font-size:15.5px;line-height:1.55;max-width:820px;text-wrap:pretty">{{ mp.purpose }}</span>
+                    <div style="background:oklch(0.96 0.04 85);border:1px solid oklch(0.88 0.07 85);border-radius:18px;padding:16px 18px;display:flex;flex-direction:column;gap:8px">
+                      <span style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:oklch(0.42 0.08 70)">{{ mp.mustLabel }}</span>
+                      <sc-for list="{{ mp.mustSay }}" as="ms" hint-placeholder-count="3">
+                        <div style="display:flex;gap:10px;font-size:14.5px;line-height:1.45"><span style="width:6px;height:6px;border-radius:50%;background:oklch(0.55 0.1 70);flex:none;margin-top:8px"></span><span style="text-wrap:pretty">{{ ms.text }}</span></div>
+                      </sc-for>
+                    </div>
+                    <div style="display:flex;flex-direction:column;gap:8px">
+                      <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:oklch(0.5 0.01 85)">{{ mp.objLabel }}</span>
+                      <sc-for list="{{ mp.objectives }}" as="ob" hint-placeholder-count="4">
+                        <div style="display:flex;gap:12px;font-size:14.5px;line-height:1.45;padding:2px 0"><span style="width:24px;height:24px;flex:none;border-radius:50%;background:oklch(0.93 0.04 165);color:oklch(0.4 0.1 165);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700">{{ ob.n }}</span><span style="text-wrap:pretty">{{ ob.text }}</span></div>
+                      </sc-for>
+                    </div>
+                    <sc-if value="{{ mp.hasWatch }}" hint-placeholder-val="{{ false }}">
+                      <div style="background:oklch(0.97 0.02 25);border:1px solid oklch(0.9 0.04 25);border-radius:18px;padding:16px 18px;display:flex;flex-direction:column;gap:8px">
+                        <span style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:oklch(0.48 0.13 25)">Common trainee mistakes · watch for</span>
+                        <sc-for list="{{ mp.watch }}" as="wt" hint-placeholder-count="3"><div style="display:flex;gap:10px;font-size:14.5px;line-height:1.45"><span style="width:6px;height:6px;border-radius:50%;background:oklch(0.55 0.14 25);flex:none;margin-top:8px"></span><span>{{ wt.text }}</span></div></sc-for>
+                      </div>
+                    </sc-if>
+                    <div style="background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:18px;display:flex;flex-direction:column">
+                      <sc-for list="{{ mp.meta }}" as="mt" hint-placeholder-count="3">
+                        <div style="display:grid;grid-template-columns:150px 1fr;gap:16px;padding:12px 16px;border-bottom:1px solid oklch(0.94 0.006 85)"><span style="font-size:13px;font-weight:600;color:oklch(0.45 0.01 85)">{{ mt.k }}</span><span style="font-size:13.5px;line-height:1.5">{{ mt.v }}</span></div>
+                      </sc-for>
+                    </div>
+                  </sc-if>
+                  <div style="display:grid;grid-template-columns:2fr 1fr;grid-template-rows:140px 140px;gap:10px">
+                    <div style="grid-row:span 2;border-radius:18px;overflow:hidden"><image-slot id="{{ mp.photo0 }}" shape="rect" placeholder="Module overview photo"></image-slot></div>
+                    <div style="border-radius:14px;overflow:hidden"><image-slot id="{{ mp.photo1 }}" shape="rect" placeholder="Equipment photo"></image-slot></div>
+                    <div style="border-radius:14px;overflow:hidden"><image-slot id="{{ mp.photo2 }}" shape="rect" placeholder="Equipment photo"></image-slot></div>
+                  </div>
+                </div>
+              </sc-if>
+
+              <sc-if value="{{ mp.isSop }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;flex-direction:column;gap:16px">
+                  <sc-if value="{{ mp.hasSop }}" hint-placeholder-val="{{ true }}">
+                    <div style="display:flex;flex-wrap:wrap;gap:8px">
+                      <sc-for list="{{ mp.sopChips }}" as="sc" hint-placeholder-count="2">
+                        <button onClick="{{ sc.pick }}" style="all:unset;cursor:pointer;min-height:40px;padding:0 14px;border-radius:12px;border:1.5px solid {{ sc.border }};background:{{ sc.bg }};display:flex;align-items:center;gap:8px"><span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;font-weight:600">{{ sc.no }}</span><span style="font-size:13px;font-weight:500">{{ sc.title }}</span></button>
+                      </sc-for>
+                    </div>
+                    <div style="background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:20px;padding:20px 22px;display:flex;flex-direction:column;gap:14px">
+                      <div style="display:flex;flex-direction:column;gap:4px"><span style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;color:oklch(0.45 0.11 165)">{{ mp.sop.no }}</span><span style="font-size:21px;font-weight:700;letter-spacing:-0.01em">{{ mp.sop.title }}</span></div>
+                      <span style="font-size:14px;line-height:1.5;color:oklch(0.4 0.01 85);text-wrap:pretty">{{ mp.sop.purpose }} {{ mp.sop.scope }}</span>
+                      <div style="display:flex;flex-direction:column;gap:6px">
+                        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:oklch(0.5 0.01 85)">PPE required</span>
+                        <div style="display:flex;flex-wrap:wrap;gap:6px">
+                          <sc-for list="{{ mp.sop.ppe }}" as="pp" hint-placeholder-count="3"><span style="font-size:12.5px;line-height:1.35;padding:6px 10px;border-radius:10px;background:oklch(0.95 0.006 85);max-width:100%">{{ pp.text }}</span></sc-for>
+                        </div>
+                      </div>
+                      <div style="height:200px;border-radius:14px;overflow:hidden"><image-slot id="{{ mp.sop.photoId }}" shape="rect" placeholder="SOP photo"></image-slot></div>
+                    </div>
+                    <sc-for list="{{ mp.sop.parts }}" as="pt" hint-placeholder-count="1">
+                      <div style="display:flex;flex-direction:column;gap:8px">
+                        <span style="font-size:16px;font-weight:700;padding:6px 4px 0">{{ pt.title }}</span>
+                        <sc-for list="{{ pt.blocks }}" as="bk" hint-placeholder-count="3">
+                          <sc-if value="{{ bk.isSub }}" hint-placeholder-val="{{ false }}"><span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:oklch(0.5 0.01 85);padding:8px 4px 0">{{ bk.text }}</span></sc-if>
+                          <sc-if value="{{ bk.isStep }}" hint-placeholder-val="{{ true }}">
+                            <div style="background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:14px;padding:12px 14px;display:flex;gap:12px">
+                              <span style="min-width:28px;height:28px;padding:0 6px;flex:none;border-radius:14px;background:oklch(0.93 0.04 165);color:oklch(0.4 0.1 165);display:flex;align-items:center;justify-content:center;font-size:12.5px;font-weight:700">{{ bk.n }}</span>
+                              <div style="flex:1;display:flex;flex-direction:column;gap:6px;padding-top:4px"><span style="font-size:14.5px;line-height:1.45;text-wrap:pretty">{{ bk.text }}</span>
+                                <sc-for list="{{ bk.subs }}" as="sb" hint-placeholder-count="0"><div style="display:flex;gap:8px;font-size:13.5px;line-height:1.45;color:oklch(0.4 0.01 85)"><span style="flex:none">–</span><span>{{ sb.text }}</span></div></sc-for>
+                              </div>
+                            </div>
+                          </sc-if>
+                          <sc-if value="{{ bk.isCaution }}" hint-placeholder-val="{{ false }}"><div style="background:oklch(0.95 0.05 60);border:1px solid oklch(0.85 0.09 60);color:oklch(0.38 0.1 50);border-radius:14px;padding:11px 14px;font-size:14px;font-weight:600;line-height:1.45">{{ bk.text }}</div></sc-if>
+                          <sc-if value="{{ bk.isNote }}" hint-placeholder-val="{{ false }}"><span style="font-size:13.5px;line-height:1.5;color:oklch(0.45 0.01 85);padding:0 4px">{{ bk.text }}</span></sc-if>
+                          <sc-if value="{{ bk.isTable }}" hint-placeholder-val="{{ false }}">
+                            <div style="background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:14px;overflow:hidden">
+                              <div style="padding:10px 14px;font-size:13px;font-weight:700;border-bottom:1px solid oklch(0.92 0.008 85)">{{ bk.caption }}</div>
+                              <sc-if value="{{ bk.isBlank }}" hint-placeholder-val="{{ false }}"><div style="padding:8px 14px;font-size:12.5px;color:oklch(0.5 0.01 85);border-bottom:1px solid oklch(0.95 0.006 85)">Blank log form. Fill it in on paper at the line. Columns:</div></sc-if>
+                              <sc-for list="{{ bk.rows }}" as="tr" hint-placeholder-count="3">
+                                <div style="display:grid;grid-template-columns:{{ bk.cols }};gap:12px;padding:9px 14px;border-bottom:1px solid oklch(0.95 0.006 85);background:{{ tr.bg }}">
+                                  <sc-for list="{{ tr.cells }}" as="td" hint-placeholder-count="2"><span style="font-size:13px;line-height:1.4;font-weight:{{ tr.w }}">{{ td.text }}</span></sc-for>
+                                </div>
+                              </sc-for>
+                            </div>
+                          </sc-if>
+                        </sc-for>
+                      </div>
+                    </sc-for>
+                  </sc-if>
+                  <sc-if value="{{ mp.noSop }}" hint-placeholder-val="{{ false }}">
+                    <div style="border:1px dashed oklch(0.8 0.01 85);border-radius:16px;padding:16px 18px;display:flex;flex-direction:column;gap:4px"><span style="font-size:16px;font-weight:600">SOP pending</span><span style="font-size:13.5px;line-height:1.5;color:oklch(0.5 0.01 85)">No uploaded SOP covers {{ mp.code }} yet. Add photos below until the procedure is loaded.</span></div>
+                    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+                      <div style="height:160px;border-radius:14px;overflow:hidden"><image-slot id="{{ mp.pend0 }}" shape="rect" placeholder="SOP photo"></image-slot></div>
+                      <div style="height:160px;border-radius:14px;overflow:hidden"><image-slot id="{{ mp.pend1 }}" shape="rect" placeholder="SOP photo"></image-slot></div>
+                      <div style="height:160px;border-radius:14px;overflow:hidden"><image-slot id="{{ mp.pend2 }}" shape="rect" placeholder="SOP photo"></image-slot></div>
+                    </div>
+                  </sc-if>
+                  <sc-if value="{{ mp.hasMissing }}" hint-placeholder-val="{{ false }}">
+                    <span style="font-size:12.5px;line-height:1.5;color:oklch(0.5 0.01 85)">Also referenced by the trainer guide, not yet uploaded: {{ mp.missing }}</span>
+                  </sc-if>
+                </div>
+              </sc-if>
+
+              <sc-if value="{{ mp.isCk }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;flex-direction:column;gap:12px">
+                  <span style="font-size:14px;line-height:1.55;color:oklch(0.4 0.01 85);max-width:820px;text-wrap:pretty">{{ mp.ckIntro }}</span>
+                  <sc-if value="{{ mp.hasCk }}" hint-placeholder-val="{{ true }}">
+                    <div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:oklch(0.5 0.01 85)">Practical demonstration · {{ P.first }}</span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600">{{ mp.ckCount }}</span></div>
+                    <div style="background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:18px;display:flex;flex-direction:column">
+                      <sc-for list="{{ mp.ck }}" as="c" hint-placeholder-count="5">
+                        <button onClick="{{ c.toggle }}" style="all:unset;cursor:pointer;display:flex;gap:14px;align-items:flex-start;padding:14px 16px;border-bottom:1px solid oklch(0.94 0.006 85)" style-hover="background:oklch(0.98 0.004 85)">
+                          <span style="width:26px;height:26px;flex:none;border-radius:8px;border:2px solid {{ c.boxBorder }};background:{{ c.boxBg }};display:flex;align-items:center;justify-content:center;margin-top:1px"><span style="width:7px;height:12px;border-right:2.5px solid #fff;border-bottom:2.5px solid #fff;transform:translateY(-1px) rotate(45deg);opacity:{{ c.op }}"></span></span>
+                          <span style="width:22px;flex:none;font-family:'JetBrains Mono',monospace;font-size:12px;color:oklch(0.5 0.01 85);padding-top:4px">{{ c.n }}</span>
+                          <div style="flex:1;display:flex;flex-direction:column;gap:3px"><span style="font-size:14.5px;font-weight:600">{{ c.task }}</span><span style="font-size:13.5px;line-height:1.45;color:oklch(0.42 0.01 85);text-wrap:pretty">{{ c.standard }}</span></div>
+                        </button>
+                      </sc-for>
+                    </div>
+                    <div style="background:{{ mp.resBg }};border-radius:14px;padding:12px 16px;font-size:14px;font-weight:600;color:{{ mp.resInk }}">{{ mp.resText }}</div>
+                  </sc-if>
+                </div>
+              </sc-if>
+
+              <sc-if value="{{ mp.isKc }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;flex-direction:column;gap:14px">
+                  <sc-if value="{{ mp.noKc }}" hint-placeholder-val="{{ false }}">
+                    <div style="border:1px dashed oklch(0.8 0.01 85);border-radius:16px;padding:16px 18px;font-size:13.5px;color:oklch(0.5 0.01 85)">The trainer guide has no knowledge check for this module.</div>
+                  </sc-if>
+                  <sc-if value="{{ mp.hasKc }}" hint-placeholder-val="{{ true }}">
+                    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+                      <span style="font-size:12.5px;font-weight:700;padding:6px 11px;border-radius:20px;background:oklch(0.93 0.04 165);color:oklch(0.4 0.1 165)">{{ mp.kcLabel }}</span>
+                      <span style="flex:1;min-width:200px;font-size:13px;line-height:1.45;color:oklch(0.5 0.01 85)">{{ mp.kcHint }}</span>
+                      <button onClick="{{ mp.kcToggle }}" style="all:unset;cursor:pointer;min-height:44px;padding:0 16px;border-radius:12px;font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center;background:{{ mp.kcKeyBg }};color:{{ mp.kcKeyInk }};border:1.5px solid {{ mp.kcKeyBorder }}">{{ mp.kcKeyLabel }}</button>
+                    </div>
+                    <sc-if value="{{ mp.kcWarn }}" hint-placeholder-val="{{ false }}">
+                      <div style="background:oklch(0.95 0.04 25);border:1px solid oklch(0.85 0.08 25);color:oklch(0.45 0.14 25);border-radius:14px;padding:12px 16px;font-size:14px;font-weight:600">Two failed attempts: refer to the Training &amp; Safety Coordinator before retesting.</div>
+                    </sc-if>
+                    <sc-for list="{{ mp.kcq }}" as="kq" hint-placeholder-count="5">
+                      <div style="background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:16px;padding:14px 16px;display:flex;flex-direction:column;gap:10px">
+                        <div style="display:flex;gap:12px"><span style="width:28px;height:28px;flex:none;border-radius:50%;background:oklch(0.22 0.01 85);color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700">{{ kq.n }}</span><span style="flex:1;font-size:15.5px;font-weight:600;line-height:1.4;padding-top:3px;text-wrap:pretty">{{ kq.q }}</span></div>
+                        <sc-if value="{{ kq.isW }}" hint-placeholder-val="{{ true }}">
+                          <div style="display:flex;flex-direction:column;gap:6px;padding-left:40px">
+                            <sc-for list="{{ kq.opts }}" as="op" hint-placeholder-count="4">
+                              <button onClick="{{ op.pick }}" style="all:unset;cursor:pointer;display:flex;align-items:center;gap:12px;min-height:46px;padding:6px 12px;border-radius:12px;border:1.5px solid {{ op.border }};background:{{ op.bg }}"><span style="width:26px;height:26px;flex:none;border-radius:50%;border:1.5px solid {{ op.border }};display:flex;align-items:center;justify-content:center;font-size:12.5px;font-weight:700">{{ op.l }}</span><span style="flex:1;font-size:14.5px;line-height:1.4">{{ op.t }}</span><span style="font-size:12px;font-weight:700;color:{{ op.tagInk }}">{{ op.tag }}</span></button>
+                            </sc-for>
+                          </div>
+                        </sc-if>
+                        <sc-if value="{{ kq.isO }}" hint-placeholder-val="{{ false }}">
+                          <div style="display:flex;gap:8px;padding-left:40px">
+                            <button onClick="{{ kq.markOk }}" style="all:unset;cursor:pointer;min-height:44px;padding:0 16px;border-radius:12px;font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center;border:1.5px solid oklch(0.58 0.12 165);background:{{ kq.okBg }};color:{{ kq.okInk }}">Acceptable</button>
+                            <button onClick="{{ kq.markNo }}" style="all:unset;cursor:pointer;min-height:44px;padding:0 16px;border-radius:12px;font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center;border:1.5px solid oklch(0.55 0.15 25);background:{{ kq.noBg }};color:{{ kq.noInk }}">Not yet</button>
+                          </div>
+                        </sc-if>
+                        <sc-if value="{{ kq.showKey }}" hint-placeholder-val="{{ false }}">
+                          <div style="margin-left:40px;background:oklch(0.965 0.025 165);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;gap:3px"><span style="font-size:11.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:oklch(0.4 0.1 165)">{{ kq.keyLabel }}</span><span style="font-size:14px;line-height:1.45">{{ kq.answer }}</span><span style="font-size:12px;color:oklch(0.5 0.01 85)">{{ kq.ref }}</span></div>
+                        </sc-if>
+                      </div>
+                    </sc-for>
+                    <div style="position:sticky;bottom:0;margin:0 -28px;padding:12px 28px calc(14px + env(safe-area-inset-bottom));background:linear-gradient(to bottom, transparent, oklch(0.975 0.006 85) 22%);display:flex;align-items:center;gap:12px">
+                      <span style="font-size:16px;font-weight:700">{{ mp.kcScore }}</span>
+                      <span style="font-size:12px;font-weight:700;padding:4px 10px;border-radius:20px;background:{{ mp.kcChipBg }};color:{{ mp.kcChipInk }}">{{ mp.kcChip }}</span>
+                      <span style="flex:1"></span>
+                      <button onClick="{{ mp.kcReset }}" style="all:unset;cursor:pointer;min-height:44px;padding:0 16px;border-radius:12px;font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center;border:1px solid oklch(0.8 0.01 85)">Clear</button>
+                      <button onClick="{{ mp.kcRecord }}" style="all:unset;cursor:pointer;min-height:44px;padding:0 16px;border-radius:12px;font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center;background:{{ mp.kcRecBg }};color:#fff;cursor:{{ mp.kcRecCursor }}">Record score</button>
+                    </div>
+                    <sc-if value="{{ mp.kcHasAtt }}" hint-placeholder-val="{{ false }}">
+                      <div style="display:flex;flex-direction:column;gap:6px">
+                        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:oklch(0.5 0.01 85)">Attempts · copy the score to card Section 3</span>
+                        <sc-for list="{{ mp.kcAtts }}" as="at" hint-placeholder-count="1">
+                          <div style="display:flex;align-items:center;gap:12px;background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:12px;padding:10px 14px"><span style="font-size:13.5px;font-weight:700;width:80px">Attempt {{ at.n }}</span><span style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600">{{ at.score }}</span><span style="font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:20px;background:{{ at.bg }};color:{{ at.ink }}">{{ at.res }}</span><span style="flex:1;text-align:right;font-size:12.5px;color:oklch(0.5 0.01 85)">{{ at.by }} · {{ at.date }}</span></div>
+                        </sc-for>
+                      </div>
+                    </sc-if>
+                  </sc-if>
+                </div>
+              </sc-if>
+
+              <sc-if value="{{ mp.isSg }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;flex-direction:column;gap:14px">
+                  <div style="background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:18px;overflow:hidden">
+                    <sc-for list="{{ mp.crit }}" as="cr" hint-placeholder-count="4">
+                      <div style="display:grid;grid-template-columns:70px 170px 1fr;gap:12px;padding:12px 16px;border-bottom:1px solid oklch(0.94 0.006 85);background:{{ cr.bg }}"><span style="font-size:13.5px;font-weight:700">Level {{ cr.lvl }}</span><span style="font-size:13.5px;font-weight:600">{{ cr.name }}<span style="display:block;font-size:11px;font-weight:600;color:oklch(0.45 0.11 165)">{{ cr.tag }}</span></span><span style="font-size:13.5px;line-height:1.45">{{ cr.when }}</span></div>
+                    </sc-for>
+                  </div>
+                  <sc-for list="{{ mp.signOff }}" as="so" hint-placeholder-count="1"><span style="font-size:14px;line-height:1.55;color:oklch(0.4 0.01 85);max-width:860px;text-wrap:pretty">{{ so.text }}</span></sc-for>
+                  <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:oklch(0.5 0.01 85)">Competency sign-off · {{ P.first }}</span>
+                  <div style="background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:18px;padding:4px 14px">
+                  <sc-for list="{{ mp.levels }}" as="lv" hint-placeholder-count="4">
+                    <div style="display:flex;align-items:center;gap:14px;min-height:60px;padding:6px 0;border-bottom:1px solid oklch(0.95 0.006 85);opacity:{{ lv.rowOp }}">
+                      <span style="width:24px;height:24px;flex:none;border-radius:7px;border:2px solid {{ lv.boxBorder }};background:{{ lv.boxBg }};display:flex;align-items:center;justify-content:center"><span style="width:6px;height:11px;border-right:2px solid #fff;border-bottom:2px solid #fff;transform:translateY(-1px) rotate(45deg);opacity:{{ lv.checkOp }}"></span></span>
+                      <div style="width:200px;flex:none;display:flex;flex-direction:column;gap:2px"><span style="font-size:14.5px;font-weight:600">Level {{ lv.k }} · {{ lv.name }}</span><span style="font-size:11.5px;color:{{ lv.tagColor }}">{{ lv.tag }}</span></div>
+                      <div style="flex:1;display:flex;align-items:center;gap:12px;min-width:0">
+                        <sc-if value="{{ lv.hasInk }}" hint-placeholder-val="{{ false }}">
+                          <div style="display:flex;align-items:center;gap:8px"><img src="{{ lv.sig }}" alt="Trainer signature" style="height:30px;width:96px;object-fit:contain;border-bottom:1px solid oklch(0.85 0.01 85)"></img></div>
+                        </sc-if>
+                        <span style="font-size:12.5px;color:oklch(0.5 0.01 85)">{{ lv.who }}</span>
+                      </div>
+                      <sc-if value="{{ lv.next }}" hint-placeholder-val="{{ false }}">
+                        <button onClick="{{ lv.sign }}" style="all:unset;cursor:pointer;min-height:44px;padding:0 18px;border-radius:12px;background:oklch(0.22 0.01 85);color:#fff;font-size:14px;font-weight:600;display:flex;align-items:center">Sign off L{{ lv.k }}</button>
+                      </sc-if>
+                      <sc-if value="{{ lv.canRevoke }}" hint-placeholder-val="{{ false }}">
+                        <button onClick="{{ lv.revoke }}" style="all:unset;cursor:pointer;min-height:44px;padding:0 10px;font-size:13px;font-weight:600;color:oklch(0.55 0.15 25)">Revoke</button>
+                      </sc-if>
+                    </div>
+                  </sc-for>
+                  </div>
+                </div>
+              </sc-if>
+            </div>
+          </sc-if>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isRef }}" hint-placeholder-val="{{ false }}">
+        <div style="width:340px;flex:none;border-right:1px solid oklch(0.9 0.008 85);display:flex;flex-direction:column;min-height:0">
+          <div style="padding:20px 18px 12px;display:flex;flex-direction:column;gap:12px">
+            <div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:26px;font-weight:700;letter-spacing:-0.02em">SOP library</span><span style="font-size:13px;color:oklch(0.5 0.01 85)">{{ ref.count }}</span></div>
+            <input value="{{ ref.q }}" onChange="{{ ref.onQ }}" placeholder="Search SOP number or title" style="height:44px;border-radius:14px;border:1px solid oklch(0.88 0.008 85);background:#fff;padding:0 14px;font-size:15px;color:oklch(0.22 0.01 85);outline:none"></input>
+          </div>
+          <div style="flex:1;overflow-y:auto;padding:0 12px calc(96px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:4px">
+            <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:oklch(0.5 0.01 85);padding:6px 8px">Lookup references</span>
+            <sc-for list="{{ ref.look }}" as="x" hint-placeholder-count="3">
+              <button onClick="{{ x.pick }}" style="all:unset;cursor:pointer;border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:2px;background:{{ x.bg }}"><span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;font-weight:600;color:oklch(0.45 0.11 165)">{{ x.no }}</span><span style="font-size:14.5px;font-weight:600">{{ x.title }}</span><span style="font-size:11.5px;color:oklch(0.5 0.01 85)">{{ x.mods }}</span></button>
+            </sc-for>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:oklch(0.5 0.01 85);padding:14px 8px 6px">All procedures</span>
+            <sc-for list="{{ ref.all }}" as="x" hint-placeholder-count="8">
+              <button onClick="{{ x.pick }}" style="all:unset;cursor:pointer;border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:2px;background:{{ x.bg }}"><span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;font-weight:600;color:oklch(0.45 0.11 165)">{{ x.no }}</span><span style="font-size:14.5px;font-weight:600">{{ x.title }}</span><span style="font-size:11.5px;color:oklch(0.5 0.01 85)">{{ x.mods }}</span></button>
+            </sc-for>
+          </div>
+        </div>
+        <div style="flex:1;min-width:0;overflow-y:auto">
+          <div style="padding:22px 28px calc(96px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:16px">
+            <div style="background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:20px;padding:20px 22px;display:flex;flex-direction:column;gap:14px">
+                      <div style="display:flex;flex-direction:column;gap:4px"><span style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;color:oklch(0.45 0.11 165)">{{ rs.no }}</span><span style="font-size:21px;font-weight:700;letter-spacing:-0.01em">{{ rs.title }}</span></div>
+                      <span style="font-size:14px;line-height:1.5;color:oklch(0.4 0.01 85);text-wrap:pretty">{{ rs.purpose }} {{ rs.scope }}</span>
+                      <div style="display:flex;flex-direction:column;gap:6px">
+                        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:oklch(0.5 0.01 85)">PPE required</span>
+                        <div style="display:flex;flex-wrap:wrap;gap:6px">
+                          <sc-for list="{{ rs.ppe }}" as="pp" hint-placeholder-count="3"><span style="font-size:12.5px;line-height:1.35;padding:6px 10px;border-radius:10px;background:oklch(0.95 0.006 85);max-width:100%">{{ pp.text }}</span></sc-for>
+                        </div>
+                      </div>
+                      <div style="height:200px;border-radius:14px;overflow:hidden"><image-slot id="{{ rs.photoId }}" shape="rect" placeholder="SOP photo"></image-slot></div>
+                    </div>
+                    <sc-for list="{{ rs.parts }}" as="pt" hint-placeholder-count="1">
+                      <div style="display:flex;flex-direction:column;gap:8px">
+                        <span style="font-size:16px;font-weight:700;padding:6px 4px 0">{{ pt.title }}</span>
+                        <sc-for list="{{ pt.blocks }}" as="bk" hint-placeholder-count="3">
+                          <sc-if value="{{ bk.isSub }}" hint-placeholder-val="{{ false }}"><span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:oklch(0.5 0.01 85);padding:8px 4px 0">{{ bk.text }}</span></sc-if>
+                          <sc-if value="{{ bk.isStep }}" hint-placeholder-val="{{ true }}">
+                            <div style="background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:14px;padding:12px 14px;display:flex;gap:12px">
+                              <span style="min-width:28px;height:28px;padding:0 6px;flex:none;border-radius:14px;background:oklch(0.93 0.04 165);color:oklch(0.4 0.1 165);display:flex;align-items:center;justify-content:center;font-size:12.5px;font-weight:700">{{ bk.n }}</span>
+                              <div style="flex:1;display:flex;flex-direction:column;gap:6px;padding-top:4px"><span style="font-size:14.5px;line-height:1.45;text-wrap:pretty">{{ bk.text }}</span>
+                                <sc-for list="{{ bk.subs }}" as="sb" hint-placeholder-count="0"><div style="display:flex;gap:8px;font-size:13.5px;line-height:1.45;color:oklch(0.4 0.01 85)"><span style="flex:none">–</span><span>{{ sb.text }}</span></div></sc-for>
+                              </div>
+                            </div>
+                          </sc-if>
+                          <sc-if value="{{ bk.isCaution }}" hint-placeholder-val="{{ false }}"><div style="background:oklch(0.95 0.05 60);border:1px solid oklch(0.85 0.09 60);color:oklch(0.38 0.1 50);border-radius:14px;padding:11px 14px;font-size:14px;font-weight:600;line-height:1.45">{{ bk.text }}</div></sc-if>
+                          <sc-if value="{{ bk.isNote }}" hint-placeholder-val="{{ false }}"><span style="font-size:13.5px;line-height:1.5;color:oklch(0.45 0.01 85);padding:0 4px">{{ bk.text }}</span></sc-if>
+                          <sc-if value="{{ bk.isTable }}" hint-placeholder-val="{{ false }}">
+                            <div style="background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:14px;overflow:hidden">
+                              <div style="padding:10px 14px;font-size:13px;font-weight:700;border-bottom:1px solid oklch(0.92 0.008 85)">{{ bk.caption }}</div>
+                              <sc-if value="{{ bk.isBlank }}" hint-placeholder-val="{{ false }}"><div style="padding:8px 14px;font-size:12.5px;color:oklch(0.5 0.01 85);border-bottom:1px solid oklch(0.95 0.006 85)">Blank log form. Fill it in on paper at the line. Columns:</div></sc-if>
+                              <sc-for list="{{ bk.rows }}" as="tr" hint-placeholder-count="3">
+                                <div style="display:grid;grid-template-columns:{{ bk.cols }};gap:12px;padding:9px 14px;border-bottom:1px solid oklch(0.95 0.006 85);background:{{ tr.bg }}">
+                                  <sc-for list="{{ tr.cells }}" as="td" hint-placeholder-count="2"><span style="font-size:13px;line-height:1.4;font-weight:{{ tr.w }}">{{ td.text }}</span></sc-for>
+                                </div>
+                              </sc-for>
+                            </div>
+                          </sc-if>
+                        </sc-for>
+                      </div>
+                    </sc-for>
+                  
+            <sc-if value="{{ rs.hasUsed }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:oklch(0.5 0.01 85)">Taught in these modules</span>
+                <div style="display:flex;flex-wrap:wrap;gap:6px"><sc-for list="{{ rs.used }}" as="u" hint-placeholder-count="2"><span style="font-size:12.5px;padding:6px 10px;border-radius:10px;background:#fff;border:1px solid oklch(0.9 0.008 85)"><span style="font-family:'JetBrains Mono',monospace;font-weight:600">{{ u.code }}</span> {{ u.title }}</span></sc-for></div>
+              </div>
+            </sc-if>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isProfile }}" hint-placeholder-val="{{ false }}">
+        <div style="flex:1;overflow-y:auto;padding:26px 32px calc(96px + env(safe-area-inset-bottom));display:grid;grid-template-columns:320px minmax(0,1fr);gap:28px;align-items:start">
+          <div style="display:flex;flex-direction:column;gap:16px">
+            <div style="background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:22px;padding:24px;display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center">
+              <span style="width:84px;height:84px;border-radius:50%;background:oklch(0.58 0.12 165);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:28px">{{ me.initials }}</span>
+              <span style="font-size:22px;font-weight:700;margin-top:4px">{{ me.name }}</span>
+              <span style="font-size:13.5px;color:oklch(0.5 0.01 85)">{{ me.role }}</span>
+              <span style="font-size:12px;font-weight:600;line-height:1.4;padding:6px 11px;border-radius:12px;background:{{ me.ldBg }};color:{{ me.ldInk }}">{{ me.ld01 }}</span>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%;margin-top:10px">
+                <div style="background:oklch(0.965 0.006 85);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:2px"><span style="font-size:22px;font-weight:700">{{ me.count }}</span><span style="font-size:11.5px;color:oklch(0.5 0.01 85)">Sign-offs in app</span></div>
+                <div style="background:oklch(0.965 0.006 85);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:2px"><span style="font-size:22px;font-weight:700">{{ me.assigned }}</span><span style="font-size:11.5px;color:oklch(0.5 0.01 85)">Assigned trainees</span></div>
+              </div>
+            </div>
+            <div style="background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:18px;padding:16px;display:flex;flex-direction:column;gap:10px">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span style="font-size:15px;font-weight:700">Microsoft 365 · CDGTRN0009</span><span style="font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px;background:{{ wb.chipBg }};color:{{ wb.chipInk }}">{{ wb.chip }}</span></div>
+              <span style="font-size:12.5px;line-height:1.45;color:oklch(0.5 0.01 85)">{{ wb.detail }}</span>
+              <sc-if value="{{ wb.showSignIn }}" hint-placeholder-val="{{ false }}">
+                <button onClick="{{ wb.signIn }}" style="all:unset;cursor:pointer;min-height:46px;border-radius:12px;font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center;text-align:center;background:oklch(0.22 0.01 85);color:#fff">Sign in with Microsoft</button>
+              </sc-if>
+              <sc-if value="{{ wb.signedIn }}" hint-placeholder-val="{{ false }}">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                  <button onClick="{{ wb.pull }}" style="all:unset;cursor:pointer;min-height:46px;border-radius:12px;font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center;text-align:center;border:1px solid oklch(0.8 0.01 85)">Pull latest now</button>
+                  <button onClick="{{ wb.retry }}" style="all:unset;cursor:pointer;min-height:46px;border-radius:12px;font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center;text-align:center;border:1px solid oklch(0.8 0.01 85)">Retry saving</button>
+                </div>
+              </sc-if>
+              <sc-if value="{{ wb.canEdit }}" hint-placeholder-val="{{ false }}">
+                <button onClick="{{ wb.toggleCfg }}" style="all:unset;cursor:pointer;font-size:13px;font-weight:600;color:oklch(0.45 0.11 165);min-height:32px;display:flex;align-items:center">{{ wb.cfgLabel }}</button>
+                <sc-if value="{{ wb.cfgOpen }}" hint-placeholder-val="{{ false }}">
+                  <div style="display:flex;flex-direction:column;gap:8px">
+                    <label style="display:flex;flex-direction:column;gap:4px;font-size:12.5px;font-weight:600">Application (client) ID<input value="{{ wb.client }}" onChange="{{ wb.onClient }}" placeholder="1a2b3c4d-…" autocapitalize="off" autocorrect="off" spellcheck="false" style="min-height:44px;border:1px solid oklch(0.85 0.01 85);border-radius:10px;padding:0 12px;font:inherit;font-size:14px;font-weight:400;background:#fff;color:inherit"></input></label>
+                    <label style="display:flex;flex-direction:column;gap:4px;font-size:12.5px;font-weight:600">Directory (tenant) ID<input value="{{ wb.tenant }}" onChange="{{ wb.onTenant }}" placeholder="1a2b3c4d-… or cdg.onmicrosoft.com" autocapitalize="off" autocorrect="off" spellcheck="false" style="min-height:44px;border:1px solid oklch(0.85 0.01 85);border-radius:10px;padding:0 12px;font:inherit;font-size:14px;font-weight:400;background:#fff;color:inherit"></input></label>
+                    <label style="display:flex;flex-direction:column;gap:4px;font-size:12.5px;font-weight:600">CDGTRN0009 share link<input value="{{ wb.link }}" onChange="{{ wb.onLink }}" placeholder="https://….sharepoint.com/…" autocapitalize="off" autocorrect="off" spellcheck="false" style="min-height:44px;border:1px solid oklch(0.85 0.01 85);border-radius:10px;padding:0 12px;font:inherit;font-size:14px;font-weight:400;background:#fff;color:inherit"></input></label>
+                    <span style="font-size:11.5px;line-height:1.45;color:oklch(0.55 0.01 85)">Redirect URI to register in Entra (Single-page application): {{ wb.redirect }}</span>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                      <button onClick="{{ wb.save }}" style="all:unset;cursor:pointer;min-height:46px;border-radius:12px;font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center;text-align:center;background:oklch(0.58 0.12 165);color:#fff">Save settings</button>
+                      <button onClick="{{ wb.test }}" style="all:unset;cursor:pointer;min-height:46px;border-radius:12px;font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center;text-align:center;border:1px solid oklch(0.8 0.01 85)">Test connection</button>
+                    </div>
+                  </div>
+                </sc-if>
+                <sc-if value="{{ wb.signedIn }}" hint-placeholder-val="{{ false }}">
+                  <button onClick="{{ wb.signOut }}" style="all:unset;cursor:pointer;font-size:13px;color:oklch(0.5 0.01 85);min-height:32px;display:flex;align-items:center">Sign out of Microsoft</button>
+                </sc-if>
+              </sc-if>
+            </div>
+            <sc-if value="{{ fb.show }}" hint-placeholder-val="{{ false }}"><div style="background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:18px;padding:16px;display:flex;flex-direction:column;gap:10px">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span style="font-size:15px;font-weight:700">Backup: file exchange</span><span style="font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px;background:{{ fb.chipBg }};color:{{ fb.chipInk }}">{{ fb.chip }}</span></div>
+              <span style="font-size:12.5px;line-height:1.45;color:oklch(0.5 0.01 85)">{{ fb.detail }}</span>
+              <sc-if value="{{ fb.canEdit }}" hint-placeholder-val="{{ false }}">
+                <button onClick="{{ fb.save }}" style="all:unset;cursor:pointer;min-height:48px;border-radius:12px;background:oklch(0.22 0.01 85);color:#fff;font-size:14.5px;font-weight:600;display:flex;align-items:center;justify-content:center;text-align:center">Save updates file → OneDrive</button>
+                <button onClick="{{ fb.pick }}" style="all:unset;cursor:pointer;min-height:44px;border-radius:12px;border:1px solid oklch(0.8 0.01 85);font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center;text-align:center">Load workbook from OneDrive…</button>
+                <input type="file" accept=".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12" ref="{{ fb.inputRef }}" onChange="{{ fb.onFile }}" style="display:none"></input>
+                <span style="font-size:11.5px;line-height:1.45;color:oklch(0.55 0.01 85)">Save: share sheet → Save to Files → OneDrive → CDG Training Updates → Replace. Then run the import macro in Excel.</span>
+              </sc-if>
+            </div></sc-if>
+            <button onClick="{{ switchTrainer }}" style="all:unset;cursor:pointer;min-height:48px;border-radius:14px;border:1px solid oklch(0.8 0.01 85);font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center">Switch trainer</button>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;color:oklch(0.55 0.01 85);text-align:center">CDG Training {{ appVersion }} · {{ appDate }} · data {{ dataRev }}</span>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <sc-if value="{{ todo.show }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:18px">
+              <div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:oklch(0.5 0.01 85)">Coordinator to-do</span><span style="font-size:12px;color:oklch(0.5 0.01 85)">{{ todo.count }}</span></div>
+              <div style="display:flex;gap:8px"><input value="{{ todo.text }}" onChange="{{ todo.onText }}" onKeyDown="{{ todo.onKey }}" placeholder="Add a to-do…" style="flex:1;height:44px;border-radius:12px;border:1px solid oklch(0.85 0.008 85);background:#fff;padding:0 14px;font-size:14.5px;outline:none"></input><button onClick="{{ todo.add }}" style="all:unset;cursor:pointer;min-height:44px;padding:0 18px;border-radius:12px;background:oklch(0.22 0.01 85);color:#fff;font-size:14px;font-weight:600;display:flex;align-items:center">Add</button></div>
+              <div style="background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:16px;display:flex;flex-direction:column;overflow:hidden">
+                <sc-for list="{{ todo.manual }}" as="tm" hint-placeholder-count="0">
+                  <div style="display:flex;align-items:center;gap:12px;padding:8px 12px;min-height:52px;border-bottom:1px solid oklch(0.94 0.006 85)">
+                    <button onClick="{{ tm.toggle }}" style="all:unset;cursor:pointer;width:40px;height:40px;flex:none;display:flex;align-items:center;justify-content:center"><span style="width:22px;height:22px;border-radius:7px;border:2px solid {{ tm.border }};background:{{ tm.bg }};display:flex;align-items:center;justify-content:center"><span style="width:6px;height:10px;border-right:2px solid #fff;border-bottom:2px solid #fff;transform:translateY(-1px) rotate(45deg);opacity:{{ tm.op }}"></span></span></button>
+                    <div style="flex:1;display:flex;flex-direction:column;gap:2px;min-width:0"><span style="font-size:14.5px;font-weight:600;text-decoration:{{ tm.deco }};color:{{ tm.color }}">{{ tm.text }}</span><span style="font-size:11.5px;color:oklch(0.55 0.01 85)">{{ tm.meta }}</span></div>
+                    <button onClick="{{ tm.del }}" style="all:unset;cursor:pointer;min-height:40px;padding:0 8px;font-size:12.5px;font-weight:600;color:oklch(0.55 0.15 25)">Delete</button>
+                  </div>
+                </sc-for>
+                <sc-for list="{{ todo.auto }}" as="ta" hint-placeholder-count="3">
+                  <div style="display:flex;align-items:center;border-bottom:1px solid oklch(0.94 0.006 85)">
+                    <button onClick="{{ ta.go }}" style="all:unset;cursor:pointer;flex:1;min-width:0;display:flex;align-items:center;gap:12px;padding:10px 4px 10px 14px;min-height:52px" style-hover="background:oklch(0.98 0.004 85)">
+                      <span style="width:10px;height:10px;border-radius:50%;flex:none;background:{{ ta.dot }};margin:0 6px"></span>
+                      <div style="flex:1;display:flex;flex-direction:column;gap:2px;min-width:0"><span style="font-size:14.5px;font-weight:600;line-height:1.3">{{ ta.text }}</span><span style="font-size:12px;line-height:1.4;color:oklch(0.5 0.01 85)">{{ ta.sub }}</span></div>
+                      <span style="font-size:11px;font-weight:600;color:oklch(0.55 0.01 85);white-space:nowrap">{{ ta.kind }}</span>
+                      <span style="font-size:17px;color:oklch(0.55 0.01 85)">›</span>
+                    </button>
+                    <button onClick="{{ ta.remove }}" title="Remove from list" style="all:unset;cursor:pointer;width:44px;height:44px;flex:none;margin-right:6px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:20px;color:oklch(0.55 0.01 85)">×</button>
+                  </div>
+                </sc-for>
+                <sc-if value="{{ todo.hasDone }}" hint-placeholder-val="{{ false }}"><button onClick="{{ todo.clearDone }}" style="all:unset;cursor:pointer;min-height:44px;padding:0 16px;font-size:13px;font-weight:600;color:oklch(0.55 0.15 25);display:flex;align-items:center">Clear completed</button></sc-if>
+                <sc-if value="{{ todo.hasHidden }}" hint-placeholder-val="{{ false }}"><button onClick="{{ todo.restore }}" style="all:unset;cursor:pointer;min-height:44px;padding:0 16px;font-size:13px;font-weight:600;color:oklch(0.45 0.11 165);display:flex;align-items:center">{{ todo.hiddenLabel }}</button></sc-if>
+                <sc-if value="{{ todo.none }}" hint-placeholder-val="{{ false }}"><div style="padding:18px;font-size:14px;color:oklch(0.5 0.01 85)">Nothing waiting. All caught up.</div></sc-if>
+              </div>
+            </div>
+            </sc-if>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:oklch(0.5 0.01 85)">My sign-offs</span>
+            <sc-if value="{{ me.none }}" hint-placeholder-val="{{ false }}">
+              <div style="border:1px dashed oklch(0.8 0.01 85);border-radius:18px;padding:22px;font-size:14px;color:oklch(0.5 0.01 85)">No sign-offs under this profile yet. Open a trainee on the Roster tab to sign off a level.</div>
+            </sc-if>
+            <sc-for list="{{ me.list }}" as="r" hint-placeholder-count="3">
+              <div style="background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:16px;padding:12px 16px;display:flex;align-items:center;gap:14px">
+                <span style="width:52px;flex:none;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600">{{ r.code }}</span>
+                <div style="flex:1;display:flex;flex-direction:column;gap:2px;min-width:0"><span style="font-size:14.5px;font-weight:600">{{ r.trainee }} · Level {{ r.level }}</span><span style="font-size:12px;color:oklch(0.5 0.01 85);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ r.title }}</span></div>
+                <img src="{{ r.sig }}" alt="Trainer signature" style="height:28px;width:90px;object-fit:contain"></img>
+                <span style="font-size:12px;color:oklch(0.5 0.01 85);white-space:nowrap">{{ r.date }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-if>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ sm.open }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;inset:0;background:rgba(20,22,26,.45);display:flex;overflow-y:auto;padding:12px;z-index:5">
+      <div style="margin:auto;max-width:100%;width:680px;background:oklch(0.985 0.004 85);border-radius:26px;padding:26px 28px;display:flex;flex-direction:column;gap:18px;box-shadow:0 30px 70px -20px rgba(0,0,0,.5)">
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:oklch(0.5 0.01 85)">Sign-off · {{ sm.code }} · Level {{ sm.level }}</span>
+          <span style="font-size:24px;font-weight:700;letter-spacing:-0.02em;line-height:1.2">{{ sm.levelName }}: {{ sm.title }}</span>
+          <span style="font-size:14px;line-height:1.5;color:oklch(0.45 0.01 85)">I verify that {{ sm.trainee }} demonstrated this module at Level {{ sm.level }} against the practical checklist in the trainer guide, and that it is signed on the qualification card.</span>
+          <sc-if value="{{ sm.hasFill }}" hint-placeholder-val="{{ false }}"><div style="background:oklch(0.96 0.04 85);border:1px solid oklch(0.88 0.07 85);border-radius:12px;padding:10px 14px;font-size:13.5px;line-height:1.45;color:oklch(0.38 0.08 70);font-weight:500">{{ sm.fillNote }}</div></sc-if>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr;gap:14px">
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:13px;font-weight:600">Trainer signature</span><button onClick="{{ padS.clear }}" style="all:unset;cursor:pointer;font-size:12.5px;font-weight:600;color:oklch(0.45 0.11 165);padding:4px">Clear</button></div>
+            <canvas ref="{{ padS.ref }}" width="880" height="300" onPointerDown="{{ padS.down }}" onPointerMove="{{ padS.move }}" onPointerUp="{{ padS.up }}" onPointerLeave="{{ padS.up }}" style="width:100%;height:150px;background:#fff;border:1.5px solid {{ sm.sBorder }};border-radius:14px;touch-action:none;cursor:crosshair"></canvas>
+            <span style="font-size:12px;color:oklch(0.5 0.01 85)">{{ sm.trainer }} · {{ sm.date }}</span>
+          </div>
+        </div>
+        <sc-if value="{{ sm.isL4 }}" hint-placeholder-val="{{ false }}">
+          <div style="border-top:1px solid oklch(0.9 0.008 85);padding-top:16px;display:flex;flex-direction:column;gap:10px">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px"><span style="font-size:15px;font-weight:700">Coordinator countersign</span><span style="font-size:12px;color:oklch(0.45 0.08 70);font-weight:600">Level 4 requires LD-01 and Coordinator approval</span></div>
+            <sc-if value="{{ sm.selfCo }}" hint-placeholder-val="{{ false }}">
+              <div style="background:oklch(0.93 0.04 165);color:oklch(0.4 0.1 165);border-radius:12px;padding:12px 14px;font-size:13.5px;font-weight:500">You’re signing as {{ sm.selfName }}, Training &amp; Safety Coordinator. Your signature counts as Coordinator approval.</div>
+            </sc-if>
+            <sc-if value="{{ sm.needCo }}" hint-placeholder-val="{{ false }}">
+            <div style="display:grid;grid-template-columns:200px 1fr;gap:14px">
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <sc-for list="{{ sm.coords }}" as="co" hint-placeholder-count="1">
+                  <button onClick="{{ co.pick }}" style="all:unset;cursor:pointer;min-height:44px;padding:0 12px;border-radius:12px;border:1.5px solid {{ co.border }};background:{{ co.bg }};font-size:13.5px;font-weight:600;display:flex;align-items:center">{{ co.name }}</button>
+                </sc-for>
+                <input type="password" inputMode="numeric" value="{{ sm.coPin }}" onChange="{{ sm.onCoPin }}" placeholder="Coordinator PIN" style="height:44px;border-radius:12px;border:1.5px solid {{ sm.coPinBorder }};background:#fff;padding:0 14px;font-size:16px;letter-spacing:.3em;outline:none"></input>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:6px">
+                <canvas ref="{{ padC.ref }}" width="880" height="220" onPointerDown="{{ padC.down }}" onPointerMove="{{ padC.move }}" onPointerUp="{{ padC.up }}" onPointerLeave="{{ padC.up }}" style="width:100%;height:110px;background:#fff;border:1.5px solid {{ sm.cBorder }};border-radius:14px;touch-action:none;cursor:crosshair"></canvas>
+                <div style="display:flex;justify-content:space-between"><span style="font-size:12px;color:oklch(0.5 0.01 85)">{{ sm.coName }}</span><button onClick="{{ padC.clear }}" style="all:unset;cursor:pointer;font-size:12.5px;font-weight:600;color:oklch(0.45 0.11 165)">Clear</button></div>
+              </div>
+            </div>
+            </sc-if>
+          </div>
+        </sc-if>
+        <div style="display:flex;justify-content:flex-end;align-items:center;gap:10px">
+          <span style="flex:1;font-size:12.5px;color:oklch(0.5 0.01 85)">{{ sm.hint }}</span>
+          <button onClick="{{ sm.cancel }}" style="all:unset;cursor:pointer;min-height:48px;padding:0 20px;border-radius:14px;border:1px solid oklch(0.8 0.01 85);font-size:15px;font-weight:600;display:flex;align-items:center">Cancel</button>
+          <button onClick="{{ sm.confirm }}" style="all:unset;cursor:{{ sm.cursor }};min-height:48px;padding:0 22px;border-radius:14px;background:{{ sm.btnBg }};color:#fff;font-size:15px;font-weight:600;display:flex;align-items:center">Confirm sign-off</button>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ addOpen }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;inset:0;background:rgba(20,22,26,.45);display:flex;overflow-y:auto;padding:12px;z-index:5">
+      <div style="margin:auto;max-width:100%;width:420px;background:oklch(0.985 0.004 85);border-radius:24px;padding:26px;display:flex;flex-direction:column;gap:14px">
+        <span style="font-size:22px;font-weight:700">New trainer profile</span>
+        <sc-if value="{{ hasWbTr }}" hint-placeholder-val="{{ false }}">
+          <label style="display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:600">From the workbook’s Trainers tab<select value="{{ newWbTr }}" onChange="{{ onWbTr }}" style="height:46px;border-radius:12px;border:1.5px solid oklch(0.85 0.01 85);background:#fff;padding:0 12px;font:inherit;font-size:15px;font-weight:400"><sc-for list="{{ wbTrOpts }}" as="o" hint-placeholder-count="2"><option value="{{ o.v }}">{{ o.label }}</option></sc-for></select></label>
+          <sc-if value="{{ hasNewInfo }}" hint-placeholder-val="{{ false }}">
+            <div style="background:#fff;border:1px solid oklch(0.9 0.008 85);border-radius:12px;padding:8px 12px;display:flex;flex-direction:column;gap:2px">
+              <sc-for list="{{ newInfo }}" as="fi" hint-placeholder-count="3"><div style="display:flex;justify-content:space-between;gap:12px;font-size:13px;padding:3px 0"><span style="color:oklch(0.5 0.01 85)">{{ fi.k }}</span><span style="font-weight:600;text-align:right">{{ fi.v }}</span></div></sc-for>
+            </div>
+          </sc-if>
+        </sc-if>
+        <label style="display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:600">Roster record (for LD-01 check)<select value="{{ newEmp }}" onChange="{{ onNewEmp }}" style="height:46px;border-radius:12px;border:1px solid oklch(0.85 0.008 85);background:#fff;padding:0 12px;font-size:15px;font-weight:400;outline:none"><sc-for list="{{ empOpts }}" as="eo" hint-placeholder-count="1"><option value="{{ eo.v }}">{{ eo.label }}</option></sc-for></select></label>
+        <label style="display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:600">Name<input value="{{ newName }}" onChange="{{ onNewName }}" placeholder="e.g. Pat Smith" style="height:46px;border-radius:12px;border:1px solid oklch(0.85 0.008 85);background:#fff;padding:0 14px;font-size:15px;font-weight:400;outline:none"></input></label>
+        <label style="display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:600">Role<input value="{{ newRole }}" onChange="{{ onNewRole }}" placeholder="e.g. Lead Operator (LD-01)" style="height:46px;border-radius:12px;border:1px solid oklch(0.85 0.008 85);background:#fff;padding:0 14px;font-size:15px;font-weight:400;outline:none"></input></label>
+        <label style="display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:600">4-digit PIN<input type="password" inputMode="numeric" value="{{ newPin }}" onChange="{{ onNewPin }}" placeholder="••••" style="height:46px;border-radius:12px;border:1px solid oklch(0.85 0.008 85);background:#fff;padding:0 14px;font-size:18px;letter-spacing:.4em;font-weight:400;outline:none"></input></label>
+        <span style="font-size:12.5px;line-height:1.45;color:oklch(0.5 0.01 85)">New profiles are trainers. Link the trainer’s roster record. They can sign once LD-01 is at the required level, and Level 4 still needs the Training &amp; Safety Coordinator’s countersign.</span>
+        <div style="display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-top:6px">
+          <span style="flex:1;font-size:12.5px;color:oklch(0.5 0.01 85)">{{ addHint }}</span>
+          <button onClick="{{ closeAdd }}" style="all:unset;cursor:pointer;min-height:46px;padding:0 18px;border-radius:12px;border:1px solid oklch(0.8 0.01 85);font-size:15px;font-weight:600;display:flex;align-items:center">Cancel</button>
+          <button onClick="{{ saveTrainer }}" style="all:unset;cursor:pointer;min-height:46px;padding:0 20px;border-radius:12px;background:{{ addBtnBg }};color:#fff;font-size:15px;font-weight:600;display:flex;align-items:center">Create profile</button>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ pinOpen }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;inset:0;background:{{ pin.overlay }};display:flex;overflow-y:auto;padding:12px;z-index:5">
+      <div style="margin:auto;max-width:100%;width:360px;background:oklch(0.985 0.004 85);border-radius:28px;padding:28px 28px 22px;display:flex;flex-direction:column;align-items:center;gap:16px">
+        <span style="width:64px;height:64px;border-radius:50%;background:oklch(0.58 0.12 165);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:22px">{{ pin.initials }}</span>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:4px"><span style="font-size:20px;font-weight:700">{{ pin.name }}</span><span style="font-size:13.5px;color:{{ pin.msgColor }}">{{ pin.msg }}</span></div>
+        <div style="display:flex;gap:14px;margin:4px 0">
+          <sc-for list="{{ pin.dots }}" as="dt" hint-placeholder-count="4"><span style="width:16px;height:16px;border-radius:50%;border:2px solid {{ dt.border }};background:{{ dt.bg }}"></span></sc-for>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,76px);gap:10px">
+          <sc-for list="{{ pin.keys }}" as="ky" hint-placeholder-count="12">
+            <button onClick="{{ ky.press }}" style="all:unset;cursor:pointer;height:60px;border-radius:16px;background:#fff;border:1px solid oklch(0.9 0.008 85);display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:600;opacity:{{ ky.op }}" style-active="background:oklch(0.93 0.04 165)">{{ ky.label }}</button>
+          </sc-for>
+        </div>
+        <button onClick="{{ pin.cancel }}" style="all:unset;cursor:pointer;min-height:44px;padding:0 16px;font-size:14px;font-weight:600;color:oklch(0.5 0.01 85);display:flex;align-items:center">{{ pin.cancelLabel }}</button>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ alertBar.show }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;left:50%;top:calc(14px + env(safe-area-inset-top));transform:translateX(-50%);width:min(780px, calc(100% - 140px));z-index:40;background:#fff;border:1.5px solid oklch(0.82 0.09 25);border-radius:18px;box-shadow:0 18px 40px -16px rgba(0,0,0,.35);padding:12px 12px 12px 16px;display:flex;align-items:center;gap:14px">
+      <span style="width:34px;height:34px;flex:none;border-radius:50%;background:oklch(0.95 0.045 25);color:oklch(0.5 0.17 25);display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800">!</span>
+      <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px"><span style="font-size:14.5px;font-weight:700;line-height:1.3">{{ alertBar.title }}</span><span style="font-size:12.5px;line-height:1.4;color:oklch(0.45 0.01 85)">{{ alertBar.sub }}</span></div>
+      <button onClick="{{ alertBar.view }}" style="all:unset;cursor:pointer;min-height:44px;padding:0 16px;border-radius:12px;background:oklch(0.22 0.01 85);color:#fff;font-size:13.5px;font-weight:600;display:flex;align-items:center">View gaps</button>
+      <button onClick="{{ alertBar.dismiss }}" title="Dismiss" style="all:unset;cursor:pointer;width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;color:oklch(0.5 0.01 85)">×</button>
+    </div>
+  </sc-if>
+  <sc-if value="{{ hasToast }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;left:50%;bottom:28px;transform:translateX(-50%);background:oklch(0.22 0.01 85);color:#fff;border-radius:14px;padding:13px 18px;display:flex;align-items:center;gap:12px;box-shadow:0 12px 30px -10px rgba(0,0,0,.45);z-index:6;white-space:nowrap">
+      <span style="width:22px;height:22px;flex:none;border-radius:50%;background:oklch(0.72 0.13 165);display:flex;align-items:center;justify-content:center"><span style="width:5px;height:9px;border-right:2px solid oklch(0.22 0.01 85);border-bottom:2px solid oklch(0.22 0.01 85);transform:translateY(-1px) rotate(45deg)"></span></span>
+      <span style="font-size:14px;font-weight:500">{{ toast }}</span>
+    </div>
+  </sc-if>
+  <sc-if value="{{ narrow }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;inset:0;z-index:50;background:oklch(0.975 0.006 85);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:28px;text-align:center">
+      <span style="font-size:44px" aria-hidden="true">📱↻</span>
+      <span style="font-size:22px;font-weight:700">Turn your phone sideways</span>
+      <span style="font-size:15px;line-height:1.5;color:oklch(0.5 0.01 85)">Training is laid out for the training tablet or a computer. Sideways, it fits on a phone too.</span>
+      <button onClick="{{ narrowOk }}" style="all:unset;cursor:pointer;min-height:48px;padding:0 20px;border-radius:14px;border:1px solid oklch(0.8 0.01 85);font-size:15px;font-weight:600;display:flex;align-items:center">Show it anyway</button>
+      <a href="{{ opsHome }}" style="color:oklch(0.45 0.11 165);font-weight:600;min-height:44px;display:flex;align-items:center">← CDG Ops</a>
+    </div>
+  </sc-if>
+</div>

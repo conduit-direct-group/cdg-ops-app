@@ -6,7 +6,7 @@
 //   - The app's own files: try the network first (so updates show up right away), fall back to the copy.
 //   - Firebase library from Google: the version is in the address and never changes, so use the copy if we have one.
 
-const CACHE = "cdg-ops-v17";
+const CACHE = "cdg-ops-v18";
 const FIREBASE_LIB = "https://www.gstatic.com/firebasejs/";
 
 const APP_FILES = [
@@ -27,6 +27,20 @@ const APP_FILES = [
   "/push.js",
   "/shopmap.js",
   "/mapadmin.js",
+  "/trainingadmin.js",
+  "/training.html",
+  "/training-screens.html",
+  "/training/app.js",
+  "/training/runtime.js",
+  "/training/sync.js",
+  "/training/file.js",
+  "/vendor/react-18.3.1.production.min.js",
+  "/vendor/react-dom-18.3.1.production.min.js",
+  "/vendor/msal-browser-2.38.3.min.js",
+  "/vendor/jszip-3.10.1.min.js",
+  "/vendor/training-fonts.css",
+  "/vendor/fonts/Figtree-57fd1acf.woff2",
+  "/vendor/fonts/JetBrainsMono-4f27206c.woff2",
   "/manifest.webmanifest",
   "/icons/icon-192.png",
   "/icons/icon-512.png",

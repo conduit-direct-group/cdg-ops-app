@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111111">
+<title>Save training backup — CDG Ops</title>
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <span class="brand">
+      <img class="brand-logo" src="icons/logo-banner.png" alt="Conduit Direct Group" width="137" height="40">
+      <span class="brand-accent">Operations</span>
+    </span>
+  </header>
+  <main id="screen" data-width="narrow">
+    <a class="link-btn" href="./">← CDG Ops</a>
+    <h1>Save the old tablet's training records</h1>
+    <p class="hint">A one-time bookmark that copies the old training app's records off the tablet into a file
+      (cdg-training-backup.json). It only reads — it doesn't change anything on the old app.</p>
+
+    <h2>On the iPad (Safari)</h2>
+    <ol class="steps">
+      <li>Tap <strong>Copy the bookmark code</strong> below.</li>
+      <li>Tap the Share button → <strong>Add Bookmark</strong>. Name it <strong>Save training backup</strong> → Save.</li>
+      <li>Open Bookmarks → <strong>Edit</strong> → tap <strong>Save training backup</strong>. Delete the address and paste the code. Tap Done.</li>
+      <li>Open the old training app and wait until it has loaded (and synced, if it's signed in to Microsoft).</li>
+      <li>Open Bookmarks → tap <strong>Save training backup</strong>. Safari saves <strong>cdg-training-backup.json</strong> to Downloads.</li>
+      <li>Get the file to the PC (AirDrop, OneDrive, or email it to yourself), then: CDG Ops → Admin → 🎓 Training setup → <strong>Load the backup file</strong>.</li>
+      <li>After the counts are checked and saved, delete the file from the iPad and the PC — it holds the trainers' PINs.</li>
+    </ol>
+    <button class="btn" type="button" id="copy">Copy the bookmark code</button>
+    <textarea class="bookmark-code" id="code" readonly aria-label="Bookmark code"></textarea>
+
+    <h2>On a computer</h2>
+    <p class="hint">Drag this button to the bookmarks bar, open the old training app, then click the bookmark.</p>
+    <a class="btn secondary" id="drag" href="#">Save training backup</a>
+  </main>
+<script>
+  // The bookmark: reads the old app's saved records on that site (browser storage) and downloads them as a file.
+  // It never writes to that site.
+  const code = "javascript:(()=>{try{const g=k=>{try{return JSON.parse(localStorage.getItem(k))}catch(e){return null}};"
+    + "const t=g('cdg-tablet-v1');if(!t){alert('No training records on this device for this site. Open the old training app first.');return}"
+    + "const b={app:'cdg-training-backup',version:1,savedAt:new Date().toISOString(),site:location.host,tablet:t,queue:g('cdg-wb-queue')||[],wbConfig:g('cdg-wb-cfg')};"
+    + "const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(b)],{type:'application/json'}));"
+    + "a.download='cdg-training-backup.json';document.body.appendChild(a);a.click();a.remove();"
+    + "setTimeout(()=>alert('Saved cdg-training-backup.json. Nothing in the old app was changed.'),500)}catch(e){alert('Backup failed: '+e.message)}})()";
+  document.getElementById("code").value = code;
+  document.getElementById("drag").href = code;
+  document.getElementById("drag").addEventListener("click", (e) => { e.preventDefault(); alert("Drag this to the bookmarks bar instead of clicking it here."); });
+  document.getElementById("copy").addEventListener("click", async () => {
+    const box = document.getElementById("code");
+    try { await navigator.clipboard.writeText(code); } catch { box.select(); document.execCommand("copy"); }
+    document.getElementById("copy").textContent = "✔ Copied — now add the bookmark";
+  });
+</script>
+</body>
+</html>

@@ -1001,3 +1001,12 @@ main[data-width="full"] { max-width: none; padding: 0; }
 .map-link-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: var(--s3); align-items: center; padding: var(--s2) var(--s3); border-radius: var(--radius); background: var(--surface-1); }
 @media (max-width: 520px) { .map-link-row { grid-template-columns: 1fr; } }
 @media (max-width: 420px) { .sm-tab { padding: 0 var(--s2); } .sm-top { padding: var(--s1) var(--s2); } }
+
+/* Admin → Training setup */
+.btn-row { display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s2); }
+.btn-row .btn { flex: 1 1 180px; margin: 0; }
+.steps { margin: var(--s2) 0 var(--s3); padding-left: var(--s4); line-height: 1.5; }
+.steps li + li { margin-top: var(--s2); }
+.count-list { list-style: none; margin: var(--s2) 0 var(--s3); padding: 0; }
+.count-list li { display: flex; justify-content: space-between; gap: var(--s3); padding: var(--s2) 0; border-bottom: 1px solid var(--line); }
+.bookmark-code { width: 100%; min-height: 120px; font-family: ui-monospace, monospace; font-size: var(--text-small); background: var(--surface-1); color: var(--white); border: var(--border-width) solid var(--line); border-radius: var(--radius); padding: var(--s2); word-break: break-all; }

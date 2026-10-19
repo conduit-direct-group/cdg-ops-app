@@ -26,6 +26,7 @@ const odoo = require("./odoo");
 const checklistsLib = require("./checklists");
 const requestsLib = require("./requests");
 const floorMapLib = require("./floormap");
+const trainingApi = require("./training-api");
 const crypto = require("node:crypto");
 const { getMessaging } = require("firebase-admin/messaging");
 const { defineSecret } = require("firebase-functions/params");
@@ -1853,3 +1854,9 @@ exports.adminEnsureOdooEquipment = onCall({ secrets: [odooKey] }, async (req) =>
   if (created.length) await auditLog.add({ type: "created", kind: "odoo equipment", recordId: ids.join(","), by: adminNumber, at: FieldValue.serverTimestamp(), created });
   return { created, already };
 });
+
+// ---------------------------------------------------------------------------
+// Training (the training team's trainer app, in CDG Ops) — see training-api.js.
+// ---------------------------------------------------------------------------
+
+Object.assign(exports, trainingApi({ db, auditLog, requireMember, requireAdmin, isTest, col }));

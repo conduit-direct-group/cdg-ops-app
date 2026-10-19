@@ -82,6 +82,40 @@ service cloud.firestore {
       allow read: if member();
     }
 
+    // Training (the trainer app): reference data, trainer profiles, trainee records, signatures, coordinator
+    // to-dos, and changes waiting for the workbook — signed-in people only; every change goes through the server.
+    // Trainer PINs (trainingPins) and unlock sessions (trainingSessions) stay locked (rule at the bottom).
+    match /trainingRef/{id} {
+      allow read: if member();
+    }
+    match /trainingTrainers/{id} {
+      allow read: if member();
+    }
+    match /test_trainingTrainers/{id} {
+      allow read: if member();
+    }
+    match /trainingPeople/{id} {
+      allow read: if member();
+    }
+    match /test_trainingPeople/{id} {
+      allow read: if member();
+    }
+    match /trainingSigs/{id} {
+      allow read: if member();
+    }
+    match /test_trainingSigs/{id} {
+      allow read: if member();
+    }
+    match /trainingShared/{id} {
+      allow read: if member();
+    }
+    match /test_trainingShared/{id} {
+      allow read: if member();
+    }
+    match /trainingWbQueue/{id} {
+      allow read: if member();
+    }
+
     // Checklist due dates (latest sign-off per item). The test site uses test_checklistUnits.
     match /checklistUnits/{id} {
       allow read: if member();

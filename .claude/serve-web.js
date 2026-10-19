@@ -6,8 +6,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const root = path.join(__dirname, "..", process.argv[2] || "web");
-const port = Number(process.argv[3]) || 5173;
-const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".png": "image/png", ".svg": "image/svg+xml", ".webmanifest": "application/manifest+json" };
+const port = Number(process.env.PORT) || Number(process.argv[3]) || 5173; // the preview tool may pick another free port
+const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".png": "image/png", ".svg": "image/svg+xml", ".webmanifest": "application/manifest+json", ".woff2": "font/woff2" };
 
 http
   .createServer((req, res) => {

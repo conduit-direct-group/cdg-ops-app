@@ -21,6 +21,7 @@ import { openChecklist, openChecklistAdmin, overdueBanner } from "./checklists.j
 import { openActivity } from "./activity.js";
 import { openShopMap } from "./shopmap.js";
 import { openMapAdmin } from "./mapadmin.js";
+import { openTrainingAdmin } from "./trainingadmin.js";
 import { openNeedSomething, openRequest, openRequestTypesAdmin, inboxCard, myRequestsCard } from "./requests.js";
 import { pushState, turnOnPush, turnOffPush, refreshPush } from "./push.js";
 
@@ -241,6 +242,8 @@ function renderHome() {
     m.fixer ? issuesButton() : null,
     el("button", { class: "btn big secondary", type: "button", onclick: () => openMap() }, "🗺 Shop Map"),
     el("button", { class: "btn big secondary", type: "button", onclick: () => openFixes() }, "🔧 Fix Library"),
+    // Training is the training team's own app (its own look and trainer PINs), on its own page.
+    el("a", { class: "btn big secondary", href: "training.html" }, "🎓 Training"),
     myRequestsCard((id) => openRequestScreen(id)),
     isAdmin() ? el("button", { class: "btn secondary", type: "button", onclick: () => go("adminMenu") }, "⚙ Admin") : null,
     pushCard(),
@@ -463,6 +466,7 @@ function renderAdminMenu() {
     el("button", { class: "btn", type: "button", onclick: () => openModule((c, o) => openChecklistAdmin(c, { ...o, me: me() })) }, "📋 Checklists"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openRequestTypesAdmin) }, "🙋 Request types & routing"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openMapAdmin) }, "🗺 Shop map setup"),
+    el("button", { class: "btn", type: "button", onclick: () => openModule(openTrainingAdmin) }, "🎓 Training setup"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openActivity) }, "📜 Admin activity"),
     deviceCard(), // one-time device setup, so it lives here rather than on Home
   ];

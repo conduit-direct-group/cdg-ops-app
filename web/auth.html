@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Signing in…</title>
+</head>
+<body style="font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;color:#555">
+<p>Signing in to Microsoft…</p>
+<script>
+  // Microsoft sign-in comes back here (the redirect address registered in Entra for the Training workbook sync).
+  // Hand the sign-in result to the Training page, which finishes signing in.
+  location.replace("training.html" + location.search + location.hash);
+</script>
+</body>
+</html>

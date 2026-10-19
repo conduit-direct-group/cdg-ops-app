@@ -89,6 +89,14 @@ export const callRemoveDeviceToken = call("removeDeviceToken");
 export const callAdminImportFloorMap = call("adminImportFloorMap", { timeout: 120000 });
 export const callAdminSetStationMachine = call("adminSetStationMachine");
 export const callAdminEnsureOdooEquipment = call("adminEnsureOdooEquipment", { timeout: 120000 });
+// Training (the trainer app)
+export const callTrainingUnlock = call("trainingUnlock");
+export const callTrainingLock = call("trainingLock");
+export const callTrainingAddTrainer = call("trainingAddTrainer");
+export const callTrainingSave = call("trainingSave");
+export const callAdminImportTrainingData = call("adminImportTrainingData", { timeout: 120000 });
+export const callAdminImportTrainingBackup = call("adminImportTrainingBackup", { timeout: 300000 });
+export const callAdminSetTrainer = call("adminSetTrainer");
 export const callReportProblem = call("reportProblem");
 export const callMarkIssueFixed = call("markIssueFixed");
 export const callAdminSyncOdoo = call("adminSyncOdoo", { timeout: 120000 });
