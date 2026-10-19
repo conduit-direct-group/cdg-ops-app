@@ -1172,6 +1172,22 @@ async function employeeName(employeeNumber) {
 }
 
 // Anyone signed in: { machineId, description, lineDown, unsafe, severity, actions, failureCategory, rootCause, photos }
+// New Maintenance Request → push alert to everyone with the Maintenance role (Admins if nobody has it yet),
+// not the person who reported it. Line down or unsafe is sent as urgent. Test site: only the person testing.
+async function alertMaintenance(me, machine, report, test) {
+  const everyone = await activeEmployees();
+  const crew = everyone.filter((e) => e.active !== false && e.roles.includes("maintenance")).map((e) => e.id);
+  const { recipients, backup } = requestsLib.withBackup(crew, everyone);
+  const urgent = report.lineDown || report.unsafe;
+  const tags = [report.lineDown ? "⛔ LINE DOWN" : "🚨 Maintenance Request", report.unsafe ? "⚠ unsafe" : ""].filter(Boolean).join(" · ");
+  return pushTo(test ? [me.employeeNumber] : recipients.filter((e) => e !== me.employeeNumber), {
+    title: `${test ? "[TEST] " : ""}${tags} – ${machine.id} ${machine.name}${backup && !test ? " (no Maintenance role set — sent to Admins)" : ""}`,
+    body: `${me.name}: ${report.description}`,
+    url: "/?issues=1",
+    urgent,
+  });
+}
+
 exports.reportProblem = onCall({ secrets: [odooKey] }, async (req) => {
   const me = await requireMember(req);
   const { report, error } = odoo.cleanReport(req.data);
@@ -1195,7 +1211,8 @@ exports.reportProblem = onCall({ secrets: [odooKey] }, async (req) => {
       failureCategory: report.failureCategory, rootCause: report.rootCause, photos: report.photos,
       stage: "New Request", reportedBy: reporter, reportedByEmp: me.employeeNumber, reportedAt: FieldValue.serverTimestamp(),
     });
-    return { id: ref.id, odooId: null, test: true };
+    const pushed = await alertMaintenance(me, machine, report, true);
+    return { id: ref.id, odooId: null, test: true, pushed };
   }
 
   const key = odooKey.value();
@@ -1228,7 +1245,8 @@ exports.reportProblem = onCall({ secrets: [odooKey] }, async (req) => {
     reportedAt: FieldValue.serverTimestamp(),
   }, { merge: true });
   await auditLog.add({ type: "reported", kind: "issue", recordId: issueRef.id, by: me.employeeNumber, at: FieldValue.serverTimestamp(), machineId: machine.id, lineDown: report.lineDown });
-  return { id: issueRef.id, odooId };
+  const pushed = await alertMaintenance(me, machine, report, false);
+  return { id: issueRef.id, odooId, pushed };
 });
 
 // Maintenance and Admins: { id, note? } — closes the Odoo request (stage Repaired, close date today).

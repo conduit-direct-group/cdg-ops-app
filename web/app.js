@@ -638,8 +638,10 @@ onAuthStateChanged(auth, async (user) => {
     const cat = params.get("cat");
     const machine = params.get("m");
     const req = params.get("req"); // opened from a notification
-    if (cat || machine || req) history.replaceState(null, "", location.pathname);
+    const issuesLink = params.get("issues"); // a Maintenance Request notification
+    if (cat || machine || req || issuesLink) history.replaceState(null, "", location.pathname);
     if (req) openRequestScreen(req);
+    else if (issuesLink) openIssues();
     else if (cat || machine) openFixes(cat, machine);
   }
 });
