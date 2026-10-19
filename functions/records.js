@@ -58,9 +58,10 @@ function nextEmployeeNumber(numbers) {
 }
 
 // A starting role from a Gusto job title — only a suggestion; Chris confirms every one.
-// Role ids: lead = Line Lead, shipping = Logistics & Distribution (renamed), training-safety = Training & Safety.
+// Role ids: plant-manager = Plant Manager, lead = Line Lead, shipping = Logistics & Distribution (renamed), training-safety = Training & Safety.
 const POSITION_RULES = [
-  [/supervisor|superintendent|plant manager|production manager|operations manager|director of operations/i, "supervisor"],
+  [/plant manager/i, "plant-manager"],
+  [/supervisor|superintendent|production manager|operations manager|director of operations/i, "supervisor"],
   [/line lead|lead operator|team lead|\blead\b/i, "lead"],
   [/maintenance|mechanic|technician|electrician|millwright/i, "maintenance"],
   [/quality|\bqc\b|\bqa\b|inspector|lab tech/i, "quality"],
@@ -75,6 +76,7 @@ function suggestRoles(position) {
   const text = String(position || "");
   const found = POSITION_RULES.filter(([re]) => re.test(text)).map(([, role]) => role);
   // A lead or supervisor title also says "production"; keep just the most specific role.
+  if (found.includes("plant-manager")) return ["plant-manager"];
   if (found.includes("supervisor") || found.includes("lead")) return [found.includes("supervisor") ? "supervisor" : "lead"];
   return found.length ? [found[0]] : [];
 }

@@ -20,3 +20,11 @@ then screenshots and the dev test link shown to Chris.
 - Chris is not a developer: one step at a time, explain the why, offer choices, short and plain.
 - The master plan is a revisioned file in Chris's Downloads (`CDG_Operations_App_Plan_*_RevN.md`); decisions go there.
 - No secrets, PINs, or employee data in this repo — it is public.
+
+## When something is missing
+- Any time you ask Chris for something (a file, login, API key, program name, decision), always include a **"Don't have it yet"** option.
+- If he picks it:
+  1. Log it in the plan's Open Items under **"Waiting on Chris,"** with: what's needed, why, which feature it blocks, and the date.
+  2. Skip only the part that needs it. Keep building everything else.
+  3. Never fake it, guess it, or put in a placeholder.
+- At the start of each session, if anything in "Waiting on Chris" is older than 2 weeks, mention it once.

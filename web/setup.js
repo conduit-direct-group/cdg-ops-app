@@ -12,6 +12,7 @@ const STARTING_ROLES = [
   ["operator", "Operator"],
   ["lead", "Line Lead"],
   ["supervisor", "Supervisor"],
+  ["plant-manager", "Plant Manager"],
   ["maintenance", "Maintenance"],
   ["quality", "Quality"],
   ["shipping", "Logistics & Distribution"],

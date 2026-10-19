@@ -1118,6 +1118,29 @@ exports.adminBulkAddFixes = onCall(async (req) => {
 
 const FIXER_ROLES = ["maintenance", "admin"];
 
+// Plant status bar (Home, everyone): which lines have an open line-down Maintenance Request, since when.
+// A small summary everyone can read (the issues themselves stay Maintenance/Admin/Plant Manager only).
+//   meta/plantStatus  { down: { [lineId]: { since: ms, machineIds: [] } }, updatedAt }   (test site: test_meta)
+async function writePlantStatus(test) {
+  try {
+    const [open, machineSnaps] = await Promise.all([col("issues", test).where("open", "==", true).get(), machines.get()]);
+    const lineOf = new Map(machineSnaps.docs.map((m) => [m.id, m.get("lineId") || null]));
+    const down = {};
+    for (const d of open.docs) {
+      if (d.get("lineDown") !== true) continue;
+      const lineId = lineOf.get(d.get("machineId"));
+      if (!lineId) continue;
+      const at = d.get("reportedAt")?.toMillis?.() || null;
+      const cur = (down[lineId] ||= { since: at, machineIds: [] });
+      if (!cur.machineIds.includes(d.get("machineId"))) cur.machineIds.push(d.get("machineId"));
+      if (at && (!cur.since || at < cur.since)) cur.since = at;
+    }
+    await col("meta", test).doc("plantStatus").set({ down, updatedAt: FieldValue.serverTimestamp() });
+  } catch (err) {
+    console.error("plant status not updated", err);
+  }
+}
+
 // "YYYY-MM-DD" in plant time (Cedar Rapids).
 function plantToday() {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago" }).format(new Date());
@@ -1212,6 +1235,7 @@ exports.reportProblem = onCall({ secrets: [odooKey] }, async (req) => {
       failureCategory: report.failureCategory, rootCause: report.rootCause, photos: report.photos,
       stage: "New Request", reportedBy: reporter, reportedByEmp: me.employeeNumber, reportedAt: FieldValue.serverTimestamp(),
     });
+    await writePlantStatus(true);
     const pushed = await alertMaintenance(me, machine, report, true, ref.id);
     return { id: ref.id, odooId: null, test: true, pushed };
   }
@@ -1246,6 +1270,7 @@ exports.reportProblem = onCall({ secrets: [odooKey] }, async (req) => {
     reportedAt: FieldValue.serverTimestamp(),
   }, { merge: true });
   await auditLog.add({ type: "reported", kind: "issue", recordId: issueRef.id, by: me.employeeNumber, at: FieldValue.serverTimestamp(), machineId: machine.id, lineDown: report.lineDown });
+  await writePlantStatus(false);
   const pushed = await alertMaintenance(me, machine, report, false, issueRef.id);
   return { id: issueRef.id, odooId, pushed };
 });
@@ -1265,6 +1290,7 @@ exports.markIssueFixed = onCall({ secrets: [odooKey] }, async (req) => {
   const name = await employeeName(me.employeeNumber);
   if (test) {
     await ref.update({ open: false, stage: "Repaired", closedAt: FieldValue.serverTimestamp(), closedBy: name, closedByEmp: me.employeeNumber, fixNote: note });
+    await writePlantStatus(true);
     return { ok: true, test: true };
   }
   const today = plantToday();
@@ -1284,6 +1310,7 @@ exports.markIssueFixed = onCall({ secrets: [odooKey] }, async (req) => {
   const machineId = snap.get("machineId");
   if (machineId) await machines.doc(machineId).set({ lastRepairDate: today }, { merge: true }).catch(() => {});
   await auditLog.add({ type: "fixed", kind: "issue", recordId: ref.id, by: me.employeeNumber, at: FieldValue.serverTimestamp(), note });
+  await writePlantStatus(false);
   return { ok: true };
 });
 
@@ -1331,6 +1358,7 @@ async function syncFromOdoo(key) {
   await Promise.all(writes);
   const result = { openIssues: open.length, closedSinceLastSync: gone.length, machinesWithDates: Object.keys(dates).length };
   await odooSyncStatus.set({ ok: true, lastAt: FieldValue.serverTimestamp(), error: null, ...result });
+  await writePlantStatus(false);
   return result;
 }
 

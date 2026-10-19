@@ -24,6 +24,7 @@ import { openMapAdmin } from "./mapadmin.js";
 import { openTrainingAdmin } from "./trainingadmin.js";
 import { openNeedSomething, openRequest, openRequestTypesAdmin, inboxCard, myRequestsCard } from "./requests.js";
 import { pushState, turnOnPush, turnOffPush, refreshPush } from "./push.js";
+import { dashboard, stopDashboard } from "./dashboard.js";
 
 const screen = document.getElementById("screen");
 const deviceBadge = document.getElementById("device-badge");
@@ -230,17 +231,31 @@ function renderHome() {
   // Role names from the Roles list ("Production Lead / Supervisor"), not internal ids ("lead").
   const roleNames = new Map((data.roles || []).map((r) => [r.id, r.name]));
   const roles = (data.myself?.roles || state.claims.roles || []).map((r) => roleNames.get(r) || r).join(", ");
+  // The role dashboard (Decision 49): Needs you · quick buttons · plant status · role cards. The rest below.
+  const dash = dashboard({
+    roles: m.roles, admin: m.admin, viewAs: m.admin ? state.viewAs : null,
+    setViewAs: (v) => { state.viewAs = v; render(); },
+    onRedraw: () => { if (state.step === "home") render(); },
+    go: {
+      checklist: (id) => openChecklistScreen(id, () => go("home")),
+      request: (id) => openRequestScreen(id),
+      issues: () => openIssues(),
+      inbox: () => document.getElementById("inbox")?.scrollIntoView({ behavior: "smooth", block: "start" }),
+      training: () => { location.href = "training.html"; },
+      people: () => openModule(openAdmin),
+      map: () => openMap(),
+      need: () => openNeed(),
+      report: () => openReport(),
+    },
+  });
   return [
     el("h1", {}, `Hi, ${name}`),
     roles ? el("p", { class: "roles" }, `Employee ${state.claims.emp} · ${roles}`) : null,
     messageBox(),
-    // Always in sight: overdue checklists, the red Maintenance Request, requests waiting on me.
-    overdueBanner((id) => openChecklistScreen(id, () => go("home"))),
-    el("button", { class: "mr-banner", type: "button", onclick: () => openReport() }, "🚨 Machine down or broken? Maintenance Request"),
-    inboxCard(m, (id) => openRequestScreen(id)),
-    el("button", { class: "btn big", type: "button", onclick: openNeed }, "🙋 Need something?"),
-    m.fixer ? issuesButton() : null,
-    el("button", { class: "btn big secondary", type: "button", onclick: () => openMap() }, "🗺 Shop Map"),
+    dash,
+    // Requests waiting on me (the full list; the "Requests for you" card points here).
+    el("div", { id: "inbox" }, inboxCard(m, (id) => openRequestScreen(id))),
+    m.fixer || m.issueViewer ? issuesButton() : null,
     el("button", { class: "btn big secondary", type: "button", onclick: () => openFixes() }, "🔧 Fix Library"),
     // Training is the training team's own app (its own look and trainer PINs), on its own page.
     el("a", { class: "btn big secondary", href: "training.html" }, "🎓 Training"),
@@ -403,6 +418,9 @@ function me() {
     admin: roles.includes("admin"),
     approver: roles.some((r) => APPROVER_ROLES.includes(r)),
     fixer: roles.some((r) => FIXER_ROLES.includes(r)),
+    issueViewer: roles.includes("plant-manager"), // sees the Open issues board; can't mark fixed
+    safetyWatcher: roles.some((r) => ["supervisor", "training-safety", "plant-manager", "admin"].includes(r)),
+    roles,
   };
 }
 
@@ -431,7 +449,7 @@ function openChecklistScreen(unitId, back) {
 
 // Open issues board (from Odoo).
 function openIssues() {
-  if (!me().fixer) return go("home"); // the board is for Maintenance and Admin (the database refuses others too)
+  if (!me().fixer && !me().issueViewer) return go("home"); // the board is for Maintenance, Admin, Plant Manager (the database refuses others too)
   if (closeModule) closeModule();
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openIssueBoard(screen, { me: me(), onExit: () => go("home"), onReport: () => openReport() });
@@ -607,6 +625,7 @@ onAuthStateChanged(auth, async (user) => {
   state.busy = false;
   if (!user) {
     stopData();
+    stopDashboard();
     const why = state.idleSignOut ? "Signed out after 5 minutes of no use." : "";
     Object.assign(state, { claims: {}, knownPin: "", newPin: "", employeeNumber: "", idleSignOut: false });
     go("employee", why, why ? "ok" : "");

@@ -31,9 +31,15 @@ service cloud.firestore {
       return member() && employee().roles.hasAny(['admin']);
     }
 
-    // Maintenance or Admin right now — they work the open-issues board.
+    // Maintenance or Admin right now — they work the open-issues board. The Plant Manager sees it too.
     function fixer() {
-      return member() && employee().roles.hasAny(['maintenance', 'admin']);
+      return member() && employee().roles.hasAny(['maintenance', 'admin', 'plant-manager']);
+    }
+
+    // Supervisor, Training & Safety, Plant Manager, Admin: see every open urgent request (safety concerns),
+    // not only the ones sent to them — for their dashboard's safety card.
+    function safetyWatcher() {
+      return member() && employee().roles.hasAny(['supervisor', 'training-safety', 'plant-manager', 'admin']);
     }
 
     function me() {
@@ -182,15 +188,24 @@ service cloud.firestore {
 
     // Requests: the person who sent it, the people it was sent to, and admins. Test site: test_requests.
     match /requests/{id} {
-      allow read: if member() && (resource.data.createdBy == me() || me() in resource.data.recipients || admin());
+      allow read: if member() && (resource.data.createdBy == me() || me() in resource.data.recipients || admin()
+        || (resource.data.urgent == true && safetyWatcher()));
     }
     match /test_requests/{id} {
-      allow read: if member() && (resource.data.createdBy == me() || me() in resource.data.recipients || admin());
+      allow read: if member() && (resource.data.createdBy == me() || me() in resource.data.recipients || admin()
+        || (resource.data.urgent == true && safetyWatcher()));
     }
 
     // Admin-only lists: who did what (every admin action), Odoo sync status, searches with no results.
     match /auditLog/{id} {
       allow read: if admin();
+    }
+    // Plant status bar on Home: which lines are down (a summary; no issue details).
+    match /meta/plantStatus {
+      allow read: if member();
+    }
+    match /test_meta/plantStatus {
+      allow read: if member();
     }
     match /meta/odooSync {
       allow read: if admin();

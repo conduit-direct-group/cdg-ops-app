@@ -1010,3 +1010,32 @@ main[data-width="full"] { max-width: none; padding: 0; }
 .count-list { list-style: none; margin: var(--s2) 0 var(--s3); padding: 0; }
 .count-list li { display: flex; justify-content: space-between; gap: var(--s3); padding: var(--s2) 0; border-bottom: 1px solid var(--line); }
 .bookmark-code { width: 100%; min-height: 120px; font-family: ui-monospace, monospace; font-size: var(--text-small); background: var(--surface-1); color: var(--white); border: var(--border-width) solid var(--line); border-radius: var(--radius); padding: var(--s2); word-break: break-all; }
+
+/* Home = role dashboard (Decision 49): Needs you · quick buttons · plant status · role cards */
+.needs-you { margin: var(--s3) 0; }
+.needs-title { display: block; font-size: var(--text-small); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.needs-you .alert-banner { margin-top: var(--s1); }
+.quick-row { display: grid; grid-template-columns: 1fr; gap: var(--s2); margin: var(--s3) 0; }
+.quick-row .btn { margin: 0; }
+.plant-bar { display: flex; flex-wrap: wrap; gap: var(--s2); margin: var(--s3) 0; }
+.line-chip { display: inline-flex; align-items: center; gap: var(--s1); min-height: 44px; padding: 0 var(--s3); border-radius: var(--radius); background: var(--surface-1); border: var(--border-width) solid var(--line); font-size: var(--text-small); }
+.line-chip.down { background: var(--red-tint); border-color: var(--red); font-weight: bold; }
+.dash-cards { display: grid; grid-template-columns: 1fr; gap: var(--s2); margin: var(--s3) 0; }
+.dash-card { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s1); min-height: 112px; padding: var(--s3); border-radius: var(--radius); background: var(--surface-1); border: var(--border-width) solid var(--line); color: var(--white); font: inherit; text-align: left; }
+button.dash-card { cursor: pointer; }
+button.dash-card:hover { background: var(--surface-2); }
+.dash-card.alert { background: var(--red-tint); border-color: var(--red); }
+.dash-card.loading { color: var(--muted); }
+.dash-title { font-weight: bold; }
+.dash-num { font-size: var(--text-title); font-weight: bold; line-height: 1.1; }
+.dash-card.alert .dash-num { color: var(--white); }
+.dash-line { color: var(--muted); font-size: var(--text-small); }
+.dash-card.alert .dash-line { color: var(--white); }
+.view-as { margin: var(--s2) 0; }
+@media (min-width: 760px) {
+  .quick-row { grid-template-columns: 1fr 1fr 1fr; }
+  .dash-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (min-width: 1100px) {
+  .dash-cards { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}

@@ -15,10 +15,13 @@ const LISTS = ["roles", "lines", "machines", "fixCategories", "checklistTemplate
 // checklistUnits = { [unitId]: { [itemId]: { at, by, byName } } } — when each checklist item was last done.
 // openIssues: Maintenance and Admin only (others: []). myIssues = maintenance requests I reported (to follow
 // their status). requestsForMe = "Need something?" requests sent to me (admins: every open one);
-// requestsSent = the ones I sent.
+// requestsSent = the ones I sent. plantStatus = { down: { lineId: { since, machineIds } } } (lines with an open
+// line-down report; test site: real + practice). urgentRequests = open urgent requests (safety concerns) —
+// Supervisor, Training & Safety, Plant Manager, Admin only (others: []).
 export const data = {
   myself: null, roles: null, teams: null, machineTypes: null, lines: null, machines: null, fixCategories: null, checklistTemplates: null, requestTypes: null,
   fixes: null, myFixes: null, openIssues: null, myIssues: null, checklistUnits: null, requestsForMe: null, requestsSent: null,
+  plantStatus: null, urgentRequests: null,
 };
 
 const listeners = new Set();
@@ -90,7 +93,7 @@ function watchChecklistUnits() {
 }
 
 // Called once signed in with a real PIN (the database refuses temporary-PIN accounts).
-// `me` = { emp, approver, admin, fixer } — decides which pending fixes, issues, and requests this person may see.
+// `me` = { emp, approver, admin, fixer, issueViewer, safetyWatcher } — decides which pending fixes, issues, and requests this person may see.
 export function startData(me) {
   stopData();
   stopFns = LISTS.map((name) => watch(name, collection(db, name), name === "machines" ? byId : byName));
@@ -106,7 +109,7 @@ export function startData(me) {
     me.approver ? query(collection(db, name), where("status", "==", "pending")) : query(collection(db, name), where("createdBy", "==", me.emp));
   stopFns.push(watchMerged("fixes", fixQuery("fixes"), fixQuery("test_fixes"), byTitle));
   stopFns.push(watchMerged("myFixes", mineQuery("fixes"), mineQuery("test_fixes"), byTitle));
-  if (me.fixer) {
+  if (me.fixer || me.issueViewer) {
     const openQuery = (name) => query(collection(db, name), where("open", "==", true));
     stopFns.push(watchMerged("openIssues", openQuery("issues"), openQuery("test_issues"), lineDownFirst));
   } else {
@@ -120,6 +123,30 @@ export function startData(me) {
   const sent = (name) => query(collection(db, name), where("createdBy", "==", me.emp));
   stopFns.push(watchMerged("requestsSent", sent("requests"), sent("test_requests"), requestOrder));
   stopFns.push(watchChecklistUnits());
+  stopFns.push(watchPlantStatus());
+  if (me.safetyWatcher) {
+    const urgent = (name) => query(collection(db, name), where("urgent", "==", true));
+    stopFns.push(watchMerged("urgentRequests", urgent("requests"), urgent("test_requests"), requestOrder));
+  } else {
+    data.urgentRequests = [];
+  }
+}
+
+// Plant status bar: lines down (real), plus practice line-down reports on the test site.
+function watchPlantStatus() {
+  const merge = () => {
+    if (parts["plant:real"] === undefined || (TEST_MODE && parts["plant:test"] === undefined)) return;
+    const down = { ...(parts["plant:real"]?.down || {}) };
+    for (const [lineId, v] of Object.entries(parts["plant:test"]?.down || {})) {
+      down[lineId] = down[lineId] ? { since: Math.min(down[lineId].since || v.since, v.since || down[lineId].since), machineIds: [...new Set([...down[lineId].machineIds, ...v.machineIds])], test: true } : { ...v, test: true };
+    }
+    data.plantStatus = { down };
+    changed();
+  };
+  const one = (path, key) => onSnapshot(doc(db, ...path), (snap) => { parts[key] = snap.exists() ? snap.data() : null; merge(); }, () => { parts[key] = null; merge(); });
+  const stops = [one(["meta", "plantStatus"], "plant:real")];
+  if (TEST_MODE) stops.push(one(["test_meta", "plantStatus"], "plant:test"));
+  return () => stops.forEach((x) => x());
 }
 
 export function stopData() {
