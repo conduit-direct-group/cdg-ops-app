@@ -20,8 +20,6 @@ const STATUS = {
 const toDate = (t) => (t?.toDate ? t.toDate() : t instanceof Date ? t : null);
 const when = (t) => toDate(t)?.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) || "";
 const activeTypes = () => (data.requestTypes || []).filter((t) => t.active !== false).sort((a, b) => (a.order ?? 99) - (b.order ?? 99) || a.name.localeCompare(b.name));
-const WEEK = 7 * 86400000;
-const recent = (r) => r.status !== "done" || Date.now() - (toDate(r.doneAt)?.getTime() || 0) < WEEK;
 
 export function statusTag(status) {
   const s = STATUS[status] || STATUS.open;
@@ -53,33 +51,10 @@ export function inboxCard(me, onOpen) {
   );
 }
 
-// Home: what I asked for — "Need something?" requests and my Maintenance Requests — with their status.
-export function myRequestsCard(onOpenRequest) {
-  const reqs = (data.requestsSent || []).filter(recent);
-  const issues = (data.myIssues || []).filter((i) => i.open || Date.now() - (toDate(i.closedAt)?.getTime() || 0) < WEEK);
-  if (!reqs.length && !issues.length) return null;
-  return el(
-    "div",
-    { class: "card" },
-    el("strong", {}, "🧾 My requests"),
-    el(
-      "div",
-      { class: "person-list" },
-      reqs.slice(0, 6).map((r) => requestRow(r, () => onOpenRequest(r.id))),
-      issues.slice(0, 6).map((i) =>
-        el(
-          "div",
-          { class: "person-row static" },
-          el("span", { class: "person-name" }, `🚨 Maintenance Request${i.machineId ? ` · ${i.machineId}` : ""}`),
-          el("span", { class: "person-meta" }, String(i.description || i.title || "").slice(0, 80)),
-          el("span", { class: "person-meta" }, ago(toDate(i.reportedAt))),
-          el("span", { class: "tags" },
-            el("span", { class: i.open ? "tag warn" : "tag" }, i.open ? `Open · ${i.stage || "New Request"}` : `✔ Done${i.closedBy ? ` · ${i.closedBy}` : ""}`),
-            i.test ? el("span", { class: "tag test" }, "TEST") : null)
-        )
-      )
-    )
-  );
+// Home: what I asked for that isn't done yet. Done requests leave this list (they stay in the history).
+// Maintenance Requests aren't listed here (they're followed on the Open issues board).
+export function myOpenRequests() {
+  return (data.requestsSent || []).filter((r) => r.status !== "done");
 }
 
 // ===========================================================================
@@ -132,12 +107,14 @@ export function openNeedSomething(container, { me, onExit, onMaintenance, onSent
       ...[
         el("button", { class: "link-btn", type: "button", onclick: onExit, disabled: ui.busy }, "← Home"),
         el("h1", {}, "🙋 Need something?"),
-        el(
-          "button",
-          { class: "mr-redirect", type: "button", onclick: onMaintenance },
-          el("strong", {}, "Machine down or broken?"),
-          el("span", {}, "Use 🚨 Maintenance Request →")
-        ),
+        onMaintenance
+          ? el(
+              "button",
+              { class: "mr-redirect", type: "button", onclick: onMaintenance },
+              el("strong", {}, "Machine down or broken?"),
+              el("span", {}, "Use 🚨 Maintenance Request →")
+            )
+          : null,
         !data.requestTypes ? spinner() : !types.length ? emptyState("No request types yet", "An admin sets them up in Admin → Request types & routing.") : null,
         types.length ? el("p", { class: "field-label" }, "1. What do you need?") : null,
         el("div", { class: "choices type-choices" }, types.map((t) =>

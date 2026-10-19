@@ -7,6 +7,7 @@
   --black: #111111;
   --orange: #f37021;
   --red: #d32f2f;
+  --green: #2e7d32;  /* status only: all done / running (Decision 55); always with ✓ and words */
   --white: #ffffff;
 
   /* Neutrals, all mixed from black and white. */
@@ -17,6 +18,7 @@
   --muted: color-mix(in srgb, var(--white) 72%, var(--black));      /* secondary text */
   --red-tint: color-mix(in srgb, var(--red) 18%, var(--black));     /* alert backgrounds */
   --orange-tint: color-mix(in srgb, var(--orange) 14%, var(--black));
+  --green-tint: color-mix(in srgb, var(--green) 22%, var(--black));
 
   /* Text: four sizes. The root size grows to 18px on tablets/desktops (see bottom). */
   --text-title: 1.75rem;   /* 28px phone */
@@ -1039,3 +1041,10 @@ button.dash-card:hover { background: var(--surface-2); }
 @media (min-width: 1100px) {
   .dash-cards { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
+
+/* Status folds (Decision 55): red = something not done, green = all done. Icon + words always say it too. */
+details.fold.fold-todo { border-color: var(--red); background: var(--red-tint); }
+details.fold.fold-ok { border-color: var(--green); background: var(--green-tint); }
+.needs-you details.fold { margin: var(--s2) 0; }
+.line-chip.up { background: var(--green-tint); border-color: var(--green); }
+@media (min-width: 760px) { .quick-row.two { grid-template-columns: 1fr 1fr; } }

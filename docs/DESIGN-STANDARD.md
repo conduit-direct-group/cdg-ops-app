@@ -5,6 +5,8 @@ Every screen should look and feel like a finished, professional CDG product. Cle
 
 ## Look
 - CDG black / orange / white. One black, one orange, one red (alerts only). Defined once as color variables, never hard-coded.
+- Status colors (Decision 55): red = not done / down, green (--green) = all done / running. Only for status, and always paired with an icon and words ("⚠ Machine checklists · 15 overdue", "✓ Machine checklists · all done").
+- Lists that can fold away do (statusFold in ui.js): one line each, tap to open.
 - One font family. Fixed text sizes: page title, section title, body, small. Body text at least 16px on phones, 18px on tablets.
 - Fixed spacing steps (4 / 8 / 16 / 24 / 32px). No random gaps.
 - Rounded corners, borders, and shadows the same everywhere.

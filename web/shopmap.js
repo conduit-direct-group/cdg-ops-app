@@ -433,12 +433,12 @@ export function openShopMap(container, { onExit, onFixes, onReport, startStation
         sheet || tab ? el("button", { class: "sm-sqbtn", type: "button", "aria-label": "Close", onclick: close }, "×") : null),
       el("div", { class: "sm-panelbody" },
         el("p", { class: "sm-desc" }, s.desc || ""),
-        s.machineId
+        s.machineId && (onFixes || onReport)
           ? el("div", { class: "sm-machine" },
               el("span", { class: "sm-eyebrow" }, `MACHINE ${s.machineId}${machine ? ` · ${machine.name}` : ""}`),
               el("div", { class: "sm-row" },
-                el("button", { class: "btn secondary", type: "button", onclick: () => onFixes(s.machineId) }, "🔧 Fixes & last service"),
-                el("button", { class: "btn danger", type: "button", onclick: () => onReport(s.machineId) }, "🚨 Maintenance Request")))
+                onFixes ? el("button", { class: "btn secondary", type: "button", onclick: () => onFixes(s.machineId) }, "🔧 Fixes & last service") : null,
+                onReport ? el("button", { class: "btn danger", type: "button", onclick: () => onReport(s.machineId) }, "🚨 Maintenance Request") : null))
           : null,
         groups(D, s).map((g) =>
           el("div", { class: "sm-group" },

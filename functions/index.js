@@ -64,8 +64,12 @@ const BUCKET = "cdg-ops-app.firebasestorage.app";
 
 // Test mode: the dev test site sends { test: true }. Its reports, fixes, checklist sign-offs, and trash go
 // into test_ collections that the live app never reads, and nothing is sent to Odoo.
+// Test mode can't be skipped: anything not sent from the live site's own address is test mode, whatever the
+// request says. (Only the live site, https://cdg-ops.netlify.app, can create real Odoo requests and records.)
+const LIVE_ORIGIN = "https://cdg-ops.netlify.app";
 function isTest(req) {
-  return req.data?.test === true;
+  const origin = String(req.rawRequest?.headers?.origin || "");
+  return req.data?.test === true || origin !== LIVE_ORIGIN;
 }
 function col(name, test) {
   return db.collection(test ? `test_${name}` : name);
@@ -263,6 +267,7 @@ exports.adminListEmployees = onCall(async (req) => {
       team: e.team || null,
       shift: e.shift || null,
       homeLineId: e.homeLineId || null,
+      trainingName: e.trainingName || null,
       active: e.active !== false,
       mustChangePin: s.mustChangePin === true,
       locked: lock.locked,
@@ -350,6 +355,11 @@ exports.adminUpdateEmployee = onCall(async (req) => {
   if (req.data?.team !== undefined) changes.team = await optionalRef(teams, req.data.team, "team");
   if (req.data?.shift !== undefined) changes.shift = await optionalRef(shifts, req.data.shift, "shift");
   if (req.data?.homeLineId !== undefined) changes.homeLineId = await optionalRef(lines, req.data.homeLineId, "line");
+  // Their entry on the training roster (by name), so their own training reminders show on Home.
+  if (req.data?.trainingName !== undefined) {
+    changes.trainingName = req.data.trainingName ? records.cleanOptional(req.data.trainingName, 60) : null;
+    if (req.data.trainingName && !changes.trainingName) throw new HttpsError("invalid-argument", "Pick a name from the training roster.");
+  }
   if (req.data?.active !== undefined) {
     if (typeof req.data.active !== "boolean") throw new HttpsError("invalid-argument", "active must be true or false.");
     changes.active = req.data.active;
@@ -1125,17 +1135,26 @@ async function writePlantStatus(test) {
   try {
     const [open, machineSnaps] = await Promise.all([col("issues", test).where("open", "==", true).get(), machines.get()]);
     const lineOf = new Map(machineSnaps.docs.map((m) => [m.id, m.get("lineId") || null]));
+    const lineIds = new Set((await lines.get()).docs.filter((l) => l.get("active") !== false).map((l) => l.id));
     const down = {};
+    let unknown = 0;
     for (const d of open.docs) {
       if (d.get("lineDown") !== true) continue;
-      const lineId = lineOf.get(d.get("machineId"));
-      if (!lineId) continue;
+      // The machine's line; for requests with no machine (e.g. from the Microsoft Form, "CDG MACHINE ISSUE - 3-Extruder")
+      // the line number written in the request's own title.
+      let lineId = lineOf.get(d.get("machineId")) || null;
+      if (!lineId) {
+        const n = String(d.get("title") || "").match(/MACHINE ISSUEs*-s*(d+)s*-|L(d+)-/i);
+        const guess = n ? `line-${n[1] || n[2]}` : null;
+        if (guess && lineIds.has(guess)) lineId = guess;
+      }
+      if (!lineId) { unknown++; continue; }
       const at = d.get("reportedAt")?.toMillis?.() || null;
       const cur = (down[lineId] ||= { since: at, machineIds: [] });
       if (!cur.machineIds.includes(d.get("machineId"))) cur.machineIds.push(d.get("machineId"));
       if (at && (!cur.since || at < cur.since)) cur.since = at;
     }
-    await col("meta", test).doc("plantStatus").set({ down, updatedAt: FieldValue.serverTimestamp() });
+    await col("meta", test).doc("plantStatus").set({ down, unknown, updatedAt: FieldValue.serverTimestamp() });
   } catch (err) {
     console.error("plant status not updated", err);
   }
@@ -1359,6 +1378,7 @@ async function syncFromOdoo(key) {
   const result = { openIssues: open.length, closedSinceLastSync: gone.length, machinesWithDates: Object.keys(dates).length };
   await odooSyncStatus.set({ ok: true, lastAt: FieldValue.serverTimestamp(), error: null, ...result });
   await writePlantStatus(false);
+  await writePlantStatus(true); // the test site's practice reports too
   return result;
 }
 

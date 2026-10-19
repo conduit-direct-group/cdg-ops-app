@@ -34,7 +34,6 @@ const byId = (a, b) => a.id.localeCompare(b.id, undefined, { numeric: true });
 const byTitle = (a, b) => a.title.localeCompare(b.title, undefined, { numeric: true });
 const time = (t) => (t?.toMillis ? t.toMillis() : 0);
 const lineDownFirst = (a, b) => (b.lineDown === true) - (a.lineDown === true) || time(b.reportedAt) - time(a.reportedAt);
-const newestFirst = (a, b) => time(b.reportedAt || b.createdAt) - time(a.reportedAt || a.createdAt);
 // Requests: not-done first, urgent first, newest first.
 const requestOrder = (a, b) => (a.status === "done") - (b.status === "done") || (b.urgent === true) - (a.urgent === true) || time(b.createdAt) - time(a.createdAt);
 
@@ -115,8 +114,7 @@ export function startData(me) {
   } else {
     data.openIssues = []; // the board is for Maintenance and Admin (the database refuses others too)
   }
-  const mineIssues = (name) => query(collection(db, name), where("reportedByEmp", "==", me.emp));
-  stopFns.push(watchMerged("myIssues", mineIssues("issues"), mineIssues("test_issues"), newestFirst));
+  data.myIssues = []; // Open issues are for Maintenance, Admin, Plant Manager only (Decision 54)
   const forMe = (name) =>
     me.admin ? query(collection(db, name), where("status", "in", ["open", "in-progress"])) : query(collection(db, name), where("recipients", "array-contains", me.emp));
   stopFns.push(watchMerged("requestsForMe", forMe("requests"), forMe("test_requests"), requestOrder));

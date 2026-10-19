@@ -17,14 +17,14 @@ import { openLines, openRoles, openTeams, openMachineTypes } from "./setup.js";
 import { openFixLibrary } from "./fixlib.js";
 import { startData, stopData, data, onDataChange } from "./data.js";
 import { openIssueBoard, openReportForm } from "./issues.js";
-import { openChecklist, openChecklistAdmin, overdueBanner } from "./checklists.js";
+import { openChecklist, openChecklistAdmin } from "./checklists.js";
 import { openActivity } from "./activity.js";
 import { openShopMap } from "./shopmap.js";
 import { openMapAdmin } from "./mapadmin.js";
 import { openTrainingAdmin } from "./trainingadmin.js";
-import { openNeedSomething, openRequest, openRequestTypesAdmin, inboxCard, myRequestsCard } from "./requests.js";
+import { openNeedSomething, openRequest, openRequestTypesAdmin } from "./requests.js";
 import { pushState, turnOnPush, turnOffPush, refreshPush } from "./push.js";
-import { dashboard, stopDashboard } from "./dashboard.js";
+import { dashboard, stopDashboard, usesMachines, linesDownCount } from "./dashboard.js";
 
 const screen = document.getElementById("screen");
 const deviceBadge = document.getElementById("device-badge");
@@ -240,7 +240,6 @@ function renderHome() {
       checklist: (id) => openChecklistScreen(id, () => go("home")),
       request: (id) => openRequestScreen(id),
       issues: () => openIssues(),
-      inbox: () => document.getElementById("inbox")?.scrollIntoView({ behavior: "smooth", block: "start" }),
       training: () => { location.href = "training.html"; },
       people: () => openModule(openAdmin),
       map: () => openMap(),
@@ -248,18 +247,19 @@ function renderHome() {
       report: () => openReport(),
     },
   });
+  // What this screen shows follows the roles (or the role an admin is viewing as) — Decision 53.
+  const shown = m.admin && state.viewAs ? [state.viewAs] : m.roles;
   return [
     el("h1", {}, `Hi, ${name}`),
     roles ? el("p", { class: "roles" }, `Employee ${state.claims.emp} · ${roles}`) : null,
     messageBox(),
     ...dash,
-    // Requests waiting on me (the full list; the "Requests for you" card points here).
-    el("div", { id: "inbox" }, inboxCard(m, (id) => openRequestScreen(id))),
-    m.fixer || m.issueViewer ? issuesButton() : null,
-    el("button", { class: "btn big secondary", type: "button", onclick: () => openFixes() }, "🔧 Fix Library"),
-    // Training is the training team's own app (its own look and trainer PINs), on its own page.
-    el("a", { class: "btn big secondary", href: "training.html" }, "🎓 Training"),
-    myRequestsCard((id) => openRequestScreen(id)),
+    // Open issues: Maintenance, Admin, Plant Manager only.
+    shown.some((r) => ["maintenance", "admin", "plant-manager"].includes(r)) ? issuesButton() : null,
+    // Fix Library: people who work with the machines (not Office, Sales, Quality, Logistics).
+    usesMachines(shown) ? el("button", { class: "btn big secondary", type: "button", onclick: () => openFixes() }, "🔧 Fix Library") : null,
+    // Training (the training team's own app, on its own page): Training & Safety and Admin.
+    shown.some((r) => ["training-safety", "admin"].includes(r)) ? el("a", { class: "btn big secondary", href: "training.html" }, "🎓 Training") : null,
     isAdmin() ? el("button", { class: "btn secondary", type: "button", onclick: () => go("adminMenu") }, "⚙ Admin") : null,
     pushCard(),
     installCard(),
@@ -274,8 +274,9 @@ function openMap(station = null) {
   closeModule = openShopMap(screen, {
     startStation: station,
     onExit: () => go("home"),
-    onFixes: (machineId) => openFixes(null, machineId),
-    onReport: (machineId) => openReport(null, () => openMap(station), machineId),
+    // Office, Sales, Quality, Logistics: the map without machine buttons (Decision 53).
+    onFixes: usesMachines(me().roles) ? (machineId) => openFixes(null, machineId) : null,
+    onReport: usesMachines(me().roles) ? (machineId) => openReport(null, () => openMap(station), machineId) : null,
   });
 }
 
@@ -284,7 +285,7 @@ function openNeed() {
   if (closeModule) closeModule();
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openNeedSomething(screen, {
-    me: me(), onExit: () => go("home"), onMaintenance: () => openReport(null, openNeed),
+    me: me(), onExit: () => go("home"), onMaintenance: usesMachines(me().roles) ? () => openReport(null, openNeed) : null,
     onSent: (message) => { go("home"); toast(message); },
   });
 }
@@ -464,7 +465,7 @@ function openReport(machineTypes = null, back = () => go("home"), machineId = nu
 
 function issuesButton() {
   const list = data.openIssues;
-  const down = (list || []).filter((i) => i.lineDown).length;
+  const down = linesDownCount(); // same source as the plant status bar
   const label = !list ? "Open issues" : !list.length ? "Open issues — all clear" : `Open issues (${list.length})${down ? ` · ⛔ ${down} line${down === 1 ? "" : "s"} down` : ""}`;
   return el("button", { class: down ? "btn big danger" : "btn big secondary", type: "button", onclick: openIssues }, label);
 }

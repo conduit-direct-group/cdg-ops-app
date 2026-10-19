@@ -167,6 +167,14 @@ export function collapsible(key, summary, ...children) {
   );
 }
 
+// A fold-away line colored by status: red (something not done) or green (all done) — always with an icon and
+// words, e.g. "⚠ Machine checklists · 15 overdue" or "✓ Machine checklists · all done".
+export function statusFold(key, ok, summary, ...children) {
+  const d = collapsible(key, summary, ...children);
+  d.classList.add(ok ? "fold-ok" : "fold-todo");
+  return d;
+}
+
 // ---- Offline --------------------------------------------------------------------
 
 // Shows the red Offline bar while there's no connection. Looking things up keeps working

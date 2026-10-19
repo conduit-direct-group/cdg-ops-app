@@ -5,9 +5,10 @@
 // Only cards whose data exists are here; cards for modules not built yet (schedule, handoffs, notices, PMs,
 // QC, trucks, write-ups…) are added when those modules are built — never as placeholders.
 
-import { el, picker } from "./ui.js";
+import { el, picker, statusFold } from "./ui.js";
 import { data, lineName } from "./data.js";
 import { overdueUnits, unitLabel } from "./checklists.js";
+import { requestRow, myOpenRequests } from "./requests.js";
 import { db, TEST_MODE, callAdminListEmployees } from "./firebase.js";
 import { collection, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 
@@ -26,6 +27,10 @@ export const ROLE_CARDS = [
   ["training-safety", "Training & Safety", ["trainees", "expiring", "safety"]],
 ];
 
+// Office, Sales, Quality, Logistics & Distribution see nothing about machines or maintenance (Decision 53).
+export const NON_MACHINE_ROLES = ["office", "sales", "quality", "shipping"];
+export const usesMachines = (roles) => roles.some((r) => !NON_MACHINE_ROLES.includes(r));
+
 const DAY = 86400000;
 const toMs = (t) => (typeof t === "number" ? t : t?.toMillis ? t.toMillis() : t?.seconds ? t.seconds * 1000 : 0);
 function howLong(ms) {
@@ -39,13 +44,16 @@ const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 // ---- extra data some cards need (loaded only when one of those cards is on screen) ----------------------
 
 const extra = { training: null, odooSync: undefined, waitingLogin: null };
+let myTrainingName = null; // from the person's own record (Admin → People → Training record)
 let extraStops = {};
 let redraw = () => {};
 
 // Training records (same data the 🎓 Training page uses): refreshers due and trainees in training.
+let trainingParts = null;
 function watchTraining() {
+  if (trainingParts && trainingParts.myName !== myTrainingName) { trainingParts.myName = myTrainingName; trainingParts.recompute?.(); }
   if (extraStops.training) return;
-  const parts = {};
+  const parts = (trainingParts = { myName: myTrainingName });
   const compute = () => {
     if (parts.data === undefined || parts.shared === undefined || parts.people === undefined) return;
     if (!parts.data) { extra.training = { missing: true }; return redraw(); }
@@ -58,6 +66,8 @@ function watchTraining() {
     const in30 = new Date(Date.parse(today + "T12:00:00Z") + 30 * DAY).toISOString().slice(0, 10);
     const addYear = (iso) => { const x = new Date(iso + "T12:00:00Z"); x.setUTCFullYear(x.getUTCFullYear() + 1); return x.toISOString().slice(0, 10); };
     let overdue = 0, soon = 0, inTraining = 0, toVerify = 0;
+    const mine = { overdue: [], soon: [] };
+    const LABEL = { loto: "LOTO", eap: "Emergency Action Plan", ppe: "Safety / PPE", c10: "Injury reporting", qc: "Quality check", ld08: "Lead injury response" };
     for (const r of (d.roster || []).filter((x) => x.name && (x.id || x.team || x.position))) {
       const p = people.get(r.name) || {};
       const position = p.posOv && p.posOv.from === r.position ? p.posOv.to : r.position;
@@ -68,14 +78,16 @@ function watchTraining() {
         const due = addYear(last);
         if (due < today) overdue++;
         else if (due <= in30) soon++;
+        if (r.name === parts.myName && due <= in30) (due < today ? mine.overdue : mine.soon).push({ what: LABEL[k], due });
       }
       if (r.status === "In training") inTraining++;
       const orient = p.orient || (d.safety || {})[r.name];
       if (orient && orient.verified !== "Yes") toVerify++;
     }
-    extra.training = { overdue, soon, inTraining, toVerify };
+    extra.training = { overdue, soon, inTraining, toVerify, mine, myName: parts.myName };
     redraw();
   };
+  parts.recompute = compute;
   const col = (n) => collection(db, (TEST_MODE ? "test_" : "") + n);
   const stops = [
     onSnapshot(doc(db, "trainingRef", "data"), (s) => { try { parts.data = s.exists() ? JSON.parse(s.get("json")) : null; } catch { parts.data = null; } compute(); }, () => { parts.data = null; compute(); }),
@@ -100,7 +112,7 @@ function checkWaitingLogin() {
 export function stopDashboard() {
   Object.values(extraStops).forEach((f) => f());
   extraStops = {};
-  extra.training = null; extra.odooSync = undefined; extra.waitingLogin = null; loginCheckedAt = 0;
+  extra.training = null; extra.odooSync = undefined; extra.waitingLogin = null; loginCheckedAt = 0; trainingParts = null;
 }
 
 // ---- the cards ----------------------------------------------------------------------------------------------
@@ -150,7 +162,7 @@ function cardData(id, ctx) {
       const oldest = open.reduce((a, r) => Math.min(a, toMs(r.createdAt) || a), Date.now());
       return { icon: "📥", title: ctx.admin ? "Open requests (everyone's)" : "Requests for you", num: open.length,
         line: open.length ? [urgent && `${urgent} urgent`, `oldest ${howLong(oldest)}`].filter(Boolean).join(" · ") : "All clear",
-        alert: open.length > 0, onOpen: open.length ? go.inbox : null };
+        alert: open.length > 0, onOpen: open.length ? () => go.request(open[0].id) : null };
     }
     case "trainees": {
       watchTraining();
@@ -237,41 +249,82 @@ export function cardsFor(roles) {
 
 // ---- the whole dashboard ------------------------------------------------------------------------------------
 
-// ctx = { roles, admin, viewAs, setViewAs, go: { checklist, request, issues, inbox, training, people, map, need, report }, onRedraw }
+// ctx = { roles, admin, viewAs, setViewAs, go: { checklist, request, issues, training, people, map, need, report }, onRedraw }
 export function dashboard(ctx) {
   redraw = ctx.onRedraw;
   const roles = ctx.viewAs ? [ctx.viewAs] : ctx.roles;
+  const machines = usesMachines(roles);
   const ids = cardsFor(roles);
-  const late = data.checklistUnits && data.lines ? overdueUnits() : [];
   const lines = (data.lines || []).filter((l) => l.active !== false);
   const down = data.plantStatus?.down || {};
+  const everyone = ctx.admin && !ctx.viewAs;
 
-  // 1. Needs you: sign-offs due (overdue machine checklists). Notices and personal training due join when built.
-  const needs = late.length
-    ? el("section", { class: "needs-you", "aria-label": "Needs you" },
-        el("strong", { class: "needs-title" }, "Needs you"),
-        el("div", { class: "alert-banner", role: "alert" },
-          el("strong", {}, `⚠ ${plural(late.length, "machine checklist")} overdue`),
-          el("div", { class: "alert-pills" }, late.map((u) => el("button", { class: "alert-pill", type: "button", onclick: () => ctx.go.checklist(u.id) }, unitLabel(u))))))
+  // 1. Needs you: one fold-away line per list — red while something isn't done, green when it's all done.
+  const tabs = [];
+  if (machines && data.checklistUnits && data.lines) {
+    const late = overdueUnits();
+    tabs.push(statusFold("home-checklists", !late.length,
+      late.length ? `⚠ Machine checklists · ${late.length} overdue` : "✓ Machine checklists · all done",
+      late.length
+        ? el("div", { class: "alert-pills" }, late.map((u) => el("button", { class: "alert-pill", type: "button", onclick: () => ctx.go.checklist(u.id) }, unitLabel(u))))
+        : el("p", { class: "card-note" }, "Every machine checklist is signed off and up to date.")));
+  }
+  const forMe = data.requestsForMe || [];
+  const forMeOpen = forMe.filter((r) => r.status !== "done");
+  if (forMe.length) {
+    const urgent = forMeOpen.filter((r) => r.urgent).length;
+    const name = everyone ? "Open requests" : "Requests for you";
+    tabs.push(statusFold("home-for-me", !forMeOpen.length,
+      forMeOpen.length ? `⚠ ${name} · ${forMeOpen.length} open${urgent ? ` (${urgent} urgent)` : ""}` : `✓ ${name} · all done`,
+      forMeOpen.length
+        ? el("div", { class: "person-list" }, forMeOpen.map((r) => requestRow(r, () => ctx.go.request(r.id))))
+        : el("p", { class: "card-note" }, "Nothing waiting on you.")));
+  }
+  const mine = myOpenRequests();
+  if (mine.length) {
+    tabs.push(statusFold("home-mine", false, `⚠ My requests · ${mine.length} not done yet`,
+      el("div", { class: "person-list" }, mine.map((r) => requestRow(r, () => ctx.go.request(r.id))))));
+  }
+  // My own training — only when this person is linked to their training record (Admin → People).
+  myTrainingName = ctx.viewAs ? null : data.myself?.trainingName || null;
+  if (myTrainingName) {
+    watchTraining();
+    const t = extra.training;
+    if (t && !t.missing && t.myName === myTrainingName) {
+      const due = [...t.mine.overdue, ...t.mine.soon];
+      tabs.push(statusFold("home-training", !due.length,
+        t.mine.overdue.length ? `⚠ My training · ${t.mine.overdue.length} overdue`
+          : t.mine.soon.length ? `⚠ My training · ${t.mine.soon.length} due within 30 days` : "✓ My training · all current",
+        due.length
+          ? el("ul", { class: "count-list" }, due.map((x) => el("li", {}, el("span", {}, x.what), el("strong", {}, `due ${x.due}`))))
+          : el("p", { class: "card-note" }, "Your yearly refreshers are current."),
+        due.length ? el("p", { class: "card-note" }, "Ask the Training & Safety team to schedule it.") : null));
+    }
+  }
+  const anyTodo = tabs.some((t) => t.classList.contains("fold-todo"));
+  const needs = tabs.length
+    ? el("section", { class: "needs-you", "aria-label": "Needs you" }, anyTodo ? el("strong", { class: "needs-title" }, "Needs you") : null, tabs)
     : null;
 
-  // 2. Quick buttons.
-  const quick = el("div", { class: "quick-row" },
+  // 2. Quick buttons (Maintenance Request only for people who work with the machines).
+  const quick = el("div", { class: machines ? "quick-row" : "quick-row two" },
     el("button", { class: "btn big secondary", type: "button", onclick: ctx.go.map }, "🗺 Shop Map"),
     el("button", { class: "btn big", type: "button", onclick: ctx.go.need }, "🙋 Need something?"),
-    el("button", { class: "btn big danger", type: "button", onclick: ctx.go.report }, "🚨 Maintenance Request"));
+    machines ? el("button", { class: "btn big danger", type: "button", onclick: ctx.go.report }, "🚨 Maintenance Request") : null);
 
-  // 3. Plant status bar: a line is "down" while it has an open Maintenance Request marked line down.
+  // 3. Plant status: green ✓ Running, red ⛔ Down — the same source as the Open issues button (meta/plantStatus).
+  const unknown = data.plantStatus?.unknown || 0;
   const bar = lines.length
     ? el("section", { class: "plant-bar", "aria-label": "Plant status" },
         lines.map((l) => {
           const d = down[l.id];
-          return el("span", { class: d ? "line-chip down" : "line-chip" },
+          return el("span", { class: d ? "line-chip down" : "line-chip up" },
             el("strong", {}, l.name), d ? ` ⛔ Down${d.since ? ` ${howLong(d.since)}` : ""}${d.test ? " (TEST)" : ""}` : " ✓ Running");
-        }))
+        }),
+        unknown ? el("span", { class: "line-chip down" }, `⛔ ${plural(unknown, "line-down request")} with no line set`) : null)
     : null;
 
-  // Admin: View as any role (numbers are still from your own account).
+  // Admin: View as any role (cards and lists still show your own account's data).
   const viewAs = ctx.admin
     ? el("div", { class: "view-as" },
         picker({
@@ -279,7 +332,7 @@ export function dashboard(ctx) {
           options: [{ value: "", label: "👁 My own screen" }, ...ROLE_CARDS.map(([id, name]) => ({ value: id, label: `👁 View as ${name}` }))],
           onChange: (v) => ctx.setViewAs(v || null),
         }),
-        ctx.viewAs ? el("p", { class: "message" }, `Viewing as ${ROLE_CARDS.find(([id]) => id === ctx.viewAs)?.[1]}. Cards show your own account's data.`) : null)
+        ctx.viewAs ? el("p", { class: "message" }, `Viewing as ${ROLE_CARDS.find(([id]) => id === ctx.viewAs)?.[1]}. Cards and lists show your own account's data.`) : null)
     : null;
 
   // 4. Role cards.
@@ -288,4 +341,9 @@ export function dashboard(ctx) {
     : null;
 
   return [viewAs, needs, quick, bar, cards];
+}
+
+// Lines down for the Open issues button — from the same summary as the plant status bar.
+export function linesDownCount() {
+  return Object.keys(data.plantStatus?.down || {}).length;
 }

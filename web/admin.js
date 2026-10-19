@@ -10,7 +10,9 @@ import {
   callAdminUnlock,
   callAdminUpdateEmployee,
   callAdminEnableLogin,
+  db,
 } from "./firebase.js";
+import { doc, onSnapshot } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 
 // Role names come from the live Roles list (Admin → Roles); unknown ids show as-is.
 function roleNames(roles) {
@@ -21,7 +23,7 @@ function roleNames(roles) {
 const teamName = (id) => (id ? data.teams?.find((t) => t.id === id)?.name || "?" : "");
 // "#1004 · Operator · Team A · Line 2" (before roles are confirmed: the job title instead).
 function personLine(p) {
-  return [`#${p.employeeNumber}`, p.rolesConfirmed ? roleNames(p.roles) : p.position, p.team ? `Team ${teamName(p.team)}` : "", p.homeLineId ? lineName(p.homeLineId) : ""].filter(Boolean).join(" · ");
+  return [`#${p.employeeNumber}`, p.rolesConfirmed ? roleNames(p.roles) : p.position, p.team ? `Team ${teamName(p.team)}` : "", p.homeLineId ? lineName(p.homeLineId) : "", p.trainingName ? "🎓 linked" : ""].filter(Boolean).join(" · ");
 }
 
 // Opens the People screens inside `container`. `onExit` returns to the Admin menu.
@@ -166,7 +168,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
     const p = person();
     ui.draft = {
       number: p.employeeNumber, name: p.name, position: p.position || "", roles: p.rolesConfirmed ? [...p.roles] : [...p.suggestedRoles],
-      team: p.team || "", homeLineId: p.homeLineId || "",
+      team: p.team || "", homeLineId: p.homeLineId || "", trainingName: p.trainingName || "",
     };
     show("edit");
   }
@@ -203,7 +205,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
           : spinner("Loading roles…")];
 
     // Read at save time (the inputs update the draft as you type).
-    const fields = () => ({ name: d.name, roles: d.roles, team: d.team || null, homeLineId: d.homeLineId || null, ...(existing ? { position: d.position || "" } : {}) });
+    const fields = () => ({ name: d.name, roles: d.roles, team: d.team || null, homeLineId: d.homeLineId || null, ...(existing ? { position: d.position || "", trainingName: d.trainingName || null } : {}) });
     // `again` = add this person and keep the form open for the next one.
     async function save(e, again = false) {
       e?.preventDefault();
@@ -264,6 +266,12 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
         picker({ id: "f-team", title: "Team", value: d.team, placeholder: "No team", options: [{ value: "", label: "No team" }, ...teams.map((t) => ({ value: t.id, label: `Team ${t.name}` }))], onChange: (v) => { d.team = v; render(); } }),
         el("label", { class: "field-label", for: "f-home" }, "Home line"),
         picker({ id: "f-home", title: "Home line", value: d.homeLineId, placeholder: "No home line", options: [{ value: "", label: "No home line" }, ...lines.map((l) => ({ value: l.id, label: l.name }))], onChange: (v) => { d.homeLineId = v; render(); } }),
+        // Links this person to their training record, so their own refreshers due show in "Needs you" on Home.
+        existing && trainingRoster.length
+          ? [el("label", { class: "field-label", for: "f-training" }, "Training record (name on the training roster)"),
+             picker({ id: "f-training", title: "Training record", value: d.trainingName || "", placeholder: "Not linked",
+               options: [{ value: "", label: "Not linked" }, ...trainingRoster.map((n) => ({ value: n, label: n }))], onChange: (v) => { d.trainingName = v; render(); } })]
+          : null,
         el("button", { class: "btn", type: "submit", disabled: ui.busy }, ui.busy ? "Saving…" : existing ? "Save" : "Add and get PIN"),
         existing ? null : el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => save(null, true) }, "+ Save & add another person")
       ),
@@ -375,7 +383,14 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
     if (!ui.busy && !editing) render();
   });
 
+  // Names on the training roster (Training data), for the "Training record" link.
+  let trainingRoster = [];
+  const stopRoster = onSnapshot(doc(db, "trainingRef", "data"), (snap) => {
+    try { trainingRoster = snap.exists() ? (JSON.parse(snap.get("json")).roster || []).map((r) => r.name).filter(Boolean).sort() : []; } catch { trainingRoster = []; }
+    if (ui.view === "edit" && !ui.busy) render();
+  }, () => {});
+
   render();
   load();
-  return stop;
+  return () => { stop(); stopRoster(); };
 }
