@@ -252,7 +252,7 @@ function renderHome() {
     el("h1", {}, `Hi, ${name}`),
     roles ? el("p", { class: "roles" }, `Employee ${state.claims.emp} · ${roles}`) : null,
     messageBox(),
-    dash,
+    ...dash,
     // Requests waiting on me (the full list; the "Requests for you" card points here).
     el("div", { id: "inbox" }, inboxCard(m, (id) => openRequestScreen(id))),
     m.fixer || m.issueViewer ? issuesButton() : null,
