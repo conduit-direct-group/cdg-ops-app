@@ -235,7 +235,7 @@ export function openReportForm(container, { me, onExit, onDone, machineTypes = n
           el("h1", {}, ui.sent.test ? "✔ Test report saved" : "✔ Sent to maintenance"),
           ui.sent.test
             ? el("p", { class: "message test-note" }, "TEST — practice only. Nothing was sent to Odoo. It shows on the test site only, marked TEST.")
-            : el("p", { class: "message" }, `Odoo request #${ui.sent.odooId} — you can follow it under 🧾 My requests on the home screen.`),
+            : el("p", { class: "message" }, `Odoo request #${ui.sent.odooId} — Maintenance has been notified.`),
           onDone ? el("button", { class: "btn", type: "button", onclick: onDone }, "🚨 See open issues") : null,
           el("button", { class: "btn secondary", type: "button", onclick: onExit }, "✔ Done"),
         ]

@@ -136,7 +136,7 @@ function watchPlantStatus() {
     if (parts["plant:real"] === undefined || (TEST_MODE && parts["plant:test"] === undefined)) return;
     const down = { ...(parts["plant:real"]?.down || {}) };
     for (const [lineId, v] of Object.entries(parts["plant:test"]?.down || {})) {
-      down[lineId] = down[lineId] ? { since: Math.min(down[lineId].since || v.since, v.since || down[lineId].since), machineIds: [...new Set([...down[lineId].machineIds, ...v.machineIds])], test: true } : { ...v, test: true };
+      down[lineId] = down[lineId] ? { since: Math.min(down[lineId].since || v.since, v.since || down[lineId].since), machineIds: [...new Set([...down[lineId].machineIds, ...v.machineIds])] } : { ...v, test: true };
     }
     data.plantStatus = { down, unknown: (parts["plant:real"]?.unknown || 0) + (parts["plant:test"]?.unknown || 0) };
     changed();
