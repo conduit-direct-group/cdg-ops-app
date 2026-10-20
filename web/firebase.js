@@ -100,6 +100,16 @@ export const callAdminSetTrainer = call("adminSetTrainer");
 export const callReportProblem = call("reportProblem");
 export const callMarkIssueFixed = call("markIssueFixed");
 export const callMarkLineBackUp = call("markLineBackUp");
+// Announcements and the shared PIN sign-off
+export const callAnnouncementPeople = call("announcementPeople");
+export const callPostAnnouncement = call("postAnnouncement");
+export const callEndAnnouncement = call("endAnnouncement");
+export const callSignAnnouncement = call("signAnnouncement");
+export const callRecordReviewedInPerson = call("recordReviewedInPerson");
+export const callAnnouncementTracking = call("announcementTracking");
+export const callRemindAnnouncement = call("remindAnnouncement");
+export const callAnnouncementSummary = call("announcementSummary");
+export const callSignoffPeople = call("signoffPeople");
 export const callAdminSyncOdoo = call("adminSyncOdoo", { timeout: 120000 });
 // Copying files from the old library can take a few minutes.
 export const callAdminImportOldLibrary = call("adminImportOldLibrary", { timeout: 540000 });

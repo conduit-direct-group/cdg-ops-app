@@ -8,9 +8,10 @@ import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, pi
 import { data, onDataChange, lineName } from "./data.js";
 import {
   storage, TEST_MODE, callSignChecklist, callAdminSaveChecklist, callAdminSetChecklistMedia, callAdminStartChecklists,
-  callAdminImportOldChecklists,
+  callAdminImportOldChecklists, callSignoffPeople,
 } from "./firebase.js";
 import { ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-storage.js";
+import { signOff } from "./signoff.js";
 
 const DAY_MS = 86400000;
 
@@ -170,16 +171,19 @@ export function openChecklist(container, { me, unitId: id, onExit }) {
 
   async function submit() {
     if (!ui.checked.size) return Object.assign(ui, { message: "Check at least one item you did.", messageKind: "error" }), render();
-    Object.assign(ui, { busy: true, message: "", retry: null });
-    render();
-    try {
-      const { data: r } = await callSignChecklist({ unitId: id, itemIds: [...ui.checked] });
-      ui.checked.clear();
-      onExit(`${unitLabel(unit())} signed off — ${r.count} item${r.count === 1 ? "" : "s"}${r.test ? " (test)" : ""}`);
-    } catch (err) {
-      Object.assign(ui, { busy: false, message: friendlyError(err), messageKind: "error", retry: submit });
-      render();
-    }
+    Object.assign(ui, { message: "", retry: null });
+    // The shared sign-off: tap your name, then your PIN (Decision 7). On a line tablet the crew can sign here.
+    const n = ui.checked.size;
+    const r = await signOff({
+      title: "Sign off checklist",
+      what: `${unitLabel(unit())} · ${n} item${n === 1 ? "" : "s"}`,
+      me: { emp: me.emp, name: me.name },
+      others: async () => (await callSignoffPeople({ kind: "checklist" })).data.people,
+      action: async ({ signer, device }) => (await callSignChecklist({ unitId: id, itemIds: [...ui.checked], signer, device })).data,
+    });
+    if (!r) return render();
+    ui.checked.clear();
+    onExit(`${unitLabel(unit())} signed off by ${r.name} — ${r.count} item${r.count === 1 ? "" : "s"}${r.test ? " (test)" : ""}`);
   }
 
   function renderList() {
@@ -223,7 +227,7 @@ export function openChecklist(container, { me, unitId: id, onExit }) {
           );
         })
       ),
-      el("p", { class: "hint" }, `Signed as you${TEST_MODE ? " — test site, practice only" : ""}.`),
+      el("p", { class: "hint" }, `You sign with your PIN${TEST_MODE ? " — test site, practice only" : ""}.`),
       el("button", { class: "btn big", type: "button", disabled: ui.busy || !ui.checked.size, onclick: submit }, ui.busy ? "Saving…" : ui.checked.size ? `✔ Sign off ${ui.checked.size} item${ui.checked.size === 1 ? "" : "s"}` : "✔ Sign off"),
     ];
   }

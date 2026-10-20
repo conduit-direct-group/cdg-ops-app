@@ -5,6 +5,7 @@
 
 import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, picker } from "./ui.js";
 import { data, onDataChange, lineName } from "./data.js";
+import { rolePosts } from "./announcements.js";
 import { callAdminSaveLine, callAdminSaveMachine, callAdminSaveRole, callAdminSaveTeam, callAdminSaveMachineType, callAdminListEmployees } from "./firebase.js";
 
 // The starting roles from the plan (§5). Ids are permanent; names can be edited later.
@@ -525,7 +526,7 @@ function openNamedList(container, { onExit, cfg }) {
       cfg.meta ? el("p", { class: "roles" }, cfg.meta(r)) : null,
       el("p", { class: "tags center" }, retiredTag(r)),
       kit.messageBox(),
-      cfg.members ? cfg.members(r) : null,
+      cfg.members ? cfg.members(r, { kit, show }) : null,
       cfg.rename ? el("button", { class: "btn secondary", type: "button", onclick: () => startForm(r), disabled: kit.busy }, `✎ Rename ${cfg.noun}`) : el("p", { class: "hint" }, cfg.noRenameNote),
       locked
         ? el("p", { class: "hint" }, locked)
@@ -600,6 +601,19 @@ export function openRoles(container, { onExit }) {
       title: "Roles", noun: "role", a: "a role", plural: "roles", nameLabel: "Role name (e.g. Quality)",
       hint: "A person's roles decide what shows on their home screen and what they can do.",
       items: () => data.roles, save: callAdminSaveRole, rename: true,
+      meta: (r) => (rolePosts(r) ? "📣 Can post announcements" : null),
+      // Who may post announcements (Decision 58). Starts on for Admin, Plant Manager, Supervisor, Training & Safety, Office.
+      members: (r, { kit, show }) => {
+        const on = rolePosts(r);
+        const flip = async () => {
+          const ok = await kit.act(() => callAdminSaveRole({ id: r.id, name: r.name, canPostAnnouncements: !on }), flip);
+          if (ok) show("item", on ? `${r.name}: posting announcements turned off` : `${r.name} can now post announcements`, "ok");
+        };
+        return el("div", { class: "card" },
+          el("strong", {}, "📣 Announcements"),
+          el("p", { class: "card-note" }, on ? "People with this role can post announcements." : "People with this role can't post announcements."),
+          el("button", { class: on ? "btn secondary" : "btn", type: "button", disabled: kit.busy, onclick: flip }, on ? "Turn off posting" : "✔ Allow posting"));
+      },
       starters: () => STARTING_ROLES, startersTitle: "Add the starting roles",
       cantRetire: (r) => (r.id === "admin" ? "The Admin role can't be retired — someone has to be able to run the app." : null),
       retireText: "It can't be given to anyone new. People who already have it keep it until you edit them.",

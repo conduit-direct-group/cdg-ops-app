@@ -1,0 +1,106 @@
+const test = require("node:test");
+const assert = require("node:assert");
+const a = require("../announcements");
+
+const people = [
+  { id: "1001", roles: ["admin"], team: null, homeLineId: null },
+  { id: "2001", roles: ["operator"], team: "team-a", homeLineId: "line-1" },
+  { id: "2002", roles: ["operator"], team: "team-b", homeLineId: "line-2" },
+  { id: "2003", roles: ["operator"], team: "team-a", homeLineId: "line-2", active: false },
+  { id: "3001", roles: ["supervisor"], team: "team-a", homeLineId: null },
+  { id: "3002", roles: ["supervisor"], team: null, homeLineId: "line-2" },
+  { id: "3003", roles: ["supervisor"], team: null, homeLineId: null },
+  { id: "4001", roles: ["office"], team: null, homeLineId: null },
+];
+const known = { roles: ["admin", "operator", "supervisor", "office"], teams: ["team-a", "team-b"], lines: ["line-1", "line-2"] };
+const ours = (url) => (url.startsWith("https://firebasestorage.googleapis.com/v0/b/cdg/o/uploads") ? "uploads/x" : null);
+const good = { title: "New glove rule", body: "Cut gloves at the winder from Monday.", priority: "safety", ackBy: "2026-10-25", audience: { everyone: true } };
+
+test("posting: Chris's default roles may post until the Roles screen says otherwise", () => {
+  const roles = [{ id: "admin" }, { id: "operator" }, { id: "office" }, { id: "supervisor", canPostAnnouncements: false }, { id: "quality", canPostAnnouncements: true }];
+  assert.strictEqual(a.canPost(roles, ["office"]), true);
+  assert.strictEqual(a.canPost(roles, ["operator"]), false);
+  assert.strictEqual(a.canPost(roles, ["supervisor"]), false);
+  assert.strictEqual(a.canPost(roles, ["quality"]), true);
+  assert.strictEqual(a.canPost([{ id: "office", active: false }], ["office"]), false);
+});
+
+test("an announcement needs a title, message, priority, acknowledge-by date, and an audience", () => {
+  assert.match(a.cleanAnnouncement({ ...good, title: "" }, known, ours).error, /title/);
+  assert.match(a.cleanAnnouncement({ ...good, body: "" }, known, ours).error, /message/);
+  assert.match(a.cleanAnnouncement({ ...good, priority: "huge" }, known, ours).error, /priority/);
+  assert.match(a.cleanAnnouncement({ ...good, ackBy: "next week" }, known, ours).error, /acknowledge by/);
+  assert.match(a.cleanAnnouncement({ ...good, audience: {} }, known, ours).error, /who it's for/);
+  assert.match(a.cleanAnnouncement({ ...good, audience: { roles: ["pilot"] } }, known, ours).error, /roles from the list/);
+  assert.match(a.cleanAnnouncement({ ...good, endDate: "2026-10-20" }, known, ours).error, /before/);
+  assert.match(a.cleanAnnouncement({ ...good, endDate: "2026-10-26" }, known, ours, "2026-10-27").error, /passed/);
+  assert.match(a.cleanAnnouncement({ ...good, file: { url: "https://evil.example/x.pdf", kind: "pdf" } }, known, ours).error, /attachment/);
+  const { announcement } = a.cleanAnnouncement({ ...good, title: "  New   glove rule ", audience: { everyone: true, roles: ["admin"] }, file: { url: "https://firebasestorage.googleapis.com/v0/b/cdg/o/uploads%2F1001%2Fa.pdf", kind: "pdf", name: "Rule.pdf" }, keepForNewHires: true }, known, ours);
+  assert.strictEqual(announcement.title, "New glove rule");
+  assert.deepStrictEqual(announcement.audience, { everyone: true, roles: [], teams: [], lines: [], people: [] });
+  assert.strictEqual(announcement.file.kind, "pdf");
+  assert.strictEqual(announcement.keepForNewHires, true);
+  assert.strictEqual(announcement.endDate, null);
+});
+
+test("audience: everyone, or any mix of roles, teams, lines, people — never someone turned off", () => {
+  assert.deepStrictEqual(a.matchAudience({ everyone: true }, people), ["1001", "2001", "2002", "3001", "3002", "3003", "4001"]);
+  assert.deepStrictEqual(a.matchAudience({ roles: ["office"], teams: ["team-a"] }, people), ["2001", "3001", "4001"]);
+  assert.deepStrictEqual(a.matchAudience({ lines: ["line-2"], people: ["1001", "2003"] }, people), ["1001", "2002", "3002"]);
+});
+
+test("a supervisor's crew is their team, else their home line, else nobody", () => {
+  const by = Object.fromEntries(people.map((p) => [p.id, p]));
+  assert.deepStrictEqual(a.crewOf(by["3001"], people), ["2001"]);
+  assert.deepStrictEqual(a.crewOf(by["3002"], people), ["2002"]);
+  assert.deepStrictEqual(a.crewOf(by["3003"], people), []);
+});
+
+test("trackers: the poster plus supervisors with crew in the audience; scope by role", () => {
+  assert.deepStrictEqual(a.trackersFor("4001", ["2001"], people), ["3001", "4001"]);
+  assert.deepStrictEqual(a.trackersFor("1001", ["2002", "4001"], people), ["1001", "3002"]);
+  const ann = { createdBy: "4001" };
+  assert.strictEqual(a.trackScope({ id: "4001", roles: ["office"] }, ann), "all");
+  assert.strictEqual(a.trackScope({ id: "9", roles: ["plant-manager"] }, ann), "all");
+  assert.strictEqual(a.trackScope({ id: "3001", roles: ["supervisor"] }, ann), "crew");
+  assert.strictEqual(a.trackScope({ id: "2001", roles: ["operator"] }, ann), null);
+});
+
+test("keep for new hires: new matches are added, nobody is dropped; otherwise the list stays", () => {
+  const kept = { keepForNewHires: true, audience: { roles: ["operator"] }, audienceEmps: ["2002", "4001"] };
+  assert.deepStrictEqual(a.refreshedAudience(kept, [...people, { id: "5001", roles: ["operator"] }]), ["2001", "2002", "4001", "5001"]);
+  assert.deepStrictEqual(a.refreshedAudience({ ...kept, keepForNewHires: false }, [...people, { id: "5001", roles: ["operator"] }]), ["2002", "4001"]);
+});
+
+test("editing the words, attachment, or priority means everyone signs again; dates and audience don't", () => {
+  const before = { title: "A", body: "B", priority: "normal", file: null };
+  assert.strictEqual(a.contentChanged(before, { ...before, ackBy: "2026-11-01", endDate: "2026-12-01" }), false);
+  assert.strictEqual(a.contentChanged(before, { ...before, body: "B!" }), true);
+  assert.strictEqual(a.contentChanged(before, { ...before, priority: "safety" }), true);
+  assert.strictEqual(a.contentChanged(before, { ...before, file: { url: "https://x" } }), true);
+});
+
+test("dates: overdue after the acknowledge-by day, ended after the end day or when ended early", () => {
+  assert.strictEqual(a.isOverdue({ ackBy: "2026-10-20" }, "2026-10-20"), false);
+  assert.strictEqual(a.isOverdue({ ackBy: "2026-10-20" }, "2026-10-21"), true);
+  assert.strictEqual(a.isEnded({ endDate: "2026-10-20" }, "2026-10-20"), false);
+  assert.strictEqual(a.isEnded({ endDate: "2026-10-20" }, "2026-10-21"), true);
+  assert.strictEqual(a.isEnded({ ended: true }, "2026-10-01"), true);
+  assert.strictEqual(a.isEnded({ endDate: null }, "2099-01-01"), false);
+});
+
+test("tracking: no login shows as No login, not just not signed; in-person counts as signed", () => {
+  const list = [
+    a.personStatus({ id: "1", loginEnabled: true }, { method: "pin" }),
+    a.personStatus({ id: "2", loginEnabled: true }, null),
+    a.personStatus({ id: "3", loginEnabled: false }, null),
+    a.personStatus({ id: "4", loginEnabled: false }, { method: "in-person" }),
+  ];
+  assert.deepStrictEqual(list.map((p) => p.state), ["signed", "not-signed", "no-login", "in-person"]);
+  assert.deepStrictEqual(a.countUp(list), { total: 4, signed: 2, notSigned: 1, noLogin: 1 });
+});
+
+test("device on a sign-off is cleaned up", () => {
+  assert.deepStrictEqual(a.cleanDevice({ id: "abc12345-x", kind: "line-tablet", label: "Line tablet · iPad" }), { id: "abc12345-x", kind: "line-tablet", label: "Line tablet · iPad" });
+  assert.deepStrictEqual(a.cleanDevice({ id: "<script>", kind: "hack" }), { id: "unknown", kind: "personal", label: "Personal device" });
+});

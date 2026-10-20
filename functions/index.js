@@ -27,6 +27,7 @@ const checklistsLib = require("./checklists");
 const requestsLib = require("./requests");
 const floorMapLib = require("./floormap");
 const trainingApi = require("./training-api");
+const annLib = require("./announcements");
 const crypto = require("node:crypto");
 const { getMessaging } = require("firebase-admin/messaging");
 const { defineSecret } = require("firebase-functions/params");
@@ -302,6 +303,7 @@ exports.adminCreateEmployee = onCall(async (req) => {
     audit(tx, "created", employeeNumber, adminNumber, { roles: employee.roles });
   });
   await syncAuthUser(employeeNumber, employee, true);
+  await refreshAnnouncementLists(); // kept-for-new-hires announcements reach them from day one
   return { employeeNumber, tempPin };
 });
 
@@ -378,6 +380,7 @@ exports.adminUpdateEmployee = onCall(async (req) => {
   });
   await syncAuthUser(employeeNumber, employee, pinTemp);
   if (changes.active === false) await auth.revokeRefreshTokens(uidFor(employeeNumber));
+  if (changes.roles || changes.team !== undefined || changes.homeLineId !== undefined || changes.active === true) await refreshAnnouncementLists();
   return { ok: true };
 });
 
@@ -411,6 +414,7 @@ exports.adminImportEmployees = onCall(async (req) => {
     }
     tx.create(auditLog.doc(), { type: "imported", kind: "people", recordId: "gusto", by: adminNumber, at: FieldValue.serverTimestamp(), count: people.length });
   });
+  await refreshAnnouncementLists();
   return { imported: people.length };
 });
 
@@ -495,11 +499,16 @@ async function saveNamedRecord(collection, kind, req, extraCheck, extraFields = 
 
 // Roles: create { create: true, name, id? } or update { id, name, active? }.
 // The admin role can't be retired — someone has to be able to run the app.
+// Optional { canPostAnnouncements: true|false } (Admin → Roles); left out = unchanged.
 exports.adminSaveRole = onCall((req) =>
   saveNamedRecord(roles, "role", req, (id, active) => {
     if (id === "admin" && active === false) {
       throw new HttpsError("failed-precondition", "The Admin role can't be retired.");
     }
+  }, (d) => {
+    if (d.canPostAnnouncements === undefined) return {};
+    if (typeof d.canPostAnnouncements !== "boolean") throw new HttpsError("invalid-argument", "canPostAnnouncements must be true or false.");
+    return { canPostAnnouncements: d.canPostAnnouncements };
   })
 );
 
@@ -1454,10 +1463,15 @@ async function liveUnits() {
   return { templates, units };
 }
 
-// Anyone signed in: { unitId, itemIds: [...], test? } — "I did these items", signed with their own sign-in.
+// Anyone signed in: { unitId, itemIds: [...], signer: { emp, pin }, device, test? } — "I did these items",
+// signed with the shared PIN sign-off. (Screens from before it — the live site until the next release — send no
+// signer and sign as the person signed in.)
 exports.signChecklist = onCall(async (req) => {
-  const me = await requireMember(req);
+  const signedIn = await requireMember(req);
   const test = isTest(req);
+  const withPin = !!req.data?.signer;
+  const me = withPin ? await requireSignature(req.data) : signedIn;
+  const device = annLib.cleanDevice(req.data?.device);
   const unitIdIn = String(req.data?.unitId || "");
   const itemIds = Array.isArray(req.data?.itemIds) ? [...new Set(req.data.itemIds.map(String))] : [];
   if (!itemIds.length) throw new HttpsError("invalid-argument", "Check at least one item you did.");
@@ -1478,10 +1492,12 @@ exports.signChecklist = onCall(async (req) => {
   );
   batch.create(col("checklistSignoffs", test).doc(), {
     unitId: unit.id, templateId: unit.templateId, lineId: unit.lineId, items: itemIds,
-    by: me.employeeNumber, byName: me.name, at: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}),
+    by: me.employeeNumber, byName: me.name, method: withPin ? "pin" : "sign-in", device, signedOn: signedIn.employeeNumber,
+    at: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}),
   });
+  logSignoff(batch, test, { kind: "checklist", refId: unit.id, version: null, items: itemIds, emp: me.employeeNumber, name: me.name, method: withPin ? "pin" : "sign-in", device, signedOn: signedIn.employeeNumber });
   await batch.commit();
-  return { ok: true, count: itemIds.length, test };
+  return { ok: true, count: itemIds.length, name: me.name, test };
 });
 
 function requireTemplate(data, existing) {
@@ -1877,6 +1893,370 @@ exports.adminStartRequestTypes = onCall(async (req) => {
   if (added.length) await auditLog.add({ type: "created", kind: "request type", recordId: added.join(","), by: adminNumber, at: FieldValue.serverTimestamp() });
   return { added };
 });
+
+// ---------------------------------------------------------------------------
+// Shared sign-off (Decision 7): every sign-off is the person's own employee # + PIN, checked here.
+// Checklists, announcements, and anything later use this one piece. On a line tablet the person signing
+// may be someone other than whoever is signed in — the PIN proves who signed.
+//   signoffs/{auto}   kind, refId, version, emp, name, device { id, kind, label }, method ("pin" | "in-person"),
+//                     signedOn (who was signed in on the device), recordedBy/note (in person), at
+// Test site: test_signoffs.
+// ---------------------------------------------------------------------------
+
+// { signer: { emp, pin } } -> the signer. Wrong PINs count toward the same 5-try lockout as signing in.
+async function requireSignature(data) {
+  const emp = pin.normalizeEmployeeNumber(data?.signer?.emp);
+  const enteredPin = data?.signer?.pin;
+  if (!emp || !pin.isValidPinFormat(enteredPin)) throw new HttpsError("permission-denied", "Wrong PIN. Try again.");
+  const result = await attemptPin(emp, enteredPin);
+  if (!result.ok) {
+    if (result.minutesLeft) throwPinFailure(result);
+    throw new HttpsError("permission-denied", "Wrong PIN. Try again.");
+  }
+  if (result.mustChangePin) throw new HttpsError("failed-precondition", "Sign in once and pick your own PIN first, then sign.");
+  return { employeeNumber: emp, name: result.employee.name || `Employee ${emp}`, roles: result.employee.roles || [], employee: result.employee };
+}
+
+function logSignoff(tx, test, entry) {
+  tx.create(col("signoffs", test).doc(), { ...entry, at: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}) });
+}
+
+// Everyone, with whether they have a login yet (PIN records are only checked for existence, never read).
+async function peopleList() {
+  const [e, s] = await Promise.all([employees.get(), pinSecrets.select().get()]);
+  const login = new Set(s.docs.map((d) => d.id));
+  return e.docs.map((d) => ({
+    id: d.id, name: d.get("name") || `Employee ${d.id}`, roles: d.get("roles") || [], team: d.get("team") || null,
+    homeLineId: d.get("homeLineId") || null, active: d.get("active") !== false, loginEnabled: login.has(d.id),
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Announcements with "Read & understood" (rules in announcements.js).
+//   announcements/{auto}        title, body, priority, ackBy, endDate, file, audience, keepForNewHires, version,
+//                               audienceEmps (who it's for), trackers (poster + supervisors with crew in it),
+//                               createdBy/Name, ended
+//   announcements/{id}/versions/{n}   the words of each earlier version (what people signed then)
+//   announcementSigs/{id}__v{n}__{emp}   one signature per person per version: method, device, at, recordedBy, note
+// Test site: test_announcements / test_announcementSigs. Practice posts never reach the live site; signing a
+// real announcement on the test site is practice too (saved in test_announcementSigs).
+// ---------------------------------------------------------------------------
+
+const annCol = (test) => col("announcements", test);
+const sigCol = (test) => col("announcementSigs", test);
+const sigId = (id, version, emp) => `${id}__v${version}__${emp}`;
+const hasRole = (roles, list) => (roles || []).some((r) => list.includes(r));
+const ms = (t) => (t?.toMillis ? t.toMillis() : null);
+
+// An announcement to read or sign. Test site: practice ones first, then real ones (which can't be changed there).
+async function findAnnouncement(test, id) {
+  if (!id || typeof id !== "string" || id.includes("/")) throw new HttpsError("not-found", "That announcement no longer exists.");
+  const snap = await annCol(test).doc(id).get();
+  if (snap.exists) return { snap, readOnly: false };
+  if (test) {
+    const real = await annCol(false).doc(id).get();
+    if (real.exists) return { snap: real, readOnly: true };
+  }
+  throw new HttpsError("not-found", "That announcement no longer exists.");
+}
+
+const announcementPush = (a, test, kind) => ({
+  title: `${test ? "[TEST] " : ""}${a.priority === "safety" ? "⚠ SAFETY · " : a.priority === "important" ? "❗ " : "📣 "}${kind}${a.title}`.slice(0, 120),
+  body: `${a.createdByName || ""}: ${a.body}`.slice(0, 180),
+  urgent: a.priority === "safety",
+});
+
+// Posters (roles allowed in Admin → Roles) and people who see everything: the people list for picking an audience.
+exports.announcementPeople = onCall(async (req) => {
+  const me = await requireMember(req);
+  const roleDocs = (await roles.get()).docs.map((d) => ({ id: d.id, ...d.data() }));
+  if (!annLib.canPost(roleDocs, me.roles) && !hasRole(me.roles, annLib.SEE_ALL_ROLES)) {
+    throw new HttpsError("permission-denied", "Your role can't post announcements. An admin can turn it on in Admin → Roles.");
+  }
+  const people = (await peopleList()).filter((p) => p.active);
+  people.sort((x, y) => x.name.localeCompare(y.name));
+  return { people: people.map(({ id, name, roles: r, team, homeLineId, loginEnabled }) => ({ id, name, roles: r, team, homeLineId, loginEnabled })) };
+});
+
+// Post { title, body, priority, ackBy, endDate?, file?, audience, keepForNewHires } or edit (same plus { id }).
+// Editing the words, attachment, or priority makes a new version — everyone signs again (old signatures stay).
+exports.postAnnouncement = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const [roleSnaps, teamSnaps, lineSnaps, people] = await Promise.all([roles.get(), teams.get(), lines.get(), peopleList()]);
+  const live = (snaps) => snaps.docs.filter((d) => d.get("active") !== false).map((d) => d.id);
+  const roleDocs = roleSnaps.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const known = { roles: live(roleSnaps), teams: live(teamSnaps), lines: live(lineSnaps) };
+  const { announcement, error } = annLib.cleanAnnouncement(req.data, known, (u) => (fixesLib.storagePath(u, BUCKET) || "").startsWith("uploads/"), plantToday());
+  if (error) throw new HttpsError("invalid-argument", error);
+  const audienceEmps = annLib.matchAudience(announcement.audience, people);
+  if (!audienceEmps.length) throw new HttpsError("invalid-argument", "Nobody matches that audience right now. Pick others.");
+  const trackers = annLib.trackersFor(me.employeeNumber, audienceEmps, people);
+  const editId = req.data?.id ? String(req.data.id) : null;
+  const now = FieldValue.serverTimestamp();
+
+  if (!editId) {
+    if (!annLib.canPost(roleDocs, me.roles)) throw new HttpsError("permission-denied", "Your role can't post announcements. An admin can turn it on in Admin → Roles.");
+    const ref = annCol(test).doc();
+    const doc = {
+      ...announcement, version: 1, audienceEmps, trackers, ended: false,
+      createdBy: me.employeeNumber, createdByName: me.name, createdAt: now, updatedAt: now, ...(test ? { test: true } : {}),
+    };
+    await db.runTransaction(async (tx) => {
+      tx.create(ref, doc);
+      auditRecord(tx, "posted", "announcement", ref.id, me.employeeNumber, { title: announcement.title, audience: audienceEmps.length, test });
+    });
+    const pushed = await pushTo(test ? [me.employeeNumber] : audienceEmps.filter((e) => e !== me.employeeNumber), {
+      ...announcementPush(doc, test, "New: "), url: `/?ann=${ref.id}`,
+    });
+    return { id: ref.id, version: 1, audience: audienceEmps.length, pushed, test };
+  }
+
+  const ref = annCol(test).doc(editId);
+  const r = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) {
+      if (test && (await tx.get(annCol(false).doc(editId))).exists) {
+        throw new HttpsError("failed-precondition", "This is the test site — real announcements can't be changed here. Post a test one to try this.");
+      }
+      throw new HttpsError("not-found", "That announcement no longer exists.");
+    }
+    const cur = snap.data();
+    if (cur.createdBy !== me.employeeNumber && !me.roles.includes("admin")) throw new HttpsError("permission-denied", "Only the person who posted it (or an admin) can change it.");
+    if (cur.ended) throw new HttpsError("failed-precondition", "This announcement has ended. Post a new one instead.");
+    const changed = annLib.contentChanged(cur, announcement);
+    const version = (cur.version || 1) + (changed ? 1 : 0);
+    if (changed) {
+      tx.create(ref.collection("versions").doc(String(cur.version || 1)), {
+        version: cur.version || 1, title: cur.title, body: cur.body, priority: cur.priority, file: cur.file || null,
+        replacedAt: now, replacedBy: me.employeeNumber,
+      });
+    }
+    tx.update(ref, { ...announcement, version, audienceEmps, trackers, updatedAt: now, editedBy: me.employeeNumber, editedByName: me.name, ...(changed ? { editedAt: now } : {}) });
+    auditRecord(tx, "updated", "announcement", editId, me.employeeNumber, { title: announcement.title, version, signAgain: changed, test });
+    return { changed, version, doc: { ...cur, ...announcement } };
+  });
+  let pushed = 0;
+  if (r.changed) {
+    pushed = await pushTo(test ? [me.employeeNumber] : audienceEmps.filter((e) => e !== me.employeeNumber), {
+      ...announcementPush(r.doc, test, "Updated — please sign again: "), url: `/?ann=${editId}`,
+    });
+  }
+  return { id: editId, version: r.version, signAgain: r.changed, audience: audienceEmps.length, pushed, test };
+});
+
+// The poster or an admin: { id } — end it now (it moves to the archive; signatures are kept).
+exports.endAnnouncement = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const id = String(req.data?.id || "");
+  await db.runTransaction(async (tx) => {
+    const ref = annCol(test).doc(id);
+    const snap = await tx.get(ref);
+    if (!snap.exists) {
+      if (test && (await tx.get(annCol(false).doc(id))).exists) throw new HttpsError("failed-precondition", "This is the test site — real announcements can't be changed here.");
+      throw new HttpsError("not-found", "That announcement no longer exists.");
+    }
+    if (snap.get("createdBy") !== me.employeeNumber && !me.roles.includes("admin")) throw new HttpsError("permission-denied", "Only the person who posted it (or an admin) can end it.");
+    if (snap.get("ended")) return;
+    tx.update(ref, { ended: true, endedAt: FieldValue.serverTimestamp(), endedBy: me.employeeNumber, endedByName: me.name });
+    auditRecord(tx, "ended", "announcement", id, me.employeeNumber, { title: snap.get("title"), test });
+  });
+  return { ok: true };
+});
+
+// "Read & understood": { id, version, signer: { emp, pin }, device }. The version is the one the person read —
+// if it was edited meanwhile, they're asked to read the new one.
+exports.signAnnouncement = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const signer = await requireSignature(req.data);
+  const device = annLib.cleanDevice(req.data?.device);
+  const { snap } = await findAnnouncement(test, String(req.data?.id || ""));
+  const a = snap.data();
+  if (!(a.audienceEmps || []).includes(signer.employeeNumber)) throw new HttpsError("permission-denied", `This announcement isn't for ${signer.name}.`);
+  if (annLib.isEnded(a, plantToday())) throw new HttpsError("failed-precondition", "This announcement has ended — nothing to sign.");
+  if (Number(req.data?.version) !== (a.version || 1)) throw new HttpsError("failed-precondition", "It was just updated. Read the new version, then sign.");
+  const version = a.version || 1;
+  const ref = sigCol(test).doc(sigId(snap.id, version, signer.employeeNumber));
+  const already = await db.runTransaction(async (tx) => {
+    if ((await tx.get(ref)).exists) return true;
+    tx.create(ref, {
+      annId: snap.id, version, title: a.title, emp: signer.employeeNumber, name: signer.name, method: "pin", device,
+      signedOn: me.employeeNumber, at: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}),
+    });
+    logSignoff(tx, test, { kind: "announcement", refId: snap.id, version, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber });
+    return false;
+  });
+  return { ok: true, already, name: signer.name, version, test };
+});
+
+// Supervisor, Plant Manager, Admin — for someone with no login yet: { id, emp, note, signer: { emp, pin }, device }.
+// Signed with the recorder's own PIN; the note says how it was reviewed.
+exports.recordReviewedInPerson = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const signer = await requireSignature(req.data);
+  if (signer.employeeNumber !== me.employeeNumber) throw new HttpsError("permission-denied", "Use your own PIN.");
+  if (!hasRole(signer.roles, annLib.IN_PERSON_ROLES)) throw new HttpsError("permission-denied", "Only Supervisors, the Plant Manager, and Admins can record this.");
+  const note = typeof req.data?.note === "string" ? req.data.note.trim().slice(0, 500) : "";
+  if (note.length < 3) throw new HttpsError("invalid-argument", "Add a short note (for example: “Read it together at the start of shift”).");
+  const emp = pin.normalizeEmployeeNumber(req.data?.emp);
+  const device = annLib.cleanDevice(req.data?.device);
+  const { snap } = await findAnnouncement(test, String(req.data?.id || ""));
+  const a = snap.data();
+  if (!emp || !(a.audienceEmps || []).includes(emp)) throw new HttpsError("invalid-argument", "That person isn't in this announcement's audience.");
+  const people = await peopleList();
+  const person = people.find((p) => p.id === emp);
+  if (!person) throw new HttpsError("not-found", "That person is no longer in the app.");
+  if (person.loginEnabled) throw new HttpsError("failed-precondition", `${person.name} has a login — they sign with their own PIN.`);
+  const meRecord = people.find((p) => p.id === me.employeeNumber);
+  if (!hasRole(me.roles, ["plant-manager", "admin"]) && !annLib.crewOf(meRecord, people).includes(emp)) {
+    throw new HttpsError("permission-denied", `${person.name} isn't on your crew.`);
+  }
+  const version = a.version || 1;
+  const ref = sigCol(test).doc(sigId(snap.id, version, emp));
+  await db.runTransaction(async (tx) => {
+    if ((await tx.get(ref)).exists) throw new HttpsError("already-exists", `${person.name} is already signed off on this version.`);
+    tx.create(ref, {
+      annId: snap.id, version, title: a.title, emp, name: person.name, method: "in-person", note, device,
+      recordedBy: me.employeeNumber, recordedByName: me.name, signedOn: me.employeeNumber, at: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}),
+    });
+    logSignoff(tx, test, { kind: "announcement", refId: snap.id, version, emp, name: person.name, method: "in-person", note, device, recordedBy: me.employeeNumber, signedOn: me.employeeNumber });
+  });
+  return { ok: true, name: person.name, test };
+});
+
+// Who has and hasn't signed one announcement (current version). Poster, Plant Manager, Office, Admin: everyone;
+// Supervisors: their crew.
+async function trackingFor(me, test, id) {
+  const { snap, readOnly } = await findAnnouncement(test, id);
+  const a = snap.data();
+  const scope = annLib.trackScope({ id: me.employeeNumber, roles: me.roles }, a);
+  if (!scope) throw new HttpsError("permission-denied", "Only the poster, Plant Manager, Office, Admins, and Supervisors (for their crew) can see this.");
+  const people = await peopleList();
+  const byId = new Map(people.map((p) => [p.id, p]));
+  let ids = a.audienceEmps || [];
+  if (scope === "crew") {
+    const crew = new Set(annLib.crewOf(byId.get(me.employeeNumber), people));
+    ids = ids.filter((e) => crew.has(e));
+  }
+  const sigs = (await sigCol(test).where("annId", "==", snap.id).get()).docs.map((d) => d.data());
+  const version = a.version || 1;
+  const list = ids.map((emp) => {
+    const p = byId.get(emp) || { id: emp, name: `Employee ${emp}`, loginEnabled: false };
+    const sig = sigs.find((s) => s.emp === emp && s.version === version);
+    const older = sigs.filter((s) => s.emp === emp && s.version < version).reduce((n, s) => Math.max(n, s.version), 0);
+    const status = annLib.personStatus(
+      { id: emp, name: p.name, loginEnabled: p.loginEnabled, team: p.team || null, homeLineId: p.homeLineId || null, active: p.active !== false, olderVersion: older || null },
+      sig ? { at: ms(sig.at), method: sig.method, device: sig.device?.label || "", recordedByName: sig.recordedByName || "", note: sig.note || "" } : null
+    );
+    return status;
+  });
+  list.sort((x, y) => x.name.localeCompare(y.name));
+  return { a, snap, scope, list, readOnly, people };
+}
+
+exports.announcementTracking = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const { a, snap, scope, list, readOnly, people } = await trackingFor(me, test, String(req.data?.id || ""));
+  const versions = (await snap.ref.collection("versions").get()).docs.map((d) => ({ version: d.get("version"), replacedAt: ms(d.get("replacedAt")) }));
+  const meRecord = people.find((p) => p.id === me.employeeNumber);
+  return {
+    id: snap.id, title: a.title, version: a.version || 1, priority: a.priority, ackBy: a.ackBy, endDate: a.endDate || null,
+    ended: annLib.isEnded(a, plantToday()), overdue: annLib.isOverdue(a, plantToday()), createdByName: a.createdByName || "",
+    createdAt: ms(a.createdAt), scope, noCrew: scope === "crew" && !meRecord?.team && !meRecord?.homeLineId,
+    people: list, counts: annLib.countUp(list), versions, readOnly, today: plantToday(),
+    canInPerson: hasRole(me.roles, annLib.IN_PERSON_ROLES),
+    canEdit: !readOnly && (a.createdBy === me.employeeNumber || me.roles.includes("admin")),
+  };
+});
+
+// Push again to only the people (in your scope) who haven't signed and have a login: { id }.
+exports.remindAnnouncement = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const { a, snap, list } = await trackingFor(me, test, String(req.data?.id || ""));
+  if (annLib.isEnded(a, plantToday())) throw new HttpsError("failed-precondition", "This announcement has ended.");
+  const waiting = list.filter((p) => p.state === "not-signed").map((p) => p.id);
+  if (!waiting.length) return { reminded: 0, pushed: 0, test };
+  const pushed = await pushTo(test ? [me.employeeNumber] : waiting, { ...announcementPush(a, test, "Reminder — please read and sign: "), url: `/?ann=${snap.id}` });
+  await auditLog.add({ type: "reminded", kind: "announcement", recordId: snap.id, by: me.employeeNumber, at: FieldValue.serverTimestamp(), count: waiting.length, test });
+  return { reminded: waiting.length, pushed, test };
+});
+
+// Dashboard cards: { scope: "all" | "crew" } — for each announcement still up, how many in scope have signed.
+// "all": Plant Manager, Office, Admin. "crew": Supervisors.
+exports.announcementSummary = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const scope = req.data?.scope === "crew" ? "crew" : "all";
+  if (scope === "all" && !hasRole(me.roles, annLib.SEE_ALL_ROLES)) throw new HttpsError("permission-denied", "Plant Manager, Office, and Admins only.");
+  if (scope === "crew" && !hasRole(me.roles, [...annLib.CREW_ROLES, "admin"])) throw new HttpsError("permission-denied", "Supervisors only.");
+  const today = plantToday();
+  const docs = [...(await annCol(false).where("ended", "==", false).get()).docs];
+  if (test) docs.push(...(await annCol(true).where("ended", "==", false).get()).docs);
+  const active = docs.filter((d) => !annLib.isEnded(d.data(), today));
+  const people = await peopleList();
+  const byId = new Map(people.map((p) => [p.id, p]));
+  const meRecord = byId.get(me.employeeNumber);
+  const crew = scope === "crew" ? new Set(annLib.crewOf(meRecord, people)) : null;
+  const sigs = [];
+  const annIds = active.map((d) => d.id);
+  for (let i = 0; i < annIds.length; i += 30) sigs.push(...(await sigCol(test).where("annId", "in", annIds.slice(i, i + 30)).get()).docs.map((d) => d.data()));
+  const behind = new Set();
+  const behindOverdue = new Set();
+  const items = active.map((d) => {
+    const a = d.data();
+    const ids = (a.audienceEmps || []).filter((e) => !crew || crew.has(e));
+    const list = ids.map((emp) => annLib.personStatus({ id: emp, loginEnabled: byId.get(emp)?.loginEnabled === true }, sigs.find((s) => s.annId === d.id && s.emp === emp && s.version === (a.version || 1)) || null));
+    const overdue = annLib.isOverdue(a, today);
+    for (const p of list) if (p.state === "not-signed" || p.state === "no-login") { behind.add(p.id); if (overdue) behindOverdue.add(p.id); }
+    return { id: d.id, title: a.title, priority: a.priority, ackBy: a.ackBy, overdue, test: d.ref.parent.id.startsWith("test_"), ...annLib.countUp(list) };
+  }).filter((x) => x.total > 0);
+  return { scope, items, behind: behind.size, behindOverdue: behindOverdue.size, noCrew: scope === "crew" && !meRecord?.team && !meRecord?.homeLineId };
+});
+
+// Who can sign on this device's sign-off sheet (line tablets: the crew signs one after another, no signing in):
+// { kind: "announcement", id } -> audience who haven't signed yet; { kind: "checklist" } -> everyone with a login.
+// Names and employee numbers only.
+exports.signoffPeople = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const people = (await peopleList()).filter((p) => p.active && p.loginEnabled);
+  let list = people;
+  if (req.data?.kind === "announcement") {
+    const { snap } = await findAnnouncement(test, String(req.data?.id || ""));
+    const a = snap.data();
+    const signed = new Set((await sigCol(test).where("annId", "==", snap.id).get()).docs.filter((d) => d.get("version") === (a.version || 1)).map((d) => d.get("emp")));
+    const audience = new Set(a.audienceEmps || []);
+    list = people.filter((p) => audience.has(p.id) && !signed.has(p.id));
+  }
+  list.sort((x, y) => x.name.localeCompare(y.name));
+  return { people: list.filter((p) => p.id !== me.employeeNumber).map((p) => ({ emp: p.id, name: p.name })) };
+});
+
+// After people change (new hire, roles, team, home line): kept-for-new-hires announcements pick up anyone who
+// now matches, and supervisors' tracking follows their crew. Never fails the change that called it.
+async function refreshAnnouncementLists() {
+  try {
+    const people = await peopleList();
+    for (const test of [false, true]) {
+      const snaps = await annCol(test).where("ended", "==", false).get();
+      for (const d of snaps.docs) {
+        const a = d.data();
+        const audienceEmps = annLib.refreshedAudience(a, people);
+        const trackers = annLib.trackersFor(a.createdBy, audienceEmps, people);
+        if (audienceEmps.join() !== (a.audienceEmps || []).join() || trackers.join() !== (a.trackers || []).join()) {
+          await d.ref.update({ audienceEmps, trackers });
+        }
+      }
+    }
+  } catch (err) {
+    console.error("announcement lists not refreshed", err);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Shop map (plant floor map). Company content — kept in the database only, read by signed-in people:

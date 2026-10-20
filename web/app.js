@@ -25,6 +25,7 @@ import { openTrainingAdmin } from "./trainingadmin.js";
 import { openNeedSomething, openRequest, openRequestTypesAdmin } from "./requests.js";
 import { pushState, turnOnPush, turnOffPush, refreshPush } from "./push.js";
 import { dashboard, stopDashboard, usesMachines, linesDownCount } from "./dashboard.js";
+import { openAnnouncements } from "./announcements.js";
 
 const screen = document.getElementById("screen");
 const deviceBadge = document.getElementById("device-badge");
@@ -233,7 +234,7 @@ function renderHome() {
   const roles = (data.myself?.roles || state.claims.roles || []).map((r) => roleNames.get(r) || r).join(", ");
   // The role dashboard (Decision 49): Needs you · quick buttons · plant status · role cards. The rest below.
   const dash = dashboard({
-    roles: m.roles, admin: m.admin, viewAs: m.admin ? state.viewAs : null,
+    emp: m.emp, roles: m.roles, admin: m.admin, viewAs: m.admin ? state.viewAs : null,
     setViewAs: (v) => { state.viewAs = v; render(); },
     onRedraw: () => { if (state.step === "home") render(); },
     go: {
@@ -245,6 +246,8 @@ function renderHome() {
       map: () => openMap(),
       need: () => openNeed(),
       report: () => openReport(),
+      announcement: (id) => openAnn(id),
+      announcements: () => openAnn(),
     },
   });
   // What this screen shows follows the roles (or the role an admin is viewing as) — Decision 53.
@@ -254,6 +257,7 @@ function renderHome() {
     roles ? el("p", { class: "roles" }, `Employee ${state.claims.emp} · ${roles}`) : null,
     messageBox(),
     ...dash,
+    el("button", { class: "btn big secondary", type: "button", onclick: () => openAnn() }, "📣 Announcements"),
     // Open issues: Maintenance, Admin, Plant Manager only.
     shown.some((r) => ["maintenance", "admin", "plant-manager"].includes(r)) ? issuesButton() : null,
     // Fix Library: people who work with the machines (not Office, Sales, Quality, Logistics).
@@ -288,6 +292,13 @@ function openNeed() {
     me: me(), onExit: () => go("home"), onMaintenance: usesMachines(me().roles) ? () => openReport(null, openNeed) : null,
     onSent: (message) => { go("home"); toast(message); },
   });
+}
+
+// Announcements: the list, or one announcement to read and sign (from Home or a notification).
+function openAnn(id = null) {
+  if (closeModule) closeModule();
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  closeModule = openAnnouncements(screen, { me: me(), startId: id, onExit: () => go("home") });
 }
 
 function openRequestScreen(id) {
@@ -416,6 +427,7 @@ function me() {
   const roles = data.myself?.roles || state.claims.roles || [];
   return {
     emp: state.claims.emp,
+    name: data.myself?.name || state.user?.displayName || `Employee ${state.claims.emp}`,
     admin: roles.includes("admin"),
     approver: roles.some((r) => APPROVER_ROLES.includes(r)),
     fixer: roles.some((r) => FIXER_ROLES.includes(r)),
@@ -659,8 +671,10 @@ onAuthStateChanged(auth, async (user) => {
     const machine = params.get("m");
     const req = params.get("req"); // opened from a notification
     const issuesLink = params.get("issues"); // a Maintenance Request notification
-    if (cat || machine || req || issuesLink) history.replaceState(null, "", location.pathname);
-    if (req) openRequestScreen(req);
+    const ann = params.get("ann"); // an announcement notification
+    if (cat || machine || req || issuesLink || ann) history.replaceState(null, "", location.pathname);
+    if (ann) openAnn(ann);
+    else if (req) openRequestScreen(req);
     else if (issuesLink) openIssues();
     else if (cat || machine) openFixes(cat, machine);
   }

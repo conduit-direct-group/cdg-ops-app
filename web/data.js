@@ -18,10 +18,13 @@ const LISTS = ["roles", "lines", "machines", "fixCategories", "checklistTemplate
 // requestsSent = the ones I sent. plantStatus = { down: { lineId: { since, machineIds } } } (lines with an open
 // line-down report; test site: real + practice). urgentRequests = open urgent requests (safety concerns) —
 // Supervisor, Training & Safety, Plant Manager, Admin only (others: []).
+// announcements = the ones meant for me, plus the ones I track (poster, supervisors); Plant Manager, Office, Admin:
+// all of them (newest first; test site: practice ones too, marked TEST). mySigs = { [annId]: { [version]: sig } }
+// — my own "Read & understood" signatures.
 export const data = {
   myself: null, roles: null, teams: null, machineTypes: null, lines: null, machines: null, fixCategories: null, checklistTemplates: null, requestTypes: null,
   fixes: null, myFixes: null, openIssues: null, myIssues: null, checklistUnits: null, requestsForMe: null, requestsSent: null,
-  plantStatus: null, urgentRequests: null,
+  plantStatus: null, urgentRequests: null, announcements: null, mySigs: null, mySigList: null,
 };
 
 const listeners = new Set();
@@ -121,6 +124,8 @@ export function startData(me) {
   const sent = (name) => query(collection(db, name), where("createdBy", "==", me.emp));
   stopFns.push(watchMerged("requestsSent", sent("requests"), sent("test_requests"), requestOrder));
   stopFns.push(watchChecklistUnits());
+  stopFns.push(watchAnnouncements(me));
+  stopFns.push(watchMySigs(me));
   stopFns.push(watchPlantStatus());
   if (me.safetyWatcher) {
     const urgent = (name) => query(collection(db, name), where("urgent", "==", true));
@@ -128,6 +133,49 @@ export function startData(me) {
   } else {
     data.urgentRequests = [];
   }
+}
+
+// Several queries make one list (no duplicates); test-site ones are tagged test: true.
+function watchUnion(name, sources, sort, after = null) {
+  const merge = () => {
+    if (sources.some((x) => parts[x.key] === undefined)) return;
+    const byId = new Map();
+    for (const x of sources) for (const d of parts[x.key] || []) byId.set(d.id, x.test ? { ...d, test: true } : d);
+    data[name] = [...byId.values()].sort(sort);
+    after?.();
+    changed();
+  };
+  const stops = sources.map((x) => listen(x.source, (docs) => { parts[x.key] = docs || []; merge(); }, x.key));
+  return () => stops.forEach((stop) => stop());
+}
+
+const SEES_ALL_ANNOUNCEMENTS = ["admin", "plant-manager", "office"];
+
+function watchAnnouncements(me) {
+  const all = (me.roles || []).some((r) => SEES_ALL_ANNOUNCEMENTS.includes(r));
+  const sources = [];
+  for (const test of TEST_MODE ? [false, true] : [false]) {
+    const c = collection(db, test ? "test_announcements" : "announcements");
+    const t = test ? "test " : "";
+    if (all) sources.push({ key: `${t}announcements`, source: c, test });
+    else {
+      sources.push({ key: `${t}announcements for me`, source: query(c, where("audienceEmps", "array-contains", me.emp)), test });
+      sources.push({ key: `${t}announcements I track`, source: query(c, where("trackers", "array-contains", me.emp)), test });
+    }
+  }
+  return watchUnion("announcements", sources, (a, b) => time(b.createdAt) - time(a.createdAt));
+}
+
+function watchMySigs(me) {
+  const sources = (TEST_MODE ? [false, true] : [false]).map((test) => ({
+    key: `${test ? "test " : ""}my signatures`, test,
+    source: query(collection(db, test ? "test_announcementSigs" : "announcementSigs"), where("emp", "==", me.emp)),
+  }));
+  return watchUnion("mySigList", sources, (a, b) => time(b.at) - time(a.at), () => {
+    const out = {};
+    for (const sig of data.mySigList) (out[sig.annId] ||= {})[sig.version] = sig;
+    data.mySigs = out;
+  });
 }
 
 // Plant status bar: lines down (real), plus practice line-down reports on the test site.

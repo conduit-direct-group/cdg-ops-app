@@ -9,21 +9,22 @@ import { el, picker, statusFold } from "./ui.js";
 import { data, lineName } from "./data.js";
 import { overdueUnits, unitLabel } from "./checklists.js";
 import { requestRow, myOpenRequests } from "./requests.js";
-import { db, TEST_MODE, callAdminListEmployees } from "./firebase.js";
+import { safetyBanner, needsYouFold } from "./announcements.js";
+import { db, TEST_MODE, callAdminListEmployees, callAnnouncementSummary } from "./firebase.js";
 import { collection, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 
 // Role order on a combined screen, and each role's cards (ids are shared, so duplicates merge).
 export const ROLE_CARDS = [
   ["admin", "Admin", ["plant-today", "system-alerts", "waiting-login"]],
-  ["plant-manager", "Plant Manager", ["safety", "pm-maintenance", "pm-people"]],
-  ["supervisor", "Supervisor", ["safety"]],
+  ["plant-manager", "Plant Manager", ["safety", "pm-maintenance", "pm-people", "ack-gaps"]],
+  ["supervisor", "Supervisor", ["safety", "crew-gaps"]],
   ["lead", "Line Lead", ["line-checklists"]],
   ["operator", "Operator", ["line-checklists"]],
   ["maintenance", "Maintenance", ["lines-down", "maint-requests", "routed"]],
   ["quality", "Quality", []],
   ["shipping", "Logistics & Distribution", ["routed"]],
   ["sales", "Sales", []],
-  ["office", "Office", ["routed"]],
+  ["office", "Office", ["routed", "ack-gaps"]],
   ["training-safety", "Training & Safety", ["trainees", "expiring", "safety"]],
 ];
 
@@ -43,7 +44,7 @@ const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 // ---- extra data some cards need (loaded only when one of those cards is on screen) ----------------------
 
-const extra = { training: null, odooSync: undefined, waitingLogin: null };
+const extra = { training: null, odooSync: undefined, waitingLogin: null, ann: { all: null, crew: null } };
 let myTrainingName = null; // from the person's own record (Admin → People → Training record)
 let extraStops = {};
 let redraw = () => {};
@@ -109,10 +110,18 @@ function checkWaitingLogin() {
     redraw();
   }).catch(() => { loginCheckedAt = 0; });
 }
+// Announcement sign-offs (from the server: the app can't read other people's signatures). Refreshed every 5 minutes.
+const annCheckedAt = { all: 0, crew: 0 };
+function checkAnnouncements(scope) {
+  if (Date.now() - annCheckedAt[scope] < 5 * 60000) return;
+  annCheckedAt[scope] = Date.now();
+  callAnnouncementSummary({ scope }).then(({ data: r }) => { extra.ann[scope] = r; redraw(); }).catch(() => { annCheckedAt[scope] = 0; extra.ann[scope] = { error: true }; redraw(); });
+}
 export function stopDashboard() {
   Object.values(extraStops).forEach((f) => f());
   extraStops = {};
   extra.training = null; extra.odooSync = undefined; extra.waitingLogin = null; loginCheckedAt = 0; trainingParts = null;
+  extra.ann = { all: null, crew: null }; annCheckedAt.all = annCheckedAt.crew = 0;
 }
 
 // ---- the cards ----------------------------------------------------------------------------------------------
@@ -219,6 +228,20 @@ function cardData(id, ctx) {
       const n = extra.waitingLogin;
       return { icon: "🔑", title: "People waiting for login", num: n, line: n ? "Admin → People → Enable login" : "All clear", alert: n > 0, onOpen: n ? go.people : null };
     }
+    case "ack-gaps":
+    case "crew-gaps": {
+      const scope = id === "crew-gaps" ? "crew" : "all";
+      checkAnnouncements(scope);
+      const r = extra.ann[scope];
+      const title = scope === "crew" ? "Crew: announcements not signed" : "Who hasn't acknowledged";
+      if (!r) return null;
+      if (r.error) return { icon: "📣", title, num: "—", line: "Couldn't load — open Announcements", alert: false, onOpen: go.announcements };
+      if (r.noCrew) return { icon: "📣", title, num: "—", line: "Set your team in Admin → People to see your crew", alert: false, onOpen: go.announcements };
+      const ups = r.items.length;
+      return { icon: "📣", title, num: r.behind,
+        line: r.behind ? [r.behindOverdue && `${plural(r.behindOverdue, "person", "people")} overdue`, `${plural(ups, "announcement")} up`].filter(Boolean).join(" · ") : ups ? "All clear — everyone has signed" : "All clear",
+        alert: r.behindOverdue > 0, onOpen: go.announcements };
+    }
     default:
       return null;
   }
@@ -249,7 +272,7 @@ export function cardsFor(roles) {
 
 // ---- the whole dashboard ------------------------------------------------------------------------------------
 
-// ctx = { roles, admin, viewAs, setViewAs, go: { checklist, request, issues, training, people, map, need, report }, onRedraw }
+// ctx = { emp, roles, admin, viewAs, setViewAs, go: { checklist, request, issues, training, people, map, need, report, announcement, announcements }, onRedraw }
 export function dashboard(ctx) {
   redraw = ctx.onRedraw;
   const roles = ctx.viewAs ? [ctx.viewAs] : ctx.roles;
@@ -260,7 +283,10 @@ export function dashboard(ctx) {
   const everyone = ctx.admin && !ctx.viewAs;
 
   // 1. Needs you: one fold-away line per list — red while something isn't done, green when it's all done.
+  // Announcements first (orange while waiting, red once overdue); unsigned Safety ones also sit at the very top.
   const tabs = [];
+  const ann = needsYouFold(ctx.emp, ctx.go.announcement);
+  if (ann) tabs.push(ann);
   if (machines && data.checklistUnits && data.lines) {
     const late = overdueUnits();
     tabs.push(statusFold("home-checklists", !late.length,
@@ -301,7 +327,7 @@ export function dashboard(ctx) {
         due.length ? el("p", { class: "card-note" }, "Ask the Training & Safety team to schedule it.") : null));
     }
   }
-  const anyTodo = tabs.some((t) => t.classList.contains("fold-todo"));
+  const anyTodo = tabs.some((t) => t.classList.contains("fold-todo") || t.classList.contains("fold-due"));
   const needs = tabs.length
     ? el("section", { class: "needs-you", "aria-label": "Needs you" }, anyTodo ? el("strong", { class: "needs-title" }, "Needs you") : null, tabs)
     : null;
@@ -340,7 +366,7 @@ export function dashboard(ctx) {
     ? el("section", { class: "dash-cards", "aria-label": "Your cards" }, ids.map((id) => card(cardData(id, ctx), id)))
     : null;
 
-  return [viewAs, needs, quick, bar, cards];
+  return [safetyBanner(ctx.emp, ctx.go.announcement), viewAs, needs, quick, bar, cards];
 }
 
 // Lines down for the Open issues button — from the same summary as the plant status bar.

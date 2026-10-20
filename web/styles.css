@@ -1052,3 +1052,56 @@ details.fold.fold-ok { border-color: var(--green); background: var(--green-tint)
 @media (min-width: 760px) {
   main[data-width="wide"] .quick-row .btn { display: flex; width: 100%; min-width: 0; margin: 0; padding: 0 var(--s2); }
 }
+
+/* =============================================================================
+   Announcements + the shared PIN sign-off (Decision 58)
+   ============================================================================= */
+/* Waiting to be signed, not yet overdue: orange (brand), with words. Turns red (fold-todo) once overdue. */
+details.fold.fold-due { border-color: var(--orange); background: var(--orange-tint); }
+.tag.ok { background: var(--green-tint); border: 1px solid var(--green); color: var(--white); font-weight: bold; }
+.message.ok { border-left-color: var(--green); background: var(--green-tint); }
+.choices.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.date-row { display: grid; grid-template-columns: 1fr; gap: 0 var(--s3); }
+.date-row .field { min-height: var(--tap); }
+.date-row .link-btn { margin-top: var(--s1); }
+.ann-body { font-size: var(--text-body); }
+.ann-tags { margin: 0 0 var(--s3); }
+.ann-photo { display: block; }
+.ann-end { margin: var(--s3) 0; color: var(--muted); font-size: var(--text-small); text-align: center; }
+.ann-reach { color: var(--muted); margin: var(--s3) 0 0; }
+.ann-count { margin: 0 0 var(--s2); font-size: var(--text-section); }
+.ann-track h2 { margin-top: 0; }
+.ann-track .person-row .btn { margin-top: var(--s2); }
+.ann-track .btn-row { margin-top: var(--s3); }
+
+/* The sign-off sheet: tap your name, then the PIN pad. Scrolls if the screen is short. */
+.signoff-sheet { max-height: calc(100vh - var(--s5)); max-height: calc(100dvh - var(--s5)); overflow-y: auto; }
+.signoff-sheet .signoff-what { color: var(--muted); margin-bottom: var(--s2); }
+.signoff-sheet .who { margin-top: var(--s2); }
+.signoff-sheet .hint { margin: 0 0 var(--s2); }
+.signoff-sheet .entry { margin-bottom: var(--s2); }
+.signoff-sheet .message { margin: 0 0 var(--s2); }
+.signoff-sheet .keypad { margin-bottom: var(--s2); }
+.signoff-names { display: flex; flex-direction: column; gap: var(--s2); max-height: 50vh; overflow-y: auto; }
+
+/* Sign-off record: a white "paper" page on screen and in print. */
+.print-doc { margin: var(--s3) 0; padding: var(--s4); border-radius: var(--radius); background: var(--white); color: var(--black); }
+.print-doc h1 { text-align: left; font-size: var(--text-section); margin-top: 0; }
+.print-doc p { margin: 0 0 var(--s2); }
+.print-table { width: 100%; border-collapse: collapse; font-size: var(--text-small); }
+.print-table th, .print-table td { text-align: left; padding: var(--s1) var(--s2); border: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
+.print-foot { margin-top: var(--s3) !important; color: var(--line); font-size: var(--text-small); }
+@media print {
+  .test-banner, #device-badge, .sheet-backdrop { display: none !important; }
+  .print-doc { margin: 0; padding: 0; }
+}
+@media (max-width: 520px) {
+  .print-doc { padding: var(--s3); }
+  .choices.three { grid-template-columns: 1fr; }
+}
+@media (min-width: 760px) {
+  .date-row { grid-template-columns: 1fr 1fr; max-width: 720px; }
+  main[data-width="wide"] .ann-body, main[data-width="wide"] .ann-end { max-width: 80ch; }
+  main[data-width="wide"] .ann-photo .fix-photo { max-width: 640px; }
+  main[data-width="wide"] .ann-track .person-list { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+}

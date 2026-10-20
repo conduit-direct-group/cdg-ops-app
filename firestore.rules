@@ -196,6 +196,33 @@ service cloud.firestore {
         || (resource.data.urgent == true && safetyWatcher()));
     }
 
+    // Announcements: only the people it's meant for (audienceEmps, worked out by the server when posted and
+    // when people change), the people tracking it (the poster, and supervisors with crew in it), and Plant
+    // Manager / Office / Admin. Test site: test_announcements. Versions (earlier wording) stay server-only.
+    function seesAllAnnouncements() {
+      return member() && employee().roles.hasAny(['admin', 'plant-manager', 'office']);
+    }
+    match /announcements/{id} {
+      allow read: if member() && (me() in resource.data.audienceEmps || me() in resource.data.trackers || seesAllAnnouncements());
+    }
+    match /test_announcements/{id} {
+      allow read: if member() && (me() in resource.data.audienceEmps || me() in resource.data.trackers || seesAllAnnouncements());
+    }
+    // "Read & understood" signatures: your own only. Who else signed is shown through the server (tracking).
+    match /announcementSigs/{id} {
+      allow read: if member() && resource.data.emp == me();
+    }
+    match /test_announcementSigs/{id} {
+      allow read: if member() && resource.data.emp == me();
+    }
+    // Every sign-off ever (checklists, announcements, …) — admins only.
+    match /signoffs/{id} {
+      allow read: if admin();
+    }
+    match /test_signoffs/{id} {
+      allow read: if admin();
+    }
+
     // Admin-only lists: who did what (every admin action), Odoo sync status, searches with no results.
     match /auditLog/{id} {
       allow read: if admin();
