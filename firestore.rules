@@ -243,6 +243,15 @@ service cloud.firestore {
       allow read: if handoffReader();
     }
 
+    // Keep the Shop Clean task lists: Line Leads, Supervisors, Plant Manager, Admin, and the people given a task.
+    // Test site: test_shopTasks.
+    match /shopTasks/{id} {
+      allow read: if handoffReader() || (member() && me() in resource.data.assignees);
+    }
+    match /test_shopTasks/{id} {
+      allow read: if handoffReader() || (member() && me() in resource.data.assignees);
+    }
+
     // Admin-only lists: who did what (every admin action), Odoo sync status, searches with no results.
     match /auditLog/{id} {
       allow read: if admin();

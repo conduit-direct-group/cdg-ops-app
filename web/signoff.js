@@ -42,14 +42,14 @@ export function deviceInfo() {
 // Opens the sign-off sheet. Resolves with what `action` returned, or null if cancelled.
 //   title      "Read & understood"
 //   what       what is being signed ("New glove rule · version 2")
-//   me         { emp, name } — the person signed in (the first name shown)
+//   me         { emp, name } — the first name shown (usually the person signed in); null = go straight to `others`
 //   others     optional async () => [{ emp, name }] — other people who may sign here (line tablets only)
 //   action     async ({ signer: { emp, pin }, device }) => result — the server call; throw to show the error
 //   doneLabel  shown while saving ("Signing…")
 export function signOff({ title, what, me, others = null, action, doneLabel = "Signing…" }) {
   return new Promise((resolve) => {
     const ui = { step: "who", who: null, pin: "", busy: false, message: "", list: null, listError: "" };
-    const canPickOthers = !!others && isLineTablet();
+    const canPickOthers = !!others && (isLineTablet() || !me);
 
     const close = (result) => {
       document.removeEventListener("keydown", onKey);
@@ -117,7 +117,7 @@ export function signOff({ title, what, me, others = null, action, doneLabel = "S
 
     function othersStep() {
       return [
-        el("button", { class: "link-btn", type: "button", onclick: () => { ui.step = "who"; draw(); } }, "← Back"),
+        me ? el("button", { class: "link-btn", type: "button", onclick: () => { ui.step = "who"; draw(); } }, "← Back") : null,
         el("p", { class: "field-label" }, "Tap your name"),
         ui.listError
           ? el("div", { class: "message error", role: "alert" }, ui.listError, el("button", { class: "btn secondary retry", type: "button", onclick: () => { ui.list = null; showOthers(); } }, "↻ Try again"))
@@ -134,7 +134,7 @@ export function signOff({ title, what, me, others = null, action, doneLabel = "S
       return [
         el("div", { class: "who" },
           el("span", {}, el("strong", {}, ui.who.name)),
-          el("button", { class: "link-btn", type: "button", disabled: ui.busy, onclick: () => { Object.assign(ui, { step: "who", pin: "", message: "" }); draw(); } }, "Not you?")),
+          el("button", { class: "link-btn", type: "button", disabled: ui.busy, onclick: () => { Object.assign(ui, { step: me ? "who" : "others", pin: "", message: "" }); draw(); } }, "Not you?")),
         el("p", { class: "hint" }, "Enter your 6-digit PIN to sign"),
         el("div", { class: "entry" }, el("div", { class: "dots", "aria-label": `${ui.pin.length} of 6 digits entered` },
           Array.from({ length: 6 }, (_, i) => el("span", { class: i < ui.pin.length ? "dot filled" : "dot" })))),
@@ -160,6 +160,7 @@ export function signOff({ title, what, me, others = null, action, doneLabel = "S
 
     document.addEventListener("keydown", onKey);
     document.body.append(backdrop);
+    if (!me) showOthers();
     draw();
     sheet.querySelector(".signoff-name")?.focus();
   });

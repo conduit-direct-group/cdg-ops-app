@@ -11,6 +11,7 @@ import { overdueUnits, unitLabel } from "./checklists.js";
 import { requestRow, myOpenRequests } from "./requests.js";
 import { safetyBanner, needsYouFold } from "./announcements.js";
 import { handoffFolds } from "./handoff.js";
+import { shopFolds } from "./shoptasks.js";
 import { db, TEST_MODE, callAdminListEmployees, callAnnouncementSummary } from "./firebase.js";
 import { collection, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 
@@ -273,7 +274,7 @@ export function cardsFor(roles) {
 
 // ---- the whole dashboard ------------------------------------------------------------------------------------
 
-// ctx = { emp, roles, admin, viewAs, setViewAs, go: { checklist, request, issues, training, people, map, need, report, announcement, announcements, handoff }, onRedraw }
+// ctx = { emp, roles, admin, viewAs, setViewAs, go: { checklist, request, issues, training, people, map, need, report, announcement, announcements, handoff, shop }, onRedraw }
 export function dashboard(ctx) {
   redraw = ctx.onRedraw;
   const roles = ctx.viewAs ? [ctx.viewAs] : ctx.roles;
@@ -289,6 +290,7 @@ export function dashboard(ctx) {
   const ann = needsYouFold(ctx.emp, ctx.go.announcement);
   if (ann) tabs.push(ann);
   tabs.push(...handoffFolds({ emp: ctx.emp, roles }, ctx.go.handoff)); // a handoff to sign received; your unsent one
+  tabs.push(...shopFolds({ emp: ctx.emp }, roles, ctx.go.shop)); // Keep the Shop Clean: your tasks; the shift list for leads
   if (machines && data.checklistUnits && data.lines) {
     const late = overdueUnits();
     tabs.push(statusFold("home-checklists", !late.length,

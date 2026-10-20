@@ -6,8 +6,12 @@
 // Records (a handoff, a checklist) copy the fields of the revision they were started on, so a later edit never
 // changes what someone already filled in or signed. A change applies to the next record started.
 
-const FIELD_TYPES = ["number", "percent", "yesno", "text", "longtext", "datetime", "time"];
-const FORM_KINDS = ["handoff"];
+const FIELD_TYPES = ["number", "percent", "yesno", "text", "longtext", "datetime", "time", "task"];
+const FORM_KINDS = ["handoff", "tasklist"];
+// Shift task lists (Keep the Shop Clean): who starts them, assigns tasks, and does the supervisor check.
+const TASKLIST_ROLES = ["lead", "supervisor", "plant-manager", "admin"];
+const CHECK_ROLES = ["supervisor", "plant-manager", "admin"];
+const PLANT_TZ = "America/Chicago";
 
 // Who writes and reads handoffs (Chris, 10-20-2026: Line Leads, Supervisors, Plant Manager, Admin).
 const HANDOFF_ROLES = ["lead", "supervisor", "plant-manager", "admin"];
@@ -51,11 +55,33 @@ function cleanTemplate(data) {
       if (!isId(fid) || fieldIds.has(fid)) return { error: `Field “${label}” needs its own name (two fields can't share one).` };
       fieldIds.add(fid);
       if (!FIELD_TYPES.includes(f?.type)) return { error: `Pick a type for “${label}”.` };
+      if ((kind === "tasklist") !== (f.type === "task")) return { error: kind === "tasklist" ? `“${label}” must be a task.` : `“${label}”: tasks only go on task lists.` };
       fields.push({ id: fid, label, type: f.type, perLine: f.perLine === true, unit: clean(f?.unit, 12), help: clean(f?.help, 400) });
     }
     sections.push({ id, title, help: clean(raw?.help, 400), fields });
   }
-  return { template: { name, kind, intro, sections } };
+  if (kind !== "tasklist") return { template: { name, kind, intro, sections } };
+  // Task lists: the shifts (name, start, end — plant time) and when unfinished tasks turn red.
+  const shifts = cleanShifts(data?.shifts);
+  if (shifts.error) return { error: shifts.error };
+  const redMinutes = Number(data?.redMinutes ?? 60);
+  if (!Number.isInteger(redMinutes) || redMinutes < 0 || redMinutes > 720) return { error: "“Turns red” must be 0 to 720 minutes before shift end." };
+  return { template: { name, kind, intro, sections, shifts: shifts.list, redMinutes } };
+}
+
+// Shifts: [{ name, start "HH:MM", end "HH:MM" }] covering the day; an end before the start runs past midnight.
+function cleanShifts(raw) {
+  if (!Array.isArray(raw) || !raw.length || raw.length > 6) return { error: "Add 1 to 6 shifts (name, start, end)." };
+  const list = [];
+  for (const r of raw) {
+    const name = clean(r?.name, 30).replace(/\s+/g, " ");
+    const hhmm = (v) => typeof v === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(v);
+    if (!name || !hhmm(r?.start) || !hhmm(r?.end) || r.start === r.end) return { error: "Each shift needs a name, a start, and a different end time." };
+    const id = isId(r?.id) ? r.id : slug(name);
+    if (!isId(id) || list.some((x) => x.id === id)) return { error: `Shift “${name}” needs its own name.` };
+    list.push({ id, name, start: r.start, end: r.end });
+  }
+  return { list };
 }
 
 // What changed between two revisions, in plain words (shown with the revision when no note is typed).
@@ -158,7 +184,60 @@ function incomingLeads(handoff, employees) {
   return employees.filter((e) => e.active !== false && (e.roles || []).includes("lead") && e.team === handoff.toTeam).map((e) => e.id).sort();
 }
 
+// ---- shifts in plant time ------------------------------------------------------------------------------------
+
+// The plant-time date and minutes past midnight for a moment.
+function plantClock(ms, tz = PLANT_TZ) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
+  return { date: `${p.year}-${p.month}-${p.day}`, minutes: Number(p.hour) * 60 + Number(p.minute) };
+}
+const toMin = (hhmm) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3));
+const addDay = (date, n) => new Date(Date.parse(`${date}T12:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+
+// A plant-time date + "HH:MM" -> the real moment (ms), daylight saving included.
+function plantTimeToMs(date, hhmm, tz = PLANT_TZ) {
+  const [y, m, d] = date.split("-").map(Number);
+  const want = Date.UTC(y, m - 1, d, Number(hhmm.slice(0, 2)), Number(hhmm.slice(3)));
+  let guess = want;
+  for (let i = 0; i < 2; i++) {
+    const c = plantClock(guess, tz);
+    const [cy, cm, cd] = c.date.split("-").map(Number);
+    const seen = Date.UTC(cy, cm - 1, cd, Math.floor(c.minutes / 60), c.minutes % 60);
+    guess += want - seen;
+  }
+  return guess;
+}
+
+// The shift running at this moment: { shift, date (the day it started), startMs, endMs }.
+function currentShift(shifts, nowMs, tz = PLANT_TZ) {
+  const { date, minutes } = plantClock(nowMs, tz);
+  for (const s of shifts || []) {
+    const a = toMin(s.start), b = toMin(s.end);
+    const overnight = b <= a;
+    let startDate = null;
+    if (!overnight && minutes >= a && minutes < b) startDate = date;
+    else if (overnight && minutes >= a) startDate = date;
+    else if (overnight && minutes < b) startDate = addDay(date, -1);
+    if (!startDate) continue;
+    const endDate = overnight ? addDay(startDate, 1) : startDate;
+    return { shift: s, date: startDate, startMs: plantTimeToMs(startDate, s.start, tz), endMs: plantTimeToMs(endDate, s.end, tz) };
+  }
+  return null;
+}
+
+// Task list state for Home colors: "done" (all done and checked), "late" (unfinished, inside the red window or
+// past shift end), "open".
+function taskListState(list, nowMs) {
+  const tasks = (list.sections || []).flatMap((s) => s.fields);
+  const done = tasks.filter((t) => list.done?.[t.id]).length;
+  const allDone = tasks.length > 0 && done === tasks.length;
+  if (allDone && list.check) return { state: "done", done, total: tasks.length };
+  const red = nowMs >= list.endMs - (list.redMinutes ?? 60) * 60000;
+  return { state: !allDone && red ? "late" : "open", done, total: tasks.length, allDone };
+}
+
 module.exports = {
-  FIELD_TYPES, FORM_KINDS, HANDOFF_ROLES, HANDOFF_BACKUP_ROLES,
+  FIELD_TYPES, FORM_KINDS, HANDOFF_ROLES, HANDOFF_BACKUP_ROLES, TASKLIST_ROLES, CHECK_ROLES,
+  cleanShifts, plantClock, plantTimeToMs, currentShift, taskListState,
   canEditForm, cleanTemplate, describeChange, cleanValue, cleanValues, cleanHandoffHeader, canReceive, incomingLeads,
 };

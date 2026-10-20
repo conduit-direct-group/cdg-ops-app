@@ -119,6 +119,13 @@ export const callSendHandoff = call("sendHandoff");
 export const callDiscardHandoff = call("discardHandoff");
 export const callReceiveHandoff = call("receiveHandoff");
 export const callHandoffReceivers = call("handoffReceivers");
+// Keep the Shop Clean (shift task lists)
+export const callStartShopTasks = call("startShopTasks");
+export const callShopTaskPeople = call("shopTaskPeople");
+export const callAssignShopTask = call("assignShopTask");
+export const callMarkShopTaskDone = call("markShopTaskDone");
+export const callCheckShopTasks = call("checkShopTasks");
+export const callShopTaskSigners = call("shopTaskSigners");
 export const callAdminSyncOdoo = call("adminSyncOdoo", { timeout: 120000 });
 // Copying files from the old library can take a few minutes.
 export const callAdminImportOldLibrary = call("adminImportOldLibrary", { timeout: 540000 });

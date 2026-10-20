@@ -2492,6 +2492,139 @@ exports.handoffReceivers = onCall(async (req) => {
 });
 
 // ---------------------------------------------------------------------------
+// Keep the Shop Clean — shift task lists (Decision 62). The tasks, shifts, and "turns red" time come from the
+// task-list form (Admin → Forms, formId "clean-shop"). One list per shift (date + shift).
+//   shopTasks/{date__shift}   formRev, sections (copy), shift {id,name,start,end}, date, startMs, endMs, redMinutes,
+//                             assign { taskId: emp }, names { emp: name }, assignees [emp], done { taskId: {emp,name,at,device} },
+//                             check {emp,name,at,device} | null, createdBy/Name
+// A Line Lead or Supervisor assigns each task to a person; each person marks their own task done with PIN; the
+// Supervisor check is a PIN sign-off once every task is done. Test site: test_shopTasks.
+// ---------------------------------------------------------------------------
+
+const shopCol = (test) => col("shopTasks", test);
+const SHOP_FORM = "clean-shop";
+
+async function requireTaskListRole(req) {
+  const me = await requireMember(req);
+  if (!me.roles.some((r) => formsLib.TASKLIST_ROLES.includes(r))) throw new HttpsError("permission-denied", "Line Leads, Supervisors, the Plant Manager, and Admins run the shop task list.");
+  return me;
+}
+
+// Start (or open) this shift's list: {}. Uses the current form revision; a list already started keeps its own.
+exports.startShopTasks = onCall(async (req) => {
+  const me = await requireTaskListRole(req);
+  const test = isTest(req);
+  const form = await formTemplates.doc(SHOP_FORM).get();
+  if (!form.exists || form.get("active") === false) throw new HttpsError("failed-precondition", "The shop task list isn't set up yet. An admin loads it in Admin → Forms.");
+  const now = formsLib.currentShift(form.get("shifts"), Date.now());
+  if (!now) throw new HttpsError("failed-precondition", "No shift is running right now (check the shift times in Admin → Forms).");
+  const ref = shopCol(test).doc(`${now.date}__${now.shift.id}`);
+  await db.runTransaction(async (tx) => {
+    if ((await tx.get(ref)).exists) return;
+    tx.create(ref, {
+      formId: SHOP_FORM, formRev: form.get("rev"), formName: form.get("name"), intro: form.get("intro") || "", sections: form.get("sections"),
+      shift: now.shift, date: now.date, startMs: now.startMs, endMs: now.endMs, redMinutes: form.get("redMinutes") ?? 60,
+      assign: {}, names: {}, assignees: [], done: {}, check: null,
+      createdBy: me.employeeNumber, createdByName: me.name, createdAt: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}),
+    });
+  });
+  return { id: ref.id, shift: now.shift.name, date: now.date };
+});
+
+// The crew to pick from: everyone on, with team and whether they have a login (they need one to mark done).
+exports.shopTaskPeople = onCall(async (req) => {
+  await requireTaskListRole(req);
+  const people = (await peopleList()).filter((p) => p.active).sort((a, b) => a.name.localeCompare(b.name));
+  return { people: people.map(({ id, name, team, roles: r, loginEnabled }) => ({ id, name, team, roles: r, loginEnabled })) };
+});
+
+// Assign a task: { id, taskId, emp } (emp null = unassign). Not once it's done. The person gets a notification.
+exports.assignShopTask = onCall(async (req) => {
+  const me = await requireTaskListRole(req);
+  const test = isTest(req);
+  const emp = req.data?.emp ? pin.normalizeEmployeeNumber(req.data.emp) : null;
+  const person = emp ? await employees.doc(emp).get() : null;
+  if (emp && (!person.exists || person.get("active") === false)) throw new HttpsError("invalid-argument", "Pick a person from the list.");
+  const ref = shopCol(test).doc(String(req.data?.id || ""));
+  const r = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "That task list no longer exists.");
+    const l = snap.data();
+    const task = (l.sections || []).flatMap((s) => s.fields).find((t) => t.id === req.data?.taskId);
+    if (!task) throw new HttpsError("invalid-argument", "That task isn't on this list.");
+    if (l.done?.[task.id]) throw new HttpsError("failed-precondition", `“${task.label}” is already done.`);
+    if (l.check) throw new HttpsError("failed-precondition", "This list was already checked by a supervisor.");
+    const assign = { ...(l.assign || {}) };
+    const names = { ...(l.names || {}) };
+    if (emp) { assign[task.id] = emp; names[emp] = person.get("name") || `Employee ${emp}`; } else delete assign[task.id];
+    tx.update(ref, { assign, names, assignees: [...new Set(Object.values(assign))].sort(), updatedAt: FieldValue.serverTimestamp() });
+    return { task, list: l };
+  });
+  if (emp && emp !== me.employeeNumber) {
+    await pushTo(test ? [me.employeeNumber] : [emp], {
+      title: `${test ? "[TEST] " : ""}🧹 Your shop task this shift`, body: `${r.task.label} — mark it done in the app before you leave.`, url: `/?shop=${ref.id}`,
+    });
+  }
+  return { ok: true, test };
+});
+
+// Mark your own task done: { id, taskId, signer: { emp, pin }, device }. The signer must be the person it's assigned to.
+exports.markShopTaskDone = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const signer = await requireSignature(req.data);
+  const device = annLib.cleanDevice(req.data?.device);
+  const ref = shopCol(test).doc(String(req.data?.id || ""));
+  const label = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "That task list no longer exists.");
+    const l = snap.data();
+    const task = (l.sections || []).flatMap((s) => s.fields).find((t) => t.id === req.data?.taskId);
+    if (!task) throw new HttpsError("invalid-argument", "That task isn't on this list.");
+    if (l.assign?.[task.id] !== signer.employeeNumber) throw new HttpsError("permission-denied", `“${task.label}” isn't assigned to ${signer.name}.`);
+    if (l.done?.[task.id]) return task.label;
+    tx.update(ref, { done: { ...(l.done || {}), [task.id]: { emp: signer.employeeNumber, name: signer.name, at: new Date(), device } }, updatedAt: FieldValue.serverTimestamp() });
+    logSignoff(tx, test, { kind: "shop-task", refId: ref.id, version: l.formRev, item: task.id, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber });
+    return task.label;
+  });
+  return { ok: true, name: signer.name, task: label, test };
+});
+
+// Supervisor check, once every task is done: { id, signer: { emp, pin }, device }. Supervisor, Plant Manager, Admin.
+exports.checkShopTasks = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const signer = await requireSignature(req.data);
+  if (!signer.roles.some((r) => formsLib.CHECK_ROLES.includes(r))) throw new HttpsError("permission-denied", "The supervisor check is for Supervisors, the Plant Manager, and Admins.");
+  const device = annLib.cleanDevice(req.data?.device);
+  const ref = shopCol(test).doc(String(req.data?.id || ""));
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "That task list no longer exists.");
+    const l = snap.data();
+    if (l.check) throw new HttpsError("failed-precondition", `Already checked by ${l.check.name}.`);
+    const left = (l.sections || []).flatMap((s) => s.fields).filter((t) => !l.done?.[t.id]);
+    if (left.length) throw new HttpsError("failed-precondition", `${left.length} task${left.length === 1 ? " isn't" : "s aren't"} done yet.`);
+    tx.update(ref, { check: { emp: signer.employeeNumber, name: signer.name, at: new Date(), device }, updatedAt: FieldValue.serverTimestamp() });
+    logSignoff(tx, test, { kind: "shop-check", refId: ref.id, version: l.formRev, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber });
+  });
+  return { ok: true, name: signer.name, test };
+});
+
+// Who can sign on this device's sheet (line tablets): { id, taskId } -> the person it's assigned to; { id } (check) ->
+// Supervisors, Plant Manager, Admins with a login.
+exports.shopTaskSigners = onCall(async (req) => {
+  const me = await requireMember(req);
+  const snap = await shopCol(isTest(req)).doc(String(req.data?.id || "")).get();
+  if (!snap.exists) throw new HttpsError("not-found", "That task list no longer exists.");
+  const people = (await peopleList()).filter((p) => p.active && p.loginEnabled && p.id !== me.employeeNumber);
+  const list = req.data?.taskId
+    ? people.filter((p) => snap.get("assign")?.[req.data.taskId] === p.id)
+    : people.filter((p) => p.roles.some((r) => formsLib.CHECK_ROLES.includes(r)));
+  return { people: list.map((p) => ({ emp: p.id, name: p.name })) };
+});
+
+// ---------------------------------------------------------------------------
 // Shop map (plant floor map). Company content — kept in the database only, read by signed-in people:
 //   floorMap/layout          size, building outline, zones, icons
 //   floorStations/{id}       position, shape, label, description, linked documents, machineId (M-number or null)

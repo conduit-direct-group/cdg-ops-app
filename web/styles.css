@@ -1151,3 +1151,20 @@ details.fold.fold-due { border-color: var(--orange); background: var(--orange-ti
   main[data-width="wide"] .ho-section, main[data-width="wide"] .auto-card, main[data-width="wide"] .form-section-edit { max-width: 980px; }
   main[data-width="wide"] .with-now .btn { min-width: 0; }
 }
+
+/* Keep the Shop Clean (Decision 62): one row per task — name, who, Assign picker, Mark done. */
+.task-list { display: flex; flex-direction: column; gap: var(--s2); margin: var(--s3) 0; }
+.task-row { display: grid; grid-template-columns: 1fr; gap: var(--s2); padding: var(--s3); border-radius: var(--radius); background: var(--surface-1); border-left: 5px solid var(--orange); }
+.task-row.late { border-left-color: var(--red); background: var(--red-tint); }
+.task-row.done { border-left-color: var(--green); background: var(--green-tint); }
+.task-main { display: flex; flex-direction: column; gap: 2px; }
+.task-row .btn, .task-row .picker { margin: 0; }
+.shift-row { display: grid; grid-template-columns: 1fr; gap: var(--s2); margin: var(--s2) 0; align-items: end; }
+.shift-time { display: flex; flex-direction: column; gap: var(--s1); color: var(--muted); font-size: var(--text-small); }
+.shift-row .field { margin: 0 !important; }
+@media (min-width: 760px) {
+  .task-row { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto; align-items: center; }
+  main[data-width="wide"] .task-row .btn { width: auto; min-width: 0; padding: 0 var(--s3); }
+  main[data-width="wide"] .task-list { max-width: 1040px; }
+  .shift-row { grid-template-columns: minmax(0, 1fr) 160px 160px auto; }
+}

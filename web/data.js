@@ -24,7 +24,7 @@ const LISTS = ["roles", "lines", "machines", "fixCategories", "checklistTemplate
 export const data = {
   myself: null, roles: null, teams: null, machineTypes: null, lines: null, machines: null, fixCategories: null, checklistTemplates: null, requestTypes: null,
   fixes: null, myFixes: null, openIssues: null, myIssues: null, checklistUnits: null, requestsForMe: null, requestsSent: null,
-  plantStatus: null, urgentRequests: null, announcements: null, mySigs: null, mySigList: null, formTemplates: null, handoffsOpen: null,
+  plantStatus: null, urgentRequests: null, announcements: null, mySigs: null, mySigList: null, formTemplates: null, handoffsOpen: null, shopLists: null,
 };
 
 const listeners = new Set();
@@ -132,6 +132,12 @@ export function startData(me) {
   } else {
     data.handoffsOpen = [];
   }
+  // Keep the Shop Clean: recent shift lists (leads and managers see all; everyone else, the ones they have a task on).
+  const sinceDay = new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10);
+  const shopQuery = (name) => ((me.roles || []).some((r) => ["lead", "supervisor", "plant-manager", "admin"].includes(r))
+    ? query(collection(db, name), where("date", ">=", sinceDay))
+    : query(collection(db, name), where("assignees", "array-contains", me.emp)));
+  stopFns.push(watchMerged("shopLists", shopQuery("shopTasks"), shopQuery("test_shopTasks"), (a, b) => (b.startMs || 0) - (a.startMs || 0)));
   stopFns.push(watchMySigs(me));
   stopFns.push(watchPlantStatus());
   if (me.safetyWatcher) {

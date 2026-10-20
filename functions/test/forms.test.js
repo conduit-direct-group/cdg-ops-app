@@ -85,3 +85,46 @@ test("received: a Line Lead on the incoming team, or a Supervisor / Plant Manage
   const people = [{ id: "1", roles: ["lead"], team: "team-b" }, { id: "2", roles: ["lead"], team: "team-a" }, { id: "3", roles: ["lead"], team: "team-b", active: false }];
   assert.deepStrictEqual(f.incomingLeads(h, people), ["1"]);
 });
+
+// ---- Keep the Shop Clean (task lists) ----
+const shopForm = {
+  name: "Practice task list", kind: "tasklist",
+  sections: [{ title: "Before you leave", fields: [{ label: "Sweep it", type: "task" }, { label: "Stack it", type: "task" }] }],
+  shifts: [{ name: "Days", start: "05:00", end: "17:00" }, { name: "Nights", start: "17:00", end: "05:00" }],
+};
+
+test("task lists: only tasks, shifts required, red minutes 0–720", () => {
+  const { template } = f.cleanTemplate(shopForm);
+  assert.deepStrictEqual(template.shifts.map((s) => s.id), ["days", "nights"]);
+  assert.strictEqual(template.redMinutes, 60);
+  assert.match(f.cleanTemplate({ ...shopForm, sections: [{ title: "A", fields: [{ label: "X", type: "number" }] }] }).error, /must be a task/);
+  assert.match(f.cleanTemplate({ ...form, sections: [{ title: "A", fields: [{ label: "X", type: "task" }] }] }).error, /task lists/);
+  assert.match(f.cleanTemplate({ ...shopForm, shifts: [] }).error, /shifts/);
+  assert.match(f.cleanTemplate({ ...shopForm, shifts: [{ name: "Days", start: "5am", end: "17:00" }] }).error, /start/);
+  assert.match(f.cleanTemplate({ ...shopForm, redMinutes: 9999 }).error, /720/);
+});
+
+test("current shift in plant time, overnight shifts start the day before after midnight", () => {
+  const { shifts } = f.cleanTemplate(shopForm).template;
+  // 2026-10-20 10:00 CDT (UTC-5) = 15:00 UTC → Days, started 10-20 05:00 CDT = 10:00 UTC, ends 22:00 UTC.
+  const day = f.currentShift(shifts, Date.UTC(2026, 9, 20, 15, 0));
+  assert.strictEqual(day.shift.id, "days");
+  assert.strictEqual(day.date, "2026-10-20");
+  assert.strictEqual(day.startMs, Date.UTC(2026, 9, 20, 10, 0));
+  assert.strictEqual(day.endMs, Date.UTC(2026, 9, 20, 22, 0));
+  // 2026-10-21 02:00 CDT = 07:00 UTC → Nights that started 10-20 17:00 CDT, ends 10-21 05:00 CDT = 10:00 UTC.
+  const night = f.currentShift(shifts, Date.UTC(2026, 9, 21, 7, 0));
+  assert.strictEqual(night.shift.id, "nights");
+  assert.strictEqual(night.date, "2026-10-20");
+  assert.strictEqual(night.endMs, Date.UTC(2026, 9, 21, 10, 0));
+  // Winter (CST, UTC-6): 2026-12-01 05:00 CST = 11:00 UTC.
+  assert.strictEqual(f.plantTimeToMs("2026-12-01", "05:00"), Date.UTC(2026, 11, 1, 11, 0));
+});
+
+test("home colors: open, red in the last hour or after, done once all done and checked", () => {
+  const list = { sections: [{ fields: [{ id: "a" }, { id: "b" }] }], endMs: 10 * 3600000, redMinutes: 60, done: { a: {} } };
+  assert.strictEqual(f.taskListState(list, 8 * 3600000).state, "open");
+  assert.strictEqual(f.taskListState(list, 9.5 * 3600000).state, "late");
+  assert.strictEqual(f.taskListState({ ...list, done: { a: {}, b: {} } }, 11 * 3600000).state, "open");
+  assert.strictEqual(f.taskListState({ ...list, done: { a: {}, b: {} }, check: {} }, 11 * 3600000).state, "done");
+});

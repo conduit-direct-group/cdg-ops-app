@@ -12,7 +12,7 @@ export const FIELD_TYPES = [
   ["number", "Number"], ["percent", "Percent (0–100)"], ["yesno", "Yes / No"], ["text", "Short text"],
   ["longtext", "Notes (long text)"], ["datetime", "Date and time"], ["time", "Time of day"],
 ];
-const KIND_NAMES = { handoff: "Shift handoff" };
+const KIND_NAMES = { handoff: "Shift handoff", tasklist: "Shift task list" };
 
 // Same rule as the server (functions/forms.js).
 export function canEditForm(myRoles, formId) {
@@ -66,7 +66,7 @@ export function openFormsAdmin(container, { me, onExit, backLabel = "Admin" }) {
       el("div", { class: "person-list" }, list.map((t) =>
         el("button", { class: "person-row", type: "button", onclick: () => openEditor(t) },
           el("span", { class: "person-name" }, t.name),
-          el("span", { class: "person-meta" }, `${KIND_NAMES[t.kind] || t.kind} · ${t.sections.reduce((n, s) => n + s.fields.length, 0)} fields`),
+          el("span", { class: "person-meta" }, `${KIND_NAMES[t.kind] || t.kind} · ${t.sections.reduce((n, s) => n + s.fields.length, 0)} ${t.kind === "tasklist" ? "tasks" : "fields"}`),
           el("span", { class: "person-meta" }, `Revision ${t.rev} · ${fmtWhen(t.revAt)} · ${t.revByName || ""}`)))),
       me.admin
         ? el("label", { class: "btn secondary file-btn" }, ui.busy ? "Working…" : "⇪ Load a form file (.json)",
@@ -83,7 +83,7 @@ export function openFormsAdmin(container, { me, onExit, backLabel = "Admin" }) {
       ui.revs = s.docs.map((d) => d.data()).sort((a, b) => b.rev - a.rev);
       if (ui.view === "edit" && !ui.busy) redrawRevs();
     }, () => { ui.revs = []; });
-    show("edit", { id: t.id, draft: copy({ name: t.name, kind: t.kind, intro: t.intro || "", sections: t.sections }), note: "" });
+    show("edit", { id: t.id, draft: copy({ name: t.name, kind: t.kind, intro: t.intro || "", sections: t.sections, ...(t.kind === "tasklist" ? { shifts: t.shifts || [], redMinutes: t.redMinutes ?? 60 } : {}) }), note: "" });
   }
 
   function move(list, i, d) {
@@ -98,6 +98,7 @@ export function openFormsAdmin(container, { me, onExit, backLabel = "Admin" }) {
   ];
 
   function fieldEditor(s, f, i) {
+    const task = ui.draft.kind === "tasklist"; // task lists: every field is a task (no answer type, per-line, or unit)
     return el("div", { class: "form-field-edit" },
       el("div", { class: "row-between" },
         el("span", { class: "field-label" }, `Field ${i + 1}`),
@@ -105,9 +106,9 @@ export function openFormsAdmin(container, { me, onExit, backLabel = "Admin" }) {
           el("button", { class: "icon-btn danger", type: "button", "aria-label": "Remove field", onclick: async () => {
             if (await confirmSheet({ title: `Remove “${f.label || "this field"}”?`, text: "Earlier records keep it — they were filled on an older revision.", confirmLabel: "Remove", danger: true })) { s.fields.splice(i, 1); render(); }
           } }, "✕"))),
-      el("input", { class: "field", "aria-label": "Field label", maxlength: "120", value: f.label, placeholder: "Label", oninput: (e) => { f.label = e.target.value; } }),
-      picker({ title: "Type of answer", value: f.type, options: FIELD_TYPES.map(([value, label]) => ({ value, label })), onChange: (v) => { f.type = v; render(); } }),
-      el("div", { class: "form-field-row" },
+      el("input", { class: "field", "aria-label": task ? "Task" : "Field label", maxlength: "120", value: f.label, placeholder: task ? "Task (e.g. Tools put away)" : "Label", oninput: (e) => { f.label = e.target.value; } }),
+      task ? null : picker({ title: "Type of answer", value: f.type, options: FIELD_TYPES.map(([value, label]) => ({ value, label })), onChange: (v) => { f.type = v; render(); } }),
+      task ? null : el("div", { class: "form-field-row" },
         el("label", { class: "check-row" }, el("input", { type: "checkbox", checked: f.perLine === true, onchange: (e) => { f.perLine = e.target.checked; } }), el("span", {}, "One per line (L1, L2, L3…)")),
         ["number", "percent"].includes(f.type) || f.unit
           ? el("input", { class: "field unit-field", "aria-label": "Unit", maxlength: "12", value: f.unit || "", placeholder: "Unit (ft, °F…)", oninput: (e) => { f.unit = e.target.value; } })
@@ -122,6 +123,23 @@ export function openFormsAdmin(container, { me, onExit, backLabel = "Admin" }) {
   function revList() {
     if (!ui.revs) return [spinner("Loading revisions…")];
     return ui.revs.map((r) => el("div", { class: "import-row" }, el("span", { class: "import-line" }, `Rev ${r.rev}`), el("span", { class: "gap-term" }, `${fmtWhen(r.revAt)} · ${r.revByName || ""} — ${r.revNote || r.revChanges || ""}`)));
+  }
+
+  const blankField = () => ({ label: "", type: ui.draft.kind === "tasklist" ? "task" : "text", perLine: false, unit: "", help: "" });
+
+  // Task lists: the shifts (plant time; an end before the start runs past midnight) and when unfinished tasks turn red.
+  function shiftsEditor(d) {
+    return el("section", { class: "card form-section-edit" },
+      el("strong", {}, "Shifts"),
+      el("p", { class: "card-note" }, "Plant time. A shift that ends before it starts (e.g. 5 PM to 5 AM) runs past midnight."),
+      d.shifts.map((sh, i) => el("div", { class: "shift-row" },
+        el("input", { class: "field", "aria-label": "Shift name", maxlength: "30", value: sh.name, placeholder: "Name (e.g. Days)", oninput: (e) => { sh.name = e.target.value; } }),
+        el("label", { class: "shift-time" }, "Starts", el("input", { class: "field", type: "time", value: sh.start, onchange: (e) => { sh.start = e.target.value; } })),
+        el("label", { class: "shift-time" }, "Ends", el("input", { class: "field", type: "time", value: sh.end, onchange: (e) => { sh.end = e.target.value; } })),
+        el("button", { class: "icon-btn danger", type: "button", "aria-label": "Remove shift", disabled: d.shifts.length < 2, onclick: () => { d.shifts.splice(i, 1); render(); } }, "✕"))),
+      d.shifts.length < 6 ? el("button", { class: "btn secondary", type: "button", onclick: () => { d.shifts.push({ name: "", start: "", end: "" }); render(); } }, "+ Add a shift") : null,
+      el("label", { class: "field-label", for: "fm-red" }, "Unfinished tasks turn red this many minutes before the shift ends"),
+      el("input", { class: "field num-field", id: "fm-red", type: "text", inputmode: "numeric", value: String(d.redMinutes ?? 60), oninput: (e) => { d.redMinutes = Number(e.target.value || 0); } }));
   }
 
   function renderEdit() {
@@ -155,8 +173,9 @@ export function openFormsAdmin(container, { me, onExit, backLabel = "Admin" }) {
             el("input", { class: "field", "aria-label": "Section title", maxlength: "80", value: s.title, placeholder: "Section title", oninput: (e) => { s.title = e.target.value; } }),
             el("input", { class: "field", "aria-label": "Section help", maxlength: "400", value: s.help || "", placeholder: "Help text for the section (optional)", oninput: (e) => { s.help = e.target.value; } }),
             s.fields.map((f, fi) => fieldEditor(s, f, fi)),
-            el("button", { class: "btn secondary", type: "button", onclick: () => { s.fields.push({ label: "", type: "text", perLine: false, unit: "", help: "" }); render(); } }, "+ Add a field"))),
-        el("button", { class: "btn secondary", type: "button", onclick: () => { d.sections.push({ title: "", help: "", fields: [{ label: "", type: "text", perLine: false, unit: "", help: "" }] }); render(); } }, "+ Add a section"),
+            el("button", { class: "btn secondary", type: "button", onclick: () => { s.fields.push(blankField()); render(); } }, d.kind === "tasklist" ? "+ Add a task" : "+ Add a field"))),
+        el("button", { class: "btn secondary", type: "button", onclick: () => { d.sections.push({ title: "", help: "", fields: [blankField()] }); render(); } }, "+ Add a section"),
+        d.kind === "tasklist" ? shiftsEditor(d) : null,
         el("label", { class: "field-label", for: "fm-note" }, "What changed (short note — optional; the app also lists the changes)"),
         el("input", { class: "field", id: "fm-note", maxlength: "300", value: ui.note, placeholder: "e.g. Added Silo 5", oninput: (e) => { ui.note = e.target.value; } }),
         el("button", { class: "btn big", type: "submit", disabled: ui.busy }, ui.busy ? "Saving…" : `✔ Save as revision ${t.rev + 1}`)),

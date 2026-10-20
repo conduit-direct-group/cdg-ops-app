@@ -28,6 +28,7 @@ import { dashboard, stopDashboard, usesMachines, linesDownCount } from "./dashbo
 import { openAnnouncements } from "./announcements.js";
 import { openHandoff, usesHandoffs } from "./handoff.js";
 import { openFormsAdmin, editableForms } from "./forms.js";
+import { openShopTasks, runsShopList } from "./shoptasks.js";
 
 const screen = document.getElementById("screen");
 const deviceBadge = document.getElementById("device-badge");
@@ -251,6 +252,7 @@ function renderHome() {
       announcement: (id) => openAnn(id),
       announcements: () => openAnn(),
       handoff: (id) => openHandoffScreen(id),
+      shop: (id) => openShopScreen(id),
     },
   });
   // What this screen shows follows the roles (or the role an admin is viewing as) — Decision 53.
@@ -263,6 +265,8 @@ function renderHome() {
     el("button", { class: "btn big secondary", type: "button", onclick: () => openAnn() }, "📣 Announcements"),
     // Shift handoff (Line Lead Pass Down): Line Leads, Supervisors, Plant Manager, Admin.
     usesHandoffs(shown) ? el("button", { class: "btn big secondary", type: "button", onclick: () => openHandoffScreen() }, "📝 Shift handoff") : null,
+    // Keep the Shop Clean: leads and managers run it (everyone else reaches their own task from "Needs you").
+    runsShopList(shown) ? el("button", { class: "btn big secondary", type: "button", onclick: () => openShopScreen() }, "🧹 Keep the Shop Clean") : null,
     // People whose role may edit a form (Admin → Roles) but who aren't admins.
     !m.admin && editableForms(m.roles).length ? el("button", { class: "btn secondary", type: "button", onclick: () => openFormsScreen() }, "📝 Edit forms") : null,
     // Open issues: Maintenance, Admin, Plant Manager only.
@@ -313,6 +317,13 @@ function openHandoffScreen(id = null) {
   if (closeModule) closeModule();
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openHandoff(screen, { me: me(), startId: id, onExit: () => go("home") });
+}
+
+// Keep the Shop Clean: this shift's task list, or one list (from Home or a notification).
+function openShopScreen(id = null) {
+  if (closeModule) closeModule();
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  closeModule = openShopTasks(screen, { me: me(), startId: id, onExit: () => go("home") });
 }
 
 // Forms editor for non-admins allowed on the Roles screen (admins use Admin → Forms).
@@ -695,9 +706,11 @@ onAuthStateChanged(auth, async (user) => {
     const issuesLink = params.get("issues"); // a Maintenance Request notification
     const ann = params.get("ann"); // an announcement notification
     const handoff = params.get("handoff"); // a shift handoff notification
-    if (cat || machine || req || issuesLink || ann || handoff) history.replaceState(null, "", location.pathname);
+    const shop = params.get("shop"); // a shop task notification
+    if (cat || machine || req || issuesLink || ann || handoff || shop) history.replaceState(null, "", location.pathname);
     if (ann) openAnn(ann);
     else if (handoff) openHandoffScreen(handoff);
+    else if (shop) openShopScreen(shop);
     else if (req) openRequestScreen(req);
     else if (issuesLink) openIssues();
     else if (cat || machine) openFixes(cat, machine);
