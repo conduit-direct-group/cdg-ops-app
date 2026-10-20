@@ -28,3 +28,7 @@ then screenshots and the dev test link shown to Chris.
   2. Skip only the part that needs it. Keep building everything else.
   3. Never fake it, guess it, or put in a placeholder.
 - At the start of each session, if anything in "Waiting on Chris" is older than 2 weeks, mention it once.
+
+## Ideas
+- When Chris starts a message with "Idea:", log it in the plan under "Ideas Parking Lot" with the date and a one-line description. Don't build it. Reply "Parked."
+- Only build ideas Chris moves out of the parking lot.

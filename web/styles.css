@@ -1048,3 +1048,7 @@ details.fold.fold-ok { border-color: var(--green); background: var(--green-tint)
 .needs-you details.fold { margin: var(--s2) 0; }
 .line-chip.up { background: var(--green-tint); border-color: var(--green); }
 @media (min-width: 760px) { .quick-row.two { grid-template-columns: 1fr 1fr; } }
+/* The quick buttons share one row on tablets and desktops: no 320px minimum there (it pushed the third off-screen at 1024px). */
+@media (min-width: 760px) {
+  main[data-width="wide"] .quick-row .btn { display: flex; width: 100%; min-width: 0; margin: 0; padding: 0 var(--s2); }
+}
