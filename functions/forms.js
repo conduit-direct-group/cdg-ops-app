@@ -7,7 +7,9 @@
 // changes what someone already filled in or signed. A change applies to the next record started.
 
 const FIELD_TYPES = ["number", "percent", "yesno", "text", "longtext", "datetime", "time", "task"];
-const FORM_KINDS = ["handoff", "tasklist"];
+const FORM_KINDS = ["handoff", "tasklist", "station"];
+// Station checklists (Reel Building, Reclamation): one per station per shift; anyone on the floor fills it in.
+const SHIFT_FORM = "clean-shop"; // the shift times (and "turns red") live on this form and are shared by all shift lists
 // Shift task lists (Keep the Shop Clean): who starts them, assigns tasks, and does the supervisor check.
 const TASKLIST_ROLES = ["lead", "supervisor", "plant-manager", "admin"];
 const CHECK_ROLES = ["supervisor", "plant-manager", "admin"];
@@ -55,7 +57,8 @@ function cleanTemplate(data) {
       if (!isId(fid) || fieldIds.has(fid)) return { error: `Field “${label}” needs its own name (two fields can't share one).` };
       fieldIds.add(fid);
       if (!FIELD_TYPES.includes(f?.type)) return { error: `Pick a type for “${label}”.` };
-      if ((kind === "tasklist") !== (f.type === "task")) return { error: kind === "tasklist" ? `“${label}” must be a task.` : `“${label}”: tasks only go on task lists.` };
+      if (kind === "tasklist" && f.type !== "task") return { error: `“${label}” must be a task.` };
+      if (kind === "handoff" && f.type === "task") return { error: `“${label}”: tasks go on task lists and station checklists.` };
       fields.push({ id: fid, label, type: f.type, perLine: f.perLine === true, unit: clean(f?.unit, 12), help: clean(f?.help, 400) });
     }
     sections.push({ id, title, help: clean(raw?.help, 400), fields });
@@ -125,6 +128,10 @@ function cleanValue(field, raw) {
       return typeof raw === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(raw) ? { value: raw } : { error: `“${field.label}” needs a date and time.` };
     case "time":
       return typeof raw === "string" && /^\d{2}:\d{2}$/.test(raw) ? { value: raw } : { error: `“${field.label}” needs a time.` };
+    case "task": // ticked = done
+      if (raw === true) return { value: true };
+      if (raw === false) return { value: null };
+      return { error: `Tick “${field.label}” when it's done.` };
     case "text":
       return { value: clean(String(raw), 200) || null };
     case "longtext":
@@ -236,8 +243,18 @@ function taskListState(list, nowMs) {
   return { state: !allDone && red ? "late" : "open", done, total: tasks.length, allDone };
 }
 
+// What still stops a station checklist from being signed: unticked tasks and empty number fields.
+function stationMissing(sections, values) {
+  const out = [];
+  for (const s of sections || []) for (const f of s.fields || []) {
+    if (f.type === "task" && values?.[f.id] !== true) out.push(f.label);
+    if (["number", "percent"].includes(f.type) && (values?.[f.id] === undefined || values?.[f.id] === null)) out.push(f.label);
+  }
+  return out;
+}
+
 module.exports = {
   FIELD_TYPES, FORM_KINDS, HANDOFF_ROLES, HANDOFF_BACKUP_ROLES, TASKLIST_ROLES, CHECK_ROLES,
-  cleanShifts, plantClock, plantTimeToMs, currentShift, taskListState,
+  SHIFT_FORM, cleanShifts, plantClock, plantTimeToMs, currentShift, taskListState, stationMissing,
   canEditForm, cleanTemplate, describeChange, cleanValue, cleanValues, cleanHandoffHeader, canReceive, incomingLeads,
 };

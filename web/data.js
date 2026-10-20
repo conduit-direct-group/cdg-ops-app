@@ -24,7 +24,7 @@ const LISTS = ["roles", "lines", "machines", "fixCategories", "checklistTemplate
 export const data = {
   myself: null, roles: null, teams: null, machineTypes: null, lines: null, machines: null, fixCategories: null, checklistTemplates: null, requestTypes: null,
   fixes: null, myFixes: null, openIssues: null, myIssues: null, checklistUnits: null, requestsForMe: null, requestsSent: null,
-  plantStatus: null, urgentRequests: null, announcements: null, mySigs: null, mySigList: null, formTemplates: null, handoffsOpen: null, shopLists: null,
+  plantStatus: null, urgentRequests: null, announcements: null, mySigs: null, mySigList: null, formTemplates: null, handoffsOpen: null, shopLists: null, stationLists: null,
 };
 
 const listeners = new Set();
@@ -137,6 +137,8 @@ export function startData(me) {
   const shopQuery = (name) => ((me.roles || []).some((r) => ["lead", "supervisor", "plant-manager", "admin"].includes(r))
     ? query(collection(db, name), where("date", ">=", sinceDay))
     : query(collection(db, name), where("assignees", "array-contains", me.emp)));
+  const recent = (name) => query(collection(db, name), where("date", ">=", sinceDay));
+  stopFns.push(watchMerged("stationLists", recent("stationLists"), recent("test_stationLists"), (a, b) => (b.startMs || 0) - (a.startMs || 0)));
   stopFns.push(watchMerged("shopLists", shopQuery("shopTasks"), shopQuery("test_shopTasks"), (a, b) => (b.startMs || 0) - (a.startMs || 0)));
   stopFns.push(watchMySigs(me));
   stopFns.push(watchPlantStatus());

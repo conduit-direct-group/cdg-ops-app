@@ -2625,6 +2625,82 @@ exports.shopTaskSigners = onCall(async (req) => {
 });
 
 // ---------------------------------------------------------------------------
+// Station checklists (Decision 63) — from the Daily Check List: Reel Building and Reclamation, one per station per
+// shift. The items come from each station's form (Admin → Forms, kind "station"); the shift times come from the
+// Keep the Shop Clean form, so they're kept in one place.
+//   stationLists/{date__shift__formId}   formId, formRev, formName, intro, sections (copy), shift, date, startMs, endMs,
+//                                        redMinutes, values, signed {emp,name,at,device} | null, createdBy
+// Anyone signed in fills it in (saved as they go); one person signs it off with PIN once every task is ticked and
+// every count is filled in. Test site: test_stationLists.
+// ---------------------------------------------------------------------------
+
+const stationCol = (test) => col("stationLists", test);
+
+// Open this shift's checklist for a station (made the first time someone opens it): { formId }.
+exports.startStationList = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const formId = String(req.data?.formId || "");
+  if (!records.isRecordId(formId)) throw new HttpsError("invalid-argument", "Pick a station.");
+  const [form, shiftForm] = await Promise.all([formTemplates.doc(formId).get(), formTemplates.doc(formsLib.SHIFT_FORM).get()]);
+  if (!form.exists || form.get("kind") !== "station" || form.get("active") === false) throw new HttpsError("not-found", "That station checklist isn't set up.");
+  if (!shiftForm.exists) throw new HttpsError("failed-precondition", "Shift times aren't set up yet (they're on the Keep the Shop Clean form in Admin → Forms).");
+  const now = formsLib.currentShift(shiftForm.get("shifts"), Date.now());
+  if (!now) throw new HttpsError("failed-precondition", "No shift is running right now (check the shift times in Admin → Forms).");
+  const ref = stationCol(test).doc(`${now.date}__${now.shift.id}__${formId}`);
+  await db.runTransaction(async (tx) => {
+    if ((await tx.get(ref)).exists) return;
+    tx.create(ref, {
+      formId, formRev: form.get("rev"), formName: form.get("name"), intro: form.get("intro") || "", sections: form.get("sections"),
+      shift: now.shift, date: now.date, startMs: now.startMs, endMs: now.endMs, redMinutes: shiftForm.get("redMinutes") ?? 60,
+      values: {}, signed: null, createdBy: me.employeeNumber, createdAt: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}),
+    });
+  });
+  return { id: ref.id };
+});
+
+async function openStationList(tx, test, id) {
+  const ref = stationCol(test).doc(String(id || ""));
+  const snap = await tx.get(ref);
+  if (!snap.exists) throw new HttpsError("not-found", "That checklist no longer exists.");
+  if (snap.get("signed")) throw new HttpsError("failed-precondition", `Already signed off by ${snap.get("signed").name}.`);
+  return snap;
+}
+
+// Save as you go: { id, values }.
+exports.saveStationList = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  await db.runTransaction(async (tx) => {
+    const snap = await openStationList(tx, test, req.data?.id);
+    const v = formsLib.cleanValues(snap.get("sections"), [], req.data?.values);
+    if (v.error) throw new HttpsError("invalid-argument", v.error);
+    tx.update(snap.ref, { values: v.values, updatedBy: me.employeeNumber, updatedAt: FieldValue.serverTimestamp() });
+  });
+  return { ok: true };
+});
+
+// Sign it off: { id, values, signer: { emp, pin }, device } — every task ticked and every count filled in.
+exports.signStationList = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const signer = await requireSignature(req.data);
+  const device = annLib.cleanDevice(req.data?.device);
+  const name = await db.runTransaction(async (tx) => {
+    const snap = await openStationList(tx, test, req.data?.id);
+    const l = snap.data();
+    const v = formsLib.cleanValues(l.sections, [], req.data?.values);
+    if (v.error) throw new HttpsError("invalid-argument", v.error);
+    const missing = formsLib.stationMissing(l.sections, v.values);
+    if (missing.length) throw new HttpsError("failed-precondition", `Not done yet: ${missing.slice(0, 4).join(", ")}${missing.length > 4 ? ` +${missing.length - 4} more` : ""}.`);
+    tx.update(snap.ref, { values: v.values, signed: { emp: signer.employeeNumber, name: signer.name, at: new Date(), device }, updatedAt: FieldValue.serverTimestamp() });
+    logSignoff(tx, test, { kind: "station-checklist", refId: snap.id, version: l.formRev, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber });
+    return l.formName;
+  });
+  return { ok: true, name: signer.name, form: name, test };
+});
+
+// ---------------------------------------------------------------------------
 // Shop map (plant floor map). Company content — kept in the database only, read by signed-in people:
 //   floorMap/layout          size, building outline, zones, icons
 //   floorStations/{id}       position, shape, label, description, linked documents, machineId (M-number or null)

@@ -126,6 +126,10 @@ export const callAssignShopTask = call("assignShopTask");
 export const callMarkShopTaskDone = call("markShopTaskDone");
 export const callCheckShopTasks = call("checkShopTasks");
 export const callShopTaskSigners = call("shopTaskSigners");
+// Station checklists (Reel Building, Reclamation)
+export const callStartStationList = call("startStationList");
+export const callSaveStationList = call("saveStationList");
+export const callSignStationList = call("signStationList");
 export const callAdminSyncOdoo = call("adminSyncOdoo", { timeout: 120000 });
 // Copying files from the old library can take a few minutes.
 export const callAdminImportOldLibrary = call("adminImportOldLibrary", { timeout: 540000 });

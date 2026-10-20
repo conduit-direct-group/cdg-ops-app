@@ -252,6 +252,14 @@ service cloud.firestore {
       allow read: if handoffReader() || (member() && me() in resource.data.assignees);
     }
 
+    // Station checklists (Reel Building, Reclamation): everyone signed in reads them. Test site: test_stationLists.
+    match /stationLists/{id} {
+      allow read: if member();
+    }
+    match /test_stationLists/{id} {
+      allow read: if member();
+    }
+
     // Admin-only lists: who did what (every admin action), Odoo sync status, searches with no results.
     match /auditLog/{id} {
       allow read: if admin();

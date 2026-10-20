@@ -128,3 +128,14 @@ test("home colors: open, red in the last hour or after, done once all done and c
   assert.strictEqual(f.taskListState({ ...list, done: { a: {}, b: {} } }, 11 * 3600000).state, "open");
   assert.strictEqual(f.taskListState({ ...list, done: { a: {}, b: {} }, check: {} }, 11 * 3600000).state, "done");
 });
+
+// ---- Station checklists ----
+test("station checklists: tasks and numbers together; signing needs every task ticked and every count", () => {
+  const { template } = f.cleanTemplate({ name: "Practice station", kind: "station", sections: [{ title: "Do", fields: [{ label: "Sweep", type: "task" }, { label: "Bins filled", type: "number" }] }] });
+  assert.strictEqual(template.kind, "station");
+  const { values } = f.cleanValues(template.sections, [], { sweep: true, "bins-filled": "3" });
+  assert.deepStrictEqual(values, { sweep: true, "bins-filled": 3 });
+  assert.deepStrictEqual(f.stationMissing(template.sections, {}), ["Sweep", "Bins filled"]);
+  assert.deepStrictEqual(f.stationMissing(template.sections, values), []);
+  assert.match(f.cleanTemplate({ name: "H", kind: "handoff", sections: [{ title: "A", fields: [{ label: "X", type: "task" }] }] }).error, /task lists and station/);
+});

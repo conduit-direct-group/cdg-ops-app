@@ -10,9 +10,9 @@ import { collection, onSnapshot } from "https://www.gstatic.com/firebasejs/12.18
 
 export const FIELD_TYPES = [
   ["number", "Number"], ["percent", "Percent (0–100)"], ["yesno", "Yes / No"], ["text", "Short text"],
-  ["longtext", "Notes (long text)"], ["datetime", "Date and time"], ["time", "Time of day"],
+  ["longtext", "Notes (long text)"], ["datetime", "Date and time"], ["time", "Time of day"], ["task", "Task (tick when done)"],
 ];
-const KIND_NAMES = { handoff: "Shift handoff", tasklist: "Shift task list" };
+const KIND_NAMES = { handoff: "Shift handoff", tasklist: "Shift task list", station: "Station checklist" };
 
 // Same rule as the server (functions/forms.js).
 export function canEditForm(myRoles, formId) {
@@ -107,7 +107,7 @@ export function openFormsAdmin(container, { me, onExit, backLabel = "Admin" }) {
             if (await confirmSheet({ title: `Remove “${f.label || "this field"}”?`, text: "Earlier records keep it — they were filled on an older revision.", confirmLabel: "Remove", danger: true })) { s.fields.splice(i, 1); render(); }
           } }, "✕"))),
       el("input", { class: "field", "aria-label": task ? "Task" : "Field label", maxlength: "120", value: f.label, placeholder: task ? "Task (e.g. Tools put away)" : "Label", oninput: (e) => { f.label = e.target.value; } }),
-      task ? null : picker({ title: "Type of answer", value: f.type, options: FIELD_TYPES.map(([value, label]) => ({ value, label })), onChange: (v) => { f.type = v; render(); } }),
+      task ? null : picker({ title: "Type of answer", value: f.type, options: FIELD_TYPES.filter(([v]) => v !== "task" || ui.draft.kind !== "handoff").map(([value, label]) => ({ value, label })), onChange: (v) => { f.type = v; render(); } }),
       task ? null : el("div", { class: "form-field-row" },
         el("label", { class: "check-row" }, el("input", { type: "checkbox", checked: f.perLine === true, onchange: (e) => { f.perLine = e.target.checked; } }), el("span", {}, "One per line (L1, L2, L3…)")),
         ["number", "percent"].includes(f.type) || f.unit
@@ -125,7 +125,7 @@ export function openFormsAdmin(container, { me, onExit, backLabel = "Admin" }) {
     return ui.revs.map((r) => el("div", { class: "import-row" }, el("span", { class: "import-line" }, `Rev ${r.rev}`), el("span", { class: "gap-term" }, `${fmtWhen(r.revAt)} · ${r.revByName || ""} — ${r.revNote || r.revChanges || ""}`)));
   }
 
-  const blankField = () => ({ label: "", type: ui.draft.kind === "tasklist" ? "task" : "text", perLine: false, unit: "", help: "" });
+  const blankField = () => ({ label: "", type: ["tasklist", "station"].includes(ui.draft.kind) ? "task" : "text", perLine: false, unit: "", help: "" });
 
   // Task lists: the shifts (plant time; an end before the start runs past midnight) and when unfinished tasks turn red.
   function shiftsEditor(d) {

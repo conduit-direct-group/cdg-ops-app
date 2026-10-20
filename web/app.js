@@ -29,6 +29,7 @@ import { openAnnouncements } from "./announcements.js";
 import { openHandoff, usesHandoffs } from "./handoff.js";
 import { openFormsAdmin, editableForms } from "./forms.js";
 import { openShopTasks, runsShopList } from "./shoptasks.js";
+import { openStations, stationForms } from "./stations.js";
 
 const screen = document.getElementById("screen");
 const deviceBadge = document.getElementById("device-badge");
@@ -253,6 +254,7 @@ function renderHome() {
       announcements: () => openAnn(),
       handoff: (id) => openHandoffScreen(id),
       shop: (id) => openShopScreen(id),
+      station: (formId) => openStationScreen(formId),
     },
   });
   // What this screen shows follows the roles (or the role an admin is viewing as) — Decision 53.
@@ -267,6 +269,8 @@ function renderHome() {
     usesHandoffs(shown) ? el("button", { class: "btn big secondary", type: "button", onclick: () => openHandoffScreen() }, "📝 Shift handoff") : null,
     // Keep the Shop Clean: leads and managers run it (everyone else reaches their own task from "Needs you").
     runsShopList(shown) ? el("button", { class: "btn big secondary", type: "button", onclick: () => openShopScreen() }, "🧹 Keep the Shop Clean") : null,
+    // Station checklists (Reel Building, Reclamation): people who work on the floor.
+    usesMachines(shown) && stationForms().length ? el("button", { class: "btn big secondary", type: "button", onclick: () => openStationScreen() }, "📋 Station checklists") : null,
     // People whose role may edit a form (Admin → Roles) but who aren't admins.
     !m.admin && editableForms(m.roles).length ? el("button", { class: "btn secondary", type: "button", onclick: () => openFormsScreen() }, "📝 Edit forms") : null,
     // Open issues: Maintenance, Admin, Plant Manager only.
@@ -324,6 +328,13 @@ function openShopScreen(id = null) {
   if (closeModule) closeModule();
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openShopTasks(screen, { me: me(), startId: id, onExit: () => go("home") });
+}
+
+// Station checklists: pick a station, or open one (from Home).
+function openStationScreen(formId = null) {
+  if (closeModule) closeModule();
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  closeModule = openStations(screen, { me: me(), startForm: formId, onExit: () => go("home") });
 }
 
 // Forms editor for non-admins allowed on the Roles screen (admins use Admin → Forms).

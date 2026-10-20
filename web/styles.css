@@ -1168,3 +1168,9 @@ details.fold.fold-due { border-color: var(--orange); background: var(--orange-ti
   main[data-width="wide"] .task-list { max-width: 1040px; }
   .shift-row { grid-template-columns: minmax(0, 1fr) 160px 160px auto; }
 }
+
+/* Station checklists (Decision 63): big tick rows for gloves. */
+.station-task { min-height: 64px; margin: 0; padding: var(--s2) var(--s3); border-radius: var(--radius); background: var(--surface-1); border: var(--border-width) solid var(--line); }
+.station-task.on { border-color: var(--green); background: var(--green-tint); }
+.station-task input { flex: none; }
+.station-task > span { display: flex; flex-direction: column; gap: 2px; }
