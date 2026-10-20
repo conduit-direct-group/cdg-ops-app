@@ -99,6 +99,7 @@ export const callAdminImportTrainingBackup = call("adminImportTrainingBackup", {
 export const callAdminSetTrainer = call("adminSetTrainer");
 export const callReportProblem = call("reportProblem");
 export const callMarkIssueFixed = call("markIssueFixed");
+export const callMarkLineBackUp = call("markLineBackUp");
 export const callAdminSyncOdoo = call("adminSyncOdoo", { timeout: 120000 });
 // Copying files from the old library can take a few minutes.
 export const callAdminImportOldLibrary = call("adminImportOldLibrary", { timeout: 540000 });

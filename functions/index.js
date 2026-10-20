@@ -1184,7 +1184,7 @@ function issueFromRequest(r) {
     title: String(r.name || "").trim(),
     machineId: odoo.machineIdFromEquipmentName(equipmentName),
     equipmentName,
-    lineDown: r.x_studio_downtime_related === true || /LINE DOWN/i.test(r.name || ""),
+    lineDown: r.x_studio_downtime_related === true, // Odoo's "Downtime Related" box — the one signal for "line down"
     unsafe: r.x_studio_unsafe_to_run === true,
     priority: r.priority || "0",
     description: odoo.htmlToText(r.description).slice(0, 4000),
@@ -1332,6 +1332,35 @@ exports.markIssueFixed = onCall({ secrets: [odooKey] }, async (req) => {
   await auditLog.add({ type: "fixed", kind: "issue", recordId: ref.id, by: me.employeeNumber, at: FieldValue.serverTimestamp(), note });
   await writePlantStatus(false);
   return { ok: true };
+});
+
+// Maintenance and Admins: { id } — the line is running again, but the repair isn't finished. Unticks
+// "Downtime Related" on the Odoo request (it stays open on the board) and notes who did it, so the Home
+// status bar shows the line running right away (Decision 57).
+exports.markLineBackUp = onCall({ secrets: [odooKey] }, async (req) => {
+  const me = await requireMember(req);
+  if (!me.roles.some((r) => FIXER_ROLES.includes(r))) throw new HttpsError("permission-denied", "Only Maintenance and Admins can mark a line back up.");
+  const test = isTest(req);
+  const ref = col("issues", test).doc(String(req.data?.id || ""));
+  const snap = await ref.get();
+  if (!snap.exists || snap.get("open") !== true) throw new HttpsError("failed-precondition", "That issue is no longer open.");
+  if (snap.get("lineDown") !== true) throw new HttpsError("failed-precondition", "That issue isn't marked line down.");
+  const name = await employeeName(me.employeeNumber);
+  if (!test) {
+    const key = odooKey.value();
+    try {
+      const id = snap.get("odooId");
+      await odoo.odooCall(key, "maintenance.request", "write", { ids: [id], vals: { x_studio_downtime_related: false } });
+      await odoo.odooCall(key, "maintenance.request", "message_post", { ids: [id], body: `Line back up (repair still open) — marked in CDG Ops by ${name}.`, message_type: "comment", subtype_xmlid: "mail.mt_note" }).catch((e) => console.warn("note not posted", e.message));
+    } catch (err) {
+      console.error("markLineBackUp: Odoo error", err);
+      throw new HttpsError("unavailable", "Couldn't reach Odoo. Try again in a minute, or untick Downtime Related in Odoo.");
+    }
+  }
+  await ref.update({ lineDown: false, lineBackUpAt: FieldValue.serverTimestamp(), lineBackUpBy: name });
+  await auditLog.add({ type: "line-back-up", kind: "issue", recordId: ref.id, by: me.employeeNumber, at: FieldValue.serverTimestamp(), test });
+  await writePlantStatus(test);
+  return { ok: true, test };
 });
 
 // Pulls open breakdowns and last-maintenance dates from Odoo into the app.

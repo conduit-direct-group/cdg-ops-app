@@ -4,7 +4,7 @@
 
 import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, breakable, picker, collapsible } from "./ui.js";
 import { data, onDataChange, lineName } from "./data.js";
-import { storage, callReportProblem, callMarkIssueFixed, callAdminSyncOdoo } from "./firebase.js";
+import { storage, callReportProblem, callMarkIssueFixed, callMarkLineBackUp, callAdminSyncOdoo } from "./firebase.js";
 import { ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-storage.js";
 
 // Odoo's long-standing link format for one record (redirects to the right screen in Odoo 19).
@@ -130,6 +130,24 @@ export function openIssueBoard(container, { me, onExit, onReport }) {
       }
     }
 
+    // The line runs again but the repair isn't finished: the request stays open, the line shows running.
+    async function lineBackUp(askFirst = true) {
+      if (askFirst && !(await confirmSheet({
+        title: "Is the line running again?",
+        text: "The line shows ✓ Running for everyone. This request stays open until the repair is finished and someone taps Mark fixed.",
+        confirmLabel: "✓ Yes, the line is back up",
+      }))) return;
+      Object.assign(ui, { busy: true, message: "", retry: null });
+      render();
+      try {
+        const { data: r } = await callMarkLineBackUp({ id: i.id });
+        show("issue", r.test ? "Test: line marked back up (Odoo not touched)" : "Line marked back up — Odoo updated", "ok");
+      } catch (err) {
+        Object.assign(ui, { busy: false, message: friendlyError(err), messageKind: "error", retry: () => lineBackUp(false) });
+        render();
+      }
+    }
+
     return [
       back("Open issues", () => show("list")),
       el("h1", { class: "fix-title" }, i.title || machineLabel(i)),
@@ -138,6 +156,10 @@ export function openIssueBoard(container, { me, onExit, onReport }) {
       el("table", { class: "info-table" }, rows.map(([k, v]) => el("tr", {}, el("th", {}, k), el("td", {}, v)))),
       i.description ? el("div", { class: "fix-body" }, i.description) : null,
       (i.photos || []).length ? el("div", { class: "fix-media" }, i.photos.map((u, n) => el("a", { href: u, target: "_blank", rel: "noopener" }, el("img", { class: "fix-photo", src: u, alt: `Photo ${n + 1}`, loading: "lazy" })))) : null,
+      me.fixer && i.lineDown
+        ? el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => lineBackUp() }, ui.busy ? "Updating Odoo…" : "✓ Line is back up (repair still open)")
+        : null,
+      !i.lineDown && i.lineBackUpBy ? el("p", { class: "card-note" }, `Line marked back up by ${i.lineBackUpBy}.`) : null,
       me.fixer
         ? el(
             "div",
