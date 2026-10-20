@@ -18,7 +18,7 @@ then screenshots and the dev test link shown to Chris.
 
 ## Working with Chris
 - Chris is not a developer: one step at a time, explain the why, offer choices, short and plain.
-- The master plan is a revisioned file in Chris's Downloads (`CDG_Operations_App_Plan_*_RevN.md`); decisions go there.
+- The master plan is a revisioned file in `C:\CDG\private\` (`CDG_Operations_App_Plan_*_RevN.md`; git-ignored, never committed); decisions go there. After each new revision, copy it to Chris's Downloads so he can upload it to his planning chat.
 - No secrets, PINs, or employee data in this repo — it is public.
 
 ## When something is missing
