@@ -223,6 +223,26 @@ service cloud.firestore {
       allow read: if admin();
     }
 
+    // Forms admins edit (the wording of the paper forms): everyone signed in reads them and their revisions;
+    // changes go through the server (Admins, and roles allowed in Admin → Roles).
+    match /formTemplates/{id} {
+      allow read: if member();
+      match /revisions/{rev} {
+        allow read: if member();
+      }
+    }
+
+    // Shift Handoff Notes: Line Leads, Supervisors, Plant Manager, Admin (Decision 60). Test site: test_handoffs.
+    function handoffReader() {
+      return member() && employee().roles.hasAny(['lead', 'supervisor', 'plant-manager', 'admin']);
+    }
+    match /handoffs/{id} {
+      allow read: if handoffReader();
+    }
+    match /test_handoffs/{id} {
+      allow read: if handoffReader();
+    }
+
     // Admin-only lists: who did what (every admin action), Odoo sync status, searches with no results.
     match /auditLog/{id} {
       allow read: if admin();

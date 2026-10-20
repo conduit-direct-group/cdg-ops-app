@@ -28,6 +28,7 @@ const requestsLib = require("./requests");
 const floorMapLib = require("./floormap");
 const trainingApi = require("./training-api");
 const annLib = require("./announcements");
+const formsLib = require("./forms");
 const crypto = require("node:crypto");
 const { getMessaging } = require("firebase-admin/messaging");
 const { defineSecret } = require("firebase-functions/params");
@@ -506,9 +507,17 @@ exports.adminSaveRole = onCall((req) =>
       throw new HttpsError("failed-precondition", "The Admin role can't be retired.");
     }
   }, (d) => {
-    if (d.canPostAnnouncements === undefined) return {};
-    if (typeof d.canPostAnnouncements !== "boolean") throw new HttpsError("invalid-argument", "canPostAnnouncements must be true or false.");
-    return { canPostAnnouncements: d.canPostAnnouncements };
+    const extra = {};
+    if (d.canPostAnnouncements !== undefined) {
+      if (typeof d.canPostAnnouncements !== "boolean") throw new HttpsError("invalid-argument", "canPostAnnouncements must be true or false.");
+      extra.canPostAnnouncements = d.canPostAnnouncements;
+    }
+    // { editForms: [formId, …] } — the forms people with this role may edit (Admin → Forms).
+    if (d.editForms !== undefined) {
+      if (!Array.isArray(d.editForms) || d.editForms.length > 50 || !d.editForms.every(records.isRecordId)) throw new HttpsError("invalid-argument", "Pick forms from the list.");
+      extra.editForms = [...new Set(d.editForms)];
+    }
+    return extra;
   })
 );
 
@@ -2256,6 +2265,231 @@ async function refreshAnnouncementLists() {
     console.error("announcement lists not refreshed", err);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Forms admins edit without code changes (rules in forms.js). The wording lives only here in the database.
+//   formTemplates/{formId}                 name, kind, intro, sections, rev, revAt, revBy, revByName, revNote
+//   formTemplates/{formId}/revisions/{n}   every revision as it was (records keep the revision they started on)
+// Who may edit: Admins, and roles that list the form in Admin → Roles (role.editForms).
+// ---------------------------------------------------------------------------
+
+const formTemplates = db.collection("formTemplates");
+
+async function requireFormEditor(req, formId) {
+  const me = await requireMember(req);
+  const roleDocs = (await roles.get()).docs.map((d) => ({ id: d.id, ...d.data() }));
+  if (!formsLib.canEditForm(roleDocs, me.roles, formId)) throw new HttpsError("permission-denied", "Your role can't edit this form. An admin can allow it in Admin → Roles.");
+  return me;
+}
+
+// { formId, create?, name, kind, intro, sections, note } — saves a new revision (or the first one).
+// Records already started keep the revision they started on; the next one started uses this.
+exports.saveFormTemplate = onCall(async (req) => {
+  const formId = String(req.data?.formId || "");
+  if (!records.isRecordId(formId)) throw new HttpsError("invalid-argument", "Form id must start with a letter (e.g. handoff).");
+  const me = await requireFormEditor(req, formId);
+  const { template, error } = formsLib.cleanTemplate(req.data);
+  if (error) throw new HttpsError("invalid-argument", error);
+  const note = typeof req.data?.note === "string" ? req.data.note.trim().slice(0, 300) : "";
+  const ref = formTemplates.doc(formId);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (req.data?.create === true && snap.exists) throw new HttpsError("already-exists", "That form already exists — open it to edit it.");
+    if (req.data?.create !== true && !snap.exists) throw new HttpsError("not-found", "That form no longer exists.");
+    const before = snap.exists ? snap.data() : null;
+    const changes = formsLib.describeChange(before, template);
+    if (before && changes === "No changes") throw new HttpsError("failed-precondition", "Nothing changed, so no new revision was made.");
+    const rev = (before?.rev || 0) + 1;
+    const doc = { ...template, rev, revAt: FieldValue.serverTimestamp(), revBy: me.employeeNumber, revByName: me.name, revNote: note || changes, revChanges: changes, active: true };
+    tx.set(ref, doc);
+    tx.create(ref.collection("revisions").doc(String(rev)), doc);
+    auditRecord(tx, before ? "revised" : "created", "form", formId, me.employeeNumber, { rev, note: note || changes });
+    return { formId, rev, changes };
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Shift Handoff Notes (Decision 60) — the Line Lead Pass Down, in the app.
+//   handoffs/{auto}   formRev, sections (copy of that revision), lines (copy), team, toTeam, date, values,
+//                     auto (lines down, open maintenance issues, overdue checklists — captured when sent),
+//                     status draft | sent | received | discarded, createdBy/Name, sentBy {emp,name,device,at},
+//                     receivedBy {emp,name,device,at}
+// The outgoing lead signs with PIN; the incoming team's Line Lead signs received (it's on their Home until then).
+// Test site: test_handoffs; the notification goes only to the person testing.
+// ---------------------------------------------------------------------------
+
+const handoffCol = (test) => col("handoffs", test);
+
+async function requireHandoffRole(req) {
+  const me = await requireMember(req);
+  if (!me.roles.some((r) => formsLib.HANDOFF_ROLES.includes(r))) throw new HttpsError("permission-denied", "Handoffs are for Line Leads, Supervisors, the Plant Manager, and Admins.");
+  return me;
+}
+
+// What the app already knows, shown read-only on the handoff: lines down, open maintenance issues, overdue checklists.
+async function handoffAutoFill(test) {
+  const read = async (path) => { const s = await db.doc(path).get(); return s.exists ? s.data() : {}; };
+  const [plantReal, plantTest, lineSnaps, issueSnaps, testIssueSnaps, unitsLive, unitDocs, testUnitDocs] = await Promise.all([
+    read("meta/plantStatus"), test ? read("test_meta/plantStatus") : {}, lines.get(),
+    issues.where("open", "==", true).get(), test ? col("issues", true).where("open", "==", true).get() : { docs: [] },
+    liveUnits(), col("checklistUnits", false).get(), test ? col("checklistUnits", true).get() : { docs: [] },
+  ]);
+  const lineName = new Map(lineSnaps.docs.map((d) => [d.id, d.get("name")]));
+  const down = { ...(plantReal.down || {}), ...(plantTest.down || {}) };
+  const linesDown = Object.entries(down).map(([lineId, v]) => ({ lineId, line: lineName.get(lineId) || lineId, since: v.since || null, machineIds: v.machineIds || [] }));
+  const openIssues = [...issueSnaps.docs, ...testIssueSnaps.docs].map((d) => d.data())
+    .sort((a, b) => (b.lineDown === true) - (a.lineDown === true) || (b.unsafe === true) - (a.unsafe === true))
+    .slice(0, 40)
+    .map((i) => ({ title: String(i.title || "").slice(0, 160), machineId: i.machineId || null, lineDown: i.lineDown === true, unsafe: i.unsafe === true, odooId: i.odooId || null }));
+  const done = {};
+  for (const d of [...unitDocs.docs, ...testUnitDocs.docs]) {
+    const items = d.get("items") || {};
+    done[d.id] = { ...(done[d.id] || {}) };
+    for (const [k, v] of Object.entries(items)) if (!done[d.id][k] || (v.at || 0) > (done[d.id][k].at || 0)) done[d.id][k] = v;
+  }
+  const now = Date.now();
+  const overdueChecklists = unitsLive.units
+    .map((u) => ({ u, t: unitsLive.templates.find((t) => t.id === u.templateId) }))
+    .filter(({ u, t }) => t && checklistsLib.unitStatus(t, done[u.id], now).overdue)
+    .map(({ u, t }) => (u.lineId ? `${lineName.get(u.lineId) || u.lineId} · ${t.name}` : t.name));
+  return { linesDown, openIssues, overdueChecklists, at: now };
+}
+
+exports.handoffAutoFill = onCall(async (req) => {
+  await requireHandoffRole(req);
+  return handoffAutoFill(isTest(req));
+});
+
+async function activeTeamIds() {
+  return (await teams.get()).docs.filter((d) => d.get("active") !== false).map((d) => d.id);
+}
+
+// Start a handoff (or carry on with your own unsent one): { team, toTeam, date }. It copies the current form
+// revision and the lines on now, so it finishes on the version it started with.
+exports.startHandoff = onCall(async (req) => {
+  const me = await requireHandoffRole(req);
+  const test = isTest(req);
+  const mine = await handoffCol(test).where("createdBy", "==", me.employeeNumber).where("status", "==", "draft").limit(1).get();
+  if (!mine.empty) return { id: mine.docs[0].id, resumed: true };
+  const { header, error } = formsLib.cleanHandoffHeader(req.data, await activeTeamIds());
+  if (error) throw new HttpsError("invalid-argument", error);
+  const form = await formTemplates.doc("handoff").get();
+  if (!form.exists || form.get("active") === false) throw new HttpsError("failed-precondition", "The handoff form isn't set up yet. An admin loads it in Admin → Forms.");
+  const lineList = (await lines.get()).docs.filter((d) => d.get("active") !== false).map((d) => ({ id: d.id, name: d.get("name") }))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  const ref = handoffCol(test).doc();
+  await ref.set({
+    formId: "handoff", formRev: form.get("rev"), formName: form.get("name"), intro: form.get("intro") || "", sections: form.get("sections"),
+    lines: lineList, ...header, values: {}, status: "draft",
+    createdBy: me.employeeNumber, createdByName: me.name, createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}),
+  });
+  return { id: ref.id, resumed: false };
+});
+
+async function ownDraft(tx, test, id, me) {
+  const ref = handoffCol(test).doc(String(id || ""));
+  const snap = await tx.get(ref);
+  if (!snap.exists) throw new HttpsError("not-found", "That handoff no longer exists.");
+  if (snap.get("createdBy") !== me.employeeNumber) throw new HttpsError("permission-denied", "Only the person who started this handoff can change it.");
+  if (snap.get("status") !== "draft") throw new HttpsError("failed-precondition", "This handoff was already sent.");
+  return snap;
+}
+
+// Save as you go: { id, team, toTeam, date, values }.
+exports.saveHandoffDraft = onCall(async (req) => {
+  const me = await requireHandoffRole(req);
+  const test = isTest(req);
+  const teamIds = await activeTeamIds();
+  await db.runTransaction(async (tx) => {
+    const snap = await ownDraft(tx, test, req.data?.id, me);
+    const h = snap.data();
+    const { header, error } = formsLib.cleanHandoffHeader({ team: h.team, toTeam: h.toTeam, date: h.date, ...pickHeader(req.data) }, teamIds);
+    if (error) throw new HttpsError("invalid-argument", error);
+    const v = formsLib.cleanValues(h.sections, h.lines, req.data?.values);
+    if (v.error) throw new HttpsError("invalid-argument", v.error);
+    tx.update(snap.ref, { ...header, values: v.values, updatedAt: FieldValue.serverTimestamp() });
+  });
+  return { ok: true };
+});
+const pickHeader = (d) => Object.fromEntries(["team", "toTeam", "date"].filter((k) => d?.[k]).map((k) => [k, d[k]]));
+
+// The outgoing lead signs and sends it: { id, team, toTeam, date, values, signer: { emp, pin }, device }.
+// The signer must be the person who started it. The incoming team's Line Leads get a notification.
+exports.sendHandoff = onCall(async (req) => {
+  const me = await requireHandoffRole(req);
+  const test = isTest(req);
+  const signer = await requireSignature(req.data);
+  if (signer.employeeNumber !== me.employeeNumber) throw new HttpsError("permission-denied", "Sign with your own PIN — you started this handoff.");
+  const device = annLib.cleanDevice(req.data?.device);
+  const teamIds = await activeTeamIds();
+  const auto = await handoffAutoFill(test);
+  const sent = await db.runTransaction(async (tx) => {
+    const snap = await ownDraft(tx, test, req.data?.id, me);
+    const h = snap.data();
+    const { header, error } = formsLib.cleanHandoffHeader({ team: h.team, toTeam: h.toTeam, date: h.date, ...pickHeader(req.data) }, teamIds);
+    if (error) throw new HttpsError("invalid-argument", error);
+    const v = formsLib.cleanValues(h.sections, h.lines, req.data?.values);
+    if (v.error) throw new HttpsError("invalid-argument", v.error);
+    const sentBy = { emp: me.employeeNumber, name: me.name, device, at: new Date() };
+    tx.update(snap.ref, { ...header, values: v.values, auto, status: "sent", sentBy, sentAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+    logSignoff(tx, test, { kind: "handoff-sent", refId: snap.id, version: h.formRev, emp: me.employeeNumber, name: me.name, method: "pin", device, signedOn: me.employeeNumber });
+    return { ...h, ...header };
+  });
+  const people = await peopleList();
+  const leads = formsLib.incomingLeads(sent, people);
+  const teamName = async (id) => (await teams.doc(id).get()).get("name") || id;
+  const [fromName, toName] = await Promise.all([teamName(sent.team), teamName(sent.toTeam)]);
+  const pushed = await pushTo(test ? [me.employeeNumber] : leads, {
+    title: `${test ? "[TEST] " : ""}📝 Shift handoff from Team ${fromName}`,
+    body: `${me.name} handed off to Team ${toName}. Read it and sign received.`,
+    url: `/?handoff=${req.data.id}`,
+  });
+  return { ok: true, leads: leads.length, pushed, test };
+});
+
+// Throw away your unsent handoff: { id } (kept, marked discarded — nothing is deleted).
+exports.discardHandoff = onCall(async (req) => {
+  const me = await requireHandoffRole(req);
+  const test = isTest(req);
+  await db.runTransaction(async (tx) => {
+    const snap = await ownDraft(tx, test, req.data?.id, me);
+    tx.update(snap.ref, { status: "discarded", updatedAt: FieldValue.serverTimestamp() });
+  });
+  return { ok: true };
+});
+
+// The incoming lead signs received: { id, signer: { emp, pin }, device }. On a line tablet any incoming Line Lead
+// can sign without signing in.
+exports.receiveHandoff = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const signer = await requireSignature(req.data);
+  const device = annLib.cleanDevice(req.data?.device);
+  const person = { roles: signer.roles, team: signer.employee.team || null };
+  const ref = handoffCol(test).doc(String(req.data?.id || ""));
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "That handoff no longer exists.");
+    const h = snap.data();
+    if (h.status === "received") throw new HttpsError("failed-precondition", `Already received by ${h.receivedBy?.name || "someone"}.`);
+    if (h.status !== "sent") throw new HttpsError("failed-precondition", "This handoff hasn't been sent yet.");
+    if (!formsLib.canReceive(person, h)) throw new HttpsError("permission-denied", `${signer.name} isn't a Line Lead on the incoming team.`);
+    if (signer.employeeNumber === h.createdBy) throw new HttpsError("permission-denied", "The person who wrote it can't also sign it received.");
+    tx.update(ref, { status: "received", receivedBy: { emp: signer.employeeNumber, name: signer.name, device, at: new Date() }, receivedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+    logSignoff(tx, test, { kind: "handoff-received", refId: ref.id, version: h.formRev, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber });
+  });
+  return { ok: true, name: signer.name, test };
+});
+
+// Names that can sign received on this device (line tablets): the incoming team's Line Leads. { id }
+exports.handoffReceivers = onCall(async (req) => {
+  const me = await requireMember(req);
+  const snap = await handoffCol(isTest(req)).doc(String(req.data?.id || "")).get();
+  if (!snap.exists) throw new HttpsError("not-found", "That handoff no longer exists.");
+  const people = (await peopleList()).filter((p) => p.active && p.loginEnabled);
+  const ids = new Set(formsLib.incomingLeads(snap.data(), people));
+  return { people: people.filter((p) => ids.has(p.id) && p.id !== me.employeeNumber && p.id !== snap.get("createdBy")).map((p) => ({ emp: p.id, name: p.name })) };
+});
 
 // ---------------------------------------------------------------------------
 // Shop map (plant floor map). Company content — kept in the database only, read by signed-in people:

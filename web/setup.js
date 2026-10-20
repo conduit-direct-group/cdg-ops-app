@@ -609,10 +609,28 @@ export function openRoles(container, { onExit }) {
           const ok = await kit.act(() => callAdminSaveRole({ id: r.id, name: r.name, canPostAnnouncements: !on }), flip);
           if (ok) show("item", on ? `${r.name}: posting announcements turned off` : `${r.name} can now post announcements`, "ok");
         };
-        return el("div", { class: "card" },
-          el("strong", {}, "📣 Announcements"),
-          el("p", { class: "card-note" }, on ? "People with this role can post announcements." : "People with this role can't post announcements."),
-          el("button", { class: on ? "btn secondary" : "btn", type: "button", disabled: kit.busy, onclick: flip }, on ? "Turn off posting" : "✔ Allow posting"));
+        // Which forms people with this role may edit in Forms (Decision 60). Admins edit every form.
+        const editing = r.editForms || [];
+        const toggleForm = async (formId) => {
+          const next = editing.includes(formId) ? editing.filter((x) => x !== formId) : [...editing, formId];
+          const ok = await kit.act(() => callAdminSaveRole({ id: r.id, name: r.name, editForms: next }), () => toggleForm(formId));
+          if (ok) show("item", `${r.name}: forms they can edit updated`, "ok");
+        };
+        const forms = (data.formTemplates || []).filter((t) => t.active !== false);
+        return [
+          el("div", { class: "card" },
+            el("strong", {}, "📣 Announcements"),
+            el("p", { class: "card-note" }, on ? "People with this role can post announcements." : "People with this role can't post announcements."),
+            el("button", { class: on ? "btn secondary" : "btn", type: "button", disabled: kit.busy, onclick: flip }, on ? "Turn off posting" : "✔ Allow posting")),
+          el("div", { class: "card" },
+            el("strong", {}, "📝 Forms this role can edit"),
+            r.id === "admin"
+              ? el("p", { class: "card-note" }, "Admins can edit every form.")
+              : [
+                  el("p", { class: "card-note" }, forms.length ? "Tap a form to let people with this role edit it (fields, order, help text). Every change is a new revision." : "No forms yet — an admin loads them in Admin → Forms."),
+                  el("div", { class: "chips" }, forms.map((t) => el("button", { class: editing.includes(t.id) ? "chip on" : "chip", type: "button", "aria-pressed": String(editing.includes(t.id)), disabled: kit.busy, onclick: () => toggleForm(t.id) }, `${editing.includes(t.id) ? "✓ " : ""}${t.name}`))),
+                ]),
+        ];
       },
       starters: () => STARTING_ROLES, startersTitle: "Add the starting roles",
       cantRetire: (r) => (r.id === "admin" ? "The Admin role can't be retired — someone has to be able to run the app." : null),

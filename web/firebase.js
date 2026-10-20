@@ -110,6 +110,15 @@ export const callAnnouncementTracking = call("announcementTracking");
 export const callRemindAnnouncement = call("remindAnnouncement");
 export const callAnnouncementSummary = call("announcementSummary");
 export const callSignoffPeople = call("signoffPeople");
+// Forms (edited in Admin → Forms) and Shift Handoff Notes
+export const callSaveFormTemplate = call("saveFormTemplate");
+export const callHandoffAutoFill = call("handoffAutoFill");
+export const callStartHandoff = call("startHandoff");
+export const callSaveHandoffDraft = call("saveHandoffDraft");
+export const callSendHandoff = call("sendHandoff");
+export const callDiscardHandoff = call("discardHandoff");
+export const callReceiveHandoff = call("receiveHandoff");
+export const callHandoffReceivers = call("handoffReceivers");
 export const callAdminSyncOdoo = call("adminSyncOdoo", { timeout: 120000 });
 // Copying files from the old library can take a few minutes.
 export const callAdminImportOldLibrary = call("adminImportOldLibrary", { timeout: 540000 });

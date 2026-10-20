@@ -26,6 +26,8 @@ import { openNeedSomething, openRequest, openRequestTypesAdmin } from "./request
 import { pushState, turnOnPush, turnOffPush, refreshPush } from "./push.js";
 import { dashboard, stopDashboard, usesMachines, linesDownCount } from "./dashboard.js";
 import { openAnnouncements } from "./announcements.js";
+import { openHandoff, usesHandoffs } from "./handoff.js";
+import { openFormsAdmin, editableForms } from "./forms.js";
 
 const screen = document.getElementById("screen");
 const deviceBadge = document.getElementById("device-badge");
@@ -248,6 +250,7 @@ function renderHome() {
       report: () => openReport(),
       announcement: (id) => openAnn(id),
       announcements: () => openAnn(),
+      handoff: (id) => openHandoffScreen(id),
     },
   });
   // What this screen shows follows the roles (or the role an admin is viewing as) — Decision 53.
@@ -258,6 +261,10 @@ function renderHome() {
     messageBox(),
     ...dash,
     el("button", { class: "btn big secondary", type: "button", onclick: () => openAnn() }, "📣 Announcements"),
+    // Shift handoff (Line Lead Pass Down): Line Leads, Supervisors, Plant Manager, Admin.
+    usesHandoffs(shown) ? el("button", { class: "btn big secondary", type: "button", onclick: () => openHandoffScreen() }, "📝 Shift handoff") : null,
+    // People whose role may edit a form (Admin → Roles) but who aren't admins.
+    !m.admin && editableForms(m.roles).length ? el("button", { class: "btn secondary", type: "button", onclick: () => openFormsScreen() }, "📝 Edit forms") : null,
     // Open issues: Maintenance, Admin, Plant Manager only.
     shown.some((r) => ["maintenance", "admin", "plant-manager"].includes(r)) ? issuesButton() : null,
     // Fix Library: people who work with the machines (not Office, Sales, Quality, Logistics).
@@ -299,6 +306,20 @@ function openAnn(id = null) {
   if (closeModule) closeModule();
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openAnnouncements(screen, { me: me(), startId: id, onExit: () => go("home") });
+}
+
+// Shift handoff: the list, or one handoff (from Home or a notification).
+function openHandoffScreen(id = null) {
+  if (closeModule) closeModule();
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  closeModule = openHandoff(screen, { me: me(), startId: id, onExit: () => go("home") });
+}
+
+// Forms editor for non-admins allowed on the Roles screen (admins use Admin → Forms).
+function openFormsScreen() {
+  if (closeModule) closeModule();
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  closeModule = openFormsAdmin(screen, { me: me(), onExit: () => go("home"), backLabel: "Home" });
 }
 
 function openRequestScreen(id) {
@@ -496,6 +517,7 @@ function renderAdminMenu() {
     el("button", { class: "btn", type: "button", onclick: () => openModule(openRoles) }, "🏷 Roles"),
     el("button", { class: "btn", type: "button", onclick: () => openModule((c, o) => openChecklistAdmin(c, { ...o, me: me() })) }, "📋 Checklists"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openRequestTypesAdmin) }, "🙋 Request types & routing"),
+    el("button", { class: "btn", type: "button", onclick: () => openModule((c, o) => openFormsAdmin(c, { ...o, me: me() })) }, "📝 Forms"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openMapAdmin) }, "🗺 Shop map setup"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openTrainingAdmin) }, "🎓 Training setup"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openActivity) }, "📜 Admin activity"),
@@ -672,8 +694,10 @@ onAuthStateChanged(auth, async (user) => {
     const req = params.get("req"); // opened from a notification
     const issuesLink = params.get("issues"); // a Maintenance Request notification
     const ann = params.get("ann"); // an announcement notification
-    if (cat || machine || req || issuesLink || ann) history.replaceState(null, "", location.pathname);
+    const handoff = params.get("handoff"); // a shift handoff notification
+    if (cat || machine || req || issuesLink || ann || handoff) history.replaceState(null, "", location.pathname);
     if (ann) openAnn(ann);
+    else if (handoff) openHandoffScreen(handoff);
     else if (req) openRequestScreen(req);
     else if (issuesLink) openIssues();
     else if (cat || machine) openFixes(cat, machine);

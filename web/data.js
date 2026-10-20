@@ -7,7 +7,7 @@
 import { db, TEST_MODE } from "./firebase.js";
 import { collection, doc, onSnapshot, query, where } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 
-const LISTS = ["roles", "lines", "machines", "fixCategories", "checklistTemplates", "requestTypes", "teams", "machineTypes"];
+const LISTS = ["roles", "lines", "machines", "fixCategories", "checklistTemplates", "requestTypes", "teams", "machineTypes", "formTemplates"];
 
 // null = still loading; [] = loaded and empty.
 // myself = my own employee record (live roles). fixes = approved fixes; myFixes = pending suggestions I can see
@@ -24,7 +24,7 @@ const LISTS = ["roles", "lines", "machines", "fixCategories", "checklistTemplate
 export const data = {
   myself: null, roles: null, teams: null, machineTypes: null, lines: null, machines: null, fixCategories: null, checklistTemplates: null, requestTypes: null,
   fixes: null, myFixes: null, openIssues: null, myIssues: null, checklistUnits: null, requestsForMe: null, requestsSent: null,
-  plantStatus: null, urgentRequests: null, announcements: null, mySigs: null, mySigList: null,
+  plantStatus: null, urgentRequests: null, announcements: null, mySigs: null, mySigList: null, formTemplates: null, handoffsOpen: null,
 };
 
 const listeners = new Set();
@@ -125,6 +125,13 @@ export function startData(me) {
   stopFns.push(watchMerged("requestsSent", sent("requests"), sent("test_requests"), requestOrder));
   stopFns.push(watchChecklistUnits());
   stopFns.push(watchAnnouncements(me));
+  // Shift handoffs not yet received (drafts and sent ones) — Line Leads, Supervisors, Plant Manager, Admin.
+  if ((me.roles || []).some((r) => ["lead", "supervisor", "plant-manager", "admin"].includes(r))) {
+    const open = (name) => query(collection(db, name), where("status", "in", ["draft", "sent"]));
+    stopFns.push(watchMerged("handoffsOpen", open("handoffs"), open("test_handoffs"), (a, b) => String(b.date).localeCompare(String(a.date))));
+  } else {
+    data.handoffsOpen = [];
+  }
   stopFns.push(watchMySigs(me));
   stopFns.push(watchPlantStatus());
   if (me.safetyWatcher) {

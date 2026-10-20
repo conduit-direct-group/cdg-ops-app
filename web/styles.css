@@ -1105,3 +1105,49 @@ details.fold.fold-due { border-color: var(--orange); background: var(--orange-ti
   main[data-width="wide"] .ann-photo .fix-photo { max-width: 640px; }
   main[data-width="wide"] .ann-track .person-list { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
 }
+
+/* =============================================================================
+   Forms editor + Shift handoff (Decision 60)
+   ============================================================================= */
+.icon-row { display: inline-flex; gap: var(--s1); }
+.icon-btn { min-width: var(--tap); min-height: var(--tap); border-radius: var(--radius); border: var(--border-width) solid var(--line); background: transparent; color: var(--white); font: inherit; font-weight: bold; cursor: pointer; touch-action: manipulation; }
+.icon-btn:disabled { opacity: 0.35; cursor: default; }
+.icon-btn.danger { border-color: var(--red); }
+.icon-btn:active:not(:disabled) { background: var(--surface-3); }
+.form-section-edit .field, .form-field-edit .field { margin-bottom: var(--s2); }
+.form-field-edit { margin-top: var(--s3); padding-top: var(--s2); border-top: 1px solid var(--line); }
+.form-field-edit .picker { margin-bottom: var(--s2); }
+.form-field-row { display: flex; flex-wrap: wrap; gap: var(--s2); align-items: center; }
+.form-field-row .check-row { flex: 1 1 220px; margin: 0; }
+.unit-field { flex: 0 1 180px; margin-bottom: 0 !important; }
+
+.field-label.strong { color: var(--white); font-weight: bold; }
+.date-field { min-height: var(--tap); }
+.save-state { color: var(--muted); font-size: var(--text-small); align-self: center; }
+.auto-card { border-left-color: var(--line); }
+.auto-card .field-label { margin-top: var(--s2); margin-bottom: var(--s1); }
+.auto-list { margin: 0; padding-left: var(--s4); }
+.auto-list li { margin: var(--s1) 0; }
+.auto-list li.down { font-weight: bold; }
+.auto-ok { margin: 0; color: var(--white); }
+.ho-section h2 { margin-top: 0; }
+.ho-field { margin-top: var(--s3); }
+.ho-field .field-label { margin-top: 0; }
+.per-line { display: grid; grid-template-columns: 1fr; gap: var(--s2); }
+.per-line-cell { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: var(--s2); align-items: center; }
+.line-tag { font-weight: bold; color: var(--orange); }
+.num-wrap { display: flex; align-items: center; gap: var(--s2); }
+.num-field { font-size: var(--text-section); font-weight: bold; min-height: var(--tap); }
+.num-unit { color: var(--muted); font-weight: bold; min-width: 2ch; }
+.with-now { display: flex; flex-wrap: wrap; gap: var(--s2); align-items: stretch; }
+.with-now .field { flex: 1 1 200px; min-width: 0; }
+.with-now .btn { width: auto; margin: 0; padding: 0 var(--s3); }
+.choices.yesno .choice { min-height: var(--tap); }
+.sign-card p { margin: 0 0 var(--s1); }
+.ho-table th { width: auto; }
+.ho-table thead th { color: var(--orange); font-weight: bold; }
+@media (min-width: 760px) {
+  .per-line { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+  main[data-width="wide"] .ho-section, main[data-width="wide"] .auto-card, main[data-width="wide"] .form-section-edit { max-width: 980px; }
+  main[data-width="wide"] .with-now .btn { min-width: 0; }
+}
