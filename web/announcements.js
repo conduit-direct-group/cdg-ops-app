@@ -301,7 +301,16 @@ export function openAnnouncements(container, { me, startId = null, onExit }) {
     const t = ui.track;
     if (t.loading) return spinner("Loading sign-offs…");
     if (t.error) return el("div", { class: "message error", role: "alert" }, t.error, el("button", { class: "btn secondary retry", type: "button", onclick: () => loadTracking(a) }, "↻ Try again"));
-    const waiting = t.people.filter((x) => x.state === "not-signed" || x.state === "no-login");
+    const notSigned = t.people.filter((x) => x.state === "not-signed");
+    const noLogin = t.people.filter((x) => x.state === "no-login");
+    const waitingRow = (x) =>
+      el("div", { class: "person-row static" },
+        el("span", { class: "person-name" }, x.name),
+        el("span", { class: "person-meta" }, personMeta(x)),
+        el("span", { class: "tags" }, x.state === "no-login" ? el("span", { class: "tag warn" }, "No login") : el("span", { class: "tag off" }, t.overdue ? "⚠ Overdue" : "Not signed")),
+        x.state === "no-login" && t.canInPerson && !t.ended
+          ? el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => show("inperson", { inPerson: { id: x.id, name: x.name, note: "" } }) }, "🤝 Reviewed in person")
+          : null);
     const done = t.people.filter((x) => x.state === "signed" || x.state === "in-person");
     const c = t.counts;
     async function remind() {
@@ -338,17 +347,12 @@ export function openAnnouncements(container, { me, startId = null, onExit }) {
       t.noCrew ? el("p", { class: "message" }, "Your crew is the people on your team (or your home line). Ask an admin to set your team in Admin → People.") : null,
       el("p", { class: "ann-count" }, el("strong", {}, `${c.signed} of ${c.total} signed`), c.noLogin ? ` · ${c.noLogin} with no login, not reviewed yet` : ""),
       t.readOnly ? el("p", { class: "card-note" }, "Real announcement — on the test site, signatures here are practice only.") : null,
-      waiting.length
-        ? [el("p", { class: "field-label" }, `Not signed yet (${waiting.length})`),
-          el("div", { class: "person-list" }, waiting.map((x) =>
-            el("div", { class: "person-row static" },
-              el("span", { class: "person-name" }, x.name),
-              el("span", { class: "person-meta" }, personMeta(x)),
-              el("span", { class: "tags" }, x.state === "no-login" ? el("span", { class: "tag warn" }, "No login") : el("span", { class: "tag off" }, t.overdue ? "⚠ Overdue" : "Not signed")),
-              x.state === "no-login" && t.canInPerson && !t.ended
-                ? el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => show("inperson", { inPerson: { id: x.id, name: x.name, note: "" } }) }, "🤝 Reviewed in person")
-                : null)))]
-        : el("p", { class: "message ok" }, "✓ Everyone has signed."),
+      // People with a login who haven't signed stay in view; people with no login yet fold away (until launch that
+      // is nearly everyone, and they can't sign themselves — a supervisor records "Reviewed in person").
+      notSigned.length ? [el("p", { class: "field-label" }, `Not signed yet (${notSigned.length})`), el("div", { class: "person-list" }, notSigned.map(waitingRow))] : null,
+      noLogin.length ? collapsible(`ann-nologin-${a.id}`, `No login yet — not signed (${noLogin.length})`, el("div", { class: "person-list" }, noLogin.map(waitingRow))) : null,
+      !notSigned.length && !noLogin.length ? el("p", { class: "message ok" }, "✓ Everyone has signed.") : null,
+      !notSigned.length && noLogin.length ? el("p", { class: "message ok" }, "✓ Everyone with a login has signed.") : null,
       done.length
         ? collapsible(`ann-signed-${a.id}`, `✓ Signed (${done.length})`, el("div", { class: "person-list" }, done.map((x) =>
             el("div", { class: "person-row static" }, el("span", { class: "person-name" }, x.name), el("span", { class: "person-meta" }, sigText(x))))))
