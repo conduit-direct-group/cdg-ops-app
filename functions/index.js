@@ -1464,13 +1464,12 @@ async function liveUnits() {
 }
 
 // Anyone signed in: { unitId, itemIds: [...], signer: { emp, pin }, device, test? } — "I did these items",
-// signed with the shared PIN sign-off. (Screens from before it — the live site until the next release — send no
-// signer and sign as the person signed in.)
+// signed with the shared PIN sign-off (Decision 7). The PIN is required (locked 10-20-2026).
 exports.signChecklist = onCall(async (req) => {
   const signedIn = await requireMember(req);
   const test = isTest(req);
-  const withPin = !!req.data?.signer;
-  const me = withPin ? await requireSignature(req.data) : signedIn;
+  if (!req.data?.signer) throw new HttpsError("failed-precondition", "Sign-offs need your PIN now. Close this screen and open the checklist again (or reload the app).");
+  const me = await requireSignature(req.data);
   const device = annLib.cleanDevice(req.data?.device);
   const unitIdIn = String(req.data?.unitId || "");
   const itemIds = Array.isArray(req.data?.itemIds) ? [...new Set(req.data.itemIds.map(String))] : [];
@@ -1492,10 +1491,10 @@ exports.signChecklist = onCall(async (req) => {
   );
   batch.create(col("checklistSignoffs", test).doc(), {
     unitId: unit.id, templateId: unit.templateId, lineId: unit.lineId, items: itemIds,
-    by: me.employeeNumber, byName: me.name, method: withPin ? "pin" : "sign-in", device, signedOn: signedIn.employeeNumber,
+    by: me.employeeNumber, byName: me.name, method: "pin", device, signedOn: signedIn.employeeNumber,
     at: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}),
   });
-  logSignoff(batch, test, { kind: "checklist", refId: unit.id, version: null, items: itemIds, emp: me.employeeNumber, name: me.name, method: withPin ? "pin" : "sign-in", device, signedOn: signedIn.employeeNumber });
+  logSignoff(batch, test, { kind: "checklist", refId: unit.id, version: null, items: itemIds, emp: me.employeeNumber, name: me.name, method: "pin", device, signedOn: signedIn.employeeNumber });
   await batch.commit();
   return { ok: true, count: itemIds.length, name: me.name, test };
 });
