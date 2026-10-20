@@ -56,7 +56,8 @@ export function handoffFolds(me, onOpen) {
 
 const STATUS = { draft: ["Not sent yet", "tag warn"], sent: ["Sent — waiting for received", "tag warn"], received: ["✓ Received", "tag ok"], discarded: ["Discarded", "tag"] };
 function handoffRow(h, onclick, lineId = null) {
-  const [label, cls] = STATUS[h.status] || STATUS.draft;
+  const [label0, cls] = STATUS[h.status] || STATUS.draft;
+  const label = h.status === "sent" ? `Sent — waiting for Team ${teamName(h.toTeam)} to sign received` : label0;
   const lineBits = lineId ? lineSummary(h, lineId) : "";
   return el("button", { class: "person-row", type: "button", onclick },
     el("span", { class: "person-name" }, `Team ${teamName(h.team)} → Team ${teamName(h.toTeam)} · ${fmtDay(h.date)}`),
@@ -320,6 +321,25 @@ export function openHandoff(container, { me, startId = null, onExit }) {
   }
 
   // ---- read (sent / received) -------------------------------------------------------------------------------------
+  // Who a sent handoff is waiting on, in plain words: the incoming team's Line Leads (it's on their Home), or why
+  // nobody can see it yet. Names come from the server (the app can't read other people's records).
+  const receivers = {};
+  function waitingNote(h) {
+    const team = `Team ${teamName(h.toTeam)}`;
+    if (receivers[h.id] === undefined) {
+      receivers[h.id] = null;
+      callHandoffReceivers({ id: h.id }).then(({ data: r }) => { receivers[h.id] = r.people; render(); }, () => { receivers[h.id] = "error"; render(); });
+    }
+    const list = receivers[h.id];
+    const mine = h.createdBy === me.emp ? " You wrote it, so someone else signs received." : "";
+    if (list === null) return el("p", { class: "message" }, `Waiting for ${team}'s Line Lead to sign received…`);
+    if (list === "error") return el("p", { class: "message" }, `Waiting for ${team}'s Line Lead to sign received. It's on their Home screen.${mine}`);
+    if (list.length) return el("p", { class: "message" }, `Waiting for ${team}'s Line Lead to sign received. It's on the Home screen of: ${list.map((p) => p.name).join(", ")}.${mine}`);
+    return el("div", { class: "message error", role: "alert" },
+      el("strong", {}, `Nobody on ${team} can see this on Home yet.`),
+      el("p", {}, `No one on ${team} has the Line Lead role with a login. Set one in Admin → People (role Line Lead, team ${teamName(h.toTeam)}). Until then a Supervisor, the Plant Manager, or an Admin can open it here and sign received.${mine}`));
+  }
+
   function renderView(h) {
     const canReceive = h.status === "sent" && h.createdBy !== me.emp && ((me.roles.includes("lead") && myTeam() === h.toTeam) || me.roles.some((r) => BACKUP_ROLES.includes(r)));
     async function receive() {
@@ -340,7 +360,8 @@ export function openHandoff(container, { me, startId = null, onExit }) {
       banner(ui),
       el("section", { class: "card sign-card" },
         el("p", {}, h.sentBy ? `✍ Sent by ${h.sentBy.name} · ${fmtWhen(h.sentBy.at)}${h.sentBy.device?.label ? ` · ${h.sentBy.device.label}` : ""}` : "Not sent yet"),
-        el("p", {}, h.receivedBy ? `✍ Received by ${h.receivedBy.name} · ${fmtWhen(h.receivedBy.at)}${h.receivedBy.device?.label ? ` · ${h.receivedBy.device.label}` : ""}` : h.status === "sent" ? "Waiting for the incoming Line Lead to sign received." : "")),
+        el("p", {}, h.receivedBy ? `✍ Received by ${h.receivedBy.name} · ${fmtWhen(h.receivedBy.at)}${h.receivedBy.device?.label ? ` · ${h.receivedBy.device.label}` : ""}` : "")),
+      h.status === "sent" ? waitingNote(h) : null,
       canReceive ? el("button", { class: "btn big", type: "button", onclick: receive }, "✍ Sign received") : null,
       canReceive ? el("p", { class: "hint" }, `You'll confirm with your PIN${TEST_MODE ? " — test site, practice only" : ""}.`) : null,
       autoBlock(h.auto),
