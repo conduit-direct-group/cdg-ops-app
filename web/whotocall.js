@@ -70,8 +70,9 @@ export function openWhoToCall(container, { onExit, backLabel = "Home", onFixes =
         el("p", { class: "card-note" }, `Still down after 1 hour? Call Maintenance, ext ${e.ext}.`),
         callButton(e)) : null,
       ui.maint === "yes" ? el("div", { class: "call-step" },
-        el("p", {}, "Don't call — submit a Maintenance Request so it's tracked."),
-        onReport ? el("button", { class: "btn danger", type: "button", onclick: onReport }, "🚨 Maintenance Request") : null) : null);
+        el("p", {}, `1. Submit a Maintenance Request so it's tracked. 2. Then call Maintenance, ext ${e.ext}.`),
+        onReport ? el("button", { class: "btn danger", type: "button", onclick: onReport }, "🚨 1 · Maintenance Request") : null,
+        callButton(e, { label: `📞 2 · Call Maintenance · ext ${e.ext}` })) : null);
   }
 
   function entryCard(e) {
