@@ -35,6 +35,7 @@ import { openRefDocs } from "./refdocs.js";
 import { openMachines, canViewMachines } from "./machines.js";
 import { openTestReset } from "./testdata.js";
 import { openTrucks, canViewTrucks, canCheckTrucks } from "./trucks.js";
+import { openReels, openReelAdmin } from "./reels.js";
 import { openSilos, openSiloAdmin, UPDATE_ROLES as SILO_UPDATE_ROLES, ALERT_ROLES as SILO_ALERT_ROLES } from "./silos.js";
 
 const screen = document.getElementById("screen");
@@ -268,6 +269,7 @@ function renderHome() {
       station: (formId) => openStationScreen(formId),
       lineCheck: (lineId, logId) => openLineCheckScreen(lineId, logId),
       silos: () => openSiloScreen(),
+      reels: (view) => openReelScreen(view),
     },
   });
   return [
@@ -316,6 +318,7 @@ function renderNav() {
     usesMachines(shownRoles()) ? item("checklists", "📋", "Checklists", () => openChecklistsHub()) : null,
     canViewMachines(shownRoles()) ? item("machines", "⚙", "Machines", () => openMachineScreen()) : null,
     canCheckTrucks(shownRoles()) ? item("trucks", "🚚", "Trucks", () => openTrucksScreen()) : null,
+    shownRoles().includes("quality") ? item("qc", "🏷", "QC hold", () => openReelScreen()) : null,
     item("ann", "📣", "Announce\u00adments" /* soft hyphen: wraps as Announce-ments on phones */, () => openAnn(), unsigned),
     item("more", "☰", "More", openMore),
   ].filter(Boolean));
@@ -336,6 +339,7 @@ function openMore() {
     roles.some((r) => ["maintenance", "admin", "plant-manager"].includes(r)) ? row("🚨", "Open issues", () => openIssues()) : null,
     roles.some((r) => ["training-safety", "admin"].includes(r)) ? row("🎓", "Training", () => { location.href = "training.html"; }) : null,
     canViewTrucks(roles) && !canCheckTrucks(roles) ? row("🚚", "Trucks", () => openTrucksScreen()) : null,
+    usesQc(roles) && !roles.includes("quality") ? row("🏷", "QC hold — flagged reels", () => openReelScreen()) : null,
     row("📄", "Reference documents", () => openDocsScreen()),
     !m.admin && editableForms(m.roles).length ? row("📝", "Edit forms", () => openFormsScreen()) : null,
     m.admin ? row("⚙", "Admin", () => go("adminMenu")) : null,
@@ -386,6 +390,7 @@ function openChecklistsHub() {
         (data.formTemplates || []).some((t) => t.id === "line-check" && t.active !== false)
           ? el("button", { class: "btn big secondary", type: "button", onclick: () => openLineCheckScreen() }, "📈 Line Check Log") : null,
         stationForms().length ? el("button", { class: "btn big secondary", type: "button", onclick: () => openStationScreen() }, "📋 Station checklists") : null,
+        el("button", { class: "btn big secondary", type: "button", onclick: () => openReelScreen("flag", openChecklistsHub, "Checklists") }, "🏷 Flag a reel"),
         shownRoles().some((r) => SILO_UPDATE_ROLES.includes(r)) ? el("button", { class: "btn big secondary", type: "button", onclick: () => openSiloScreen(openChecklistsHub, "Checklists") }, "🛢 Update silo levels") : null),
       el("h2", {}, "Machine checklists"),
       loading ? spinner() : !units.length ? emptyState("No machine checklists yet", "An admin sets them up in Admin → Checklists.") : null,
@@ -468,6 +473,15 @@ function openLineCheckScreen(lineId = null, logId = null) {
   setNav("checklists");
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openLineCheck(screen, { me: me(), startLine: lineId, startLogId: logId, onExit: () => go("home") });
+}
+
+// Flagged reels / QC hold: Quality's bar, the Checklists page (Flag a reel), More, Home items and cards (?reels=1).
+const usesQc = (roles) => roles.includes("quality") || usesMachines(roles);
+function openReelScreen(view = "list", back = () => go("home"), backLabel = "Home") {
+  if (closeModule) closeModule();
+  setNav(shownRoles().includes("quality") ? "qc" : back === openChecklistsHub ? "checklists" : "more");
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  closeModule = openReels(screen, { me: me(), start: view, onExit: back, backLabel });
 }
 
 // Silo levels (Checklists page, Home's silo card / low silo item, or a low silo notification: ?silos=1).
@@ -664,6 +678,7 @@ function renderAdminMenu() {
     el("button", { class: "btn", type: "button", onclick: () => openModule((c, o) => openFormsAdmin(c, { ...o, me: me() })) }, "📝 Forms"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openMapAdmin) }, "🗺 Shop map setup"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openSiloAdmin) }, "🛢 Silo alerts"),
+    el("button", { class: "btn", type: "button", onclick: () => openModule(openReelAdmin) }, "🏷 QC hold lists"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openTrainingAdmin) }, "🎓 Training setup"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openActivity) }, "📜 Admin activity"),
     TEST_MODE ? el("button", { class: "btn secondary", type: "button", onclick: () => openModule((c, o) => openTestReset(c, { ...o, onIssues: () => openIssues() })) }, "🧹 Reset test data") : null,
@@ -848,7 +863,8 @@ onAuthStateChanged(auth, async (user) => {
     const machinePage = params.get("machine"); // a link to one machine's parts & specs page
     const trucksLink = params.get("trucks"); // a truck arrived / out the door notification
     const silosLink = params.get("silos"); // a low silo notification
-    if (cat || machine || req || issuesLink || ann || handoff || shop || lineLog || docs || machinePage || trucksLink || silosLink) history.replaceState(null, "", location.pathname);
+    const reelsLink = params.get("reels"); // QC hold
+    if (cat || machine || req || issuesLink || ann || handoff || shop || lineLog || docs || machinePage || trucksLink || silosLink || reelsLink) history.replaceState(null, "", location.pathname);
     if (ann) openAnn(ann);
     else if (handoff) openHandoffScreen(handoff);
     else if (shop) openShopScreen(shop);
@@ -857,6 +873,7 @@ onAuthStateChanged(auth, async (user) => {
     else if (machinePage) openMachineScreen(machinePage);
     else if (trucksLink) openTrucksScreen();
     else if (silosLink) openSiloScreen();
+    else if (reelsLink) openReelScreen();
     else if (req) openRequestScreen(req);
     else if (issuesLink) openIssues();
     else if (cat || machine) openFixes(cat, machine);

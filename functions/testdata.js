@@ -25,6 +25,7 @@ const TEST_COLLECTIONS = [
   ["test_trucks", "Trucks"],
   ["test_siloLevels", "Silo levels"],
   ["test_siloReadings", "Silo readings"],
+  ["test_reels", "Flagged reels"],
 ];
 const DAY_MS = 86400000;
 

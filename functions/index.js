@@ -33,6 +33,7 @@ const specsLib = require("./machinespecs");
 const testData = require("./testdata");
 const trucksLib = require("./trucks");
 const silosLib = require("./silos");
+const reelsLib = require("./reels");
 const crypto = require("node:crypto");
 const { getMessaging } = require("firebase-admin/messaging");
 const { defineSecret } = require("firebase-functions/params");
@@ -3080,6 +3081,133 @@ exports.restoreMachineSpecItem = onCall(async (req) => {
     tx.delete(rRef);
     return out;
   });
+});
+
+// ---------------------------------------------------------------------------
+// Flagged Reels / QC Hold (Chris, 10-21-2026; SOP0012). Rules in reels.js. Test site: test_reels.
+// 🏷 Flagged → (Floater: in QC Staging) → ⚖️ decision (Line Lead / Quality / Supervisor, PIN) → ♻️ Reclamation closes
+// regrind and scrap → ✓ Done. Reasons, sizes, and SDRs: meta/reelSettings (Admin → QC hold); starting lists in reels.js.
+// ---------------------------------------------------------------------------
+
+const reelSettingsDoc = db.collection("meta").doc("reelSettings");
+
+async function reelSettings() {
+  const d = (await reelSettingsDoc.get()).data() || {};
+  return {
+    reasons: d.reasons || reelsLib.STARTING_REASONS.map((name) => ({ id: reelsLib.slug(name), name, active: true })),
+    sizes: d.sizes || reelsLib.STARTING_SIZES,
+    sdrs: d.sdrs || reelsLib.STARTING_SDRS,
+  };
+}
+
+async function getReel(tx, test, id) {
+  const snap = await tx.get(col("reels", test).doc(String(id || "")));
+  if (!snap.exists) throw new HttpsError("not-found", "That reel is no longer on the QC list.");
+  return snap;
+}
+
+// Anyone on the floor: { lineId, winder, tag | noTag, footage, reasonId, product { size, sdr, color }, photo, note }.
+exports.flagReel = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const [settings, lineSnaps, shiftForm] = await Promise.all([reelSettings(), lines.get(), formTemplates.doc(formsLib.SHIFT_FORM).get()]);
+  const activeLines = lineSnaps.docs.filter((l) => l.get("active") !== false);
+  const { reel, error } = reelsLib.cleanFlag(req.data, { reasons: settings.reasons, lineIds: activeLines.map((l) => l.id), isOurFile: isOurUpload });
+  if (error) throw new HttpsError("invalid-argument", error);
+  const now = Date.now();
+  const shift = formsLib.currentShift(shiftForm.get("shifts") || [], now);
+  const ref = col("reels", test).doc();
+  await db.runTransaction(async (tx) => {
+    tx.create(ref, {
+      ...reel, lineName: activeLines.find((l) => l.id === reel.lineId).get("name"), status: "flagged",
+      flagged: { at: FieldValue.serverTimestamp(), atMs: now, by: me.employeeNumber, byName: me.name, shiftId: shift?.shift.id || null, shiftName: shift?.shift.name || null },
+      flaggedDate: plantToday(), flaggedAtMs: now, dueMs: reelsLib.dueAfterNextShift(shift, now),
+      search: [reel.tag, reel.reasonName, reel.product.size, reel.product.sdr, reel.product.color, reel.note].join(" ").toLowerCase(),
+      ...(test ? { test: true } : {}),
+    });
+    auditRecord(tx, "flagged", "reel", ref.id, me.employeeNumber, { tag: reel.tag || "no tag", reason: reel.reasonName, test });
+  });
+  return { id: ref.id, test };
+});
+
+// Floater: { id } — moved to QC Staging.
+exports.stageReel = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  return db.runTransaction(async (tx) => {
+    const snap = await getReel(tx, test, req.data?.id);
+    if (snap.get("status") !== "flagged") throw new HttpsError("failed-precondition", "That reel was already moved or decided.");
+    tx.update(snap.ref, { status: "staged", staged: { at: FieldValue.serverTimestamp(), by: me.employeeNumber, byName: me.name } });
+    auditRecord(tx, "staged", "reel", snap.id, me.employeeNumber, { test });
+    return { ok: true };
+  });
+});
+
+// Line Lead / Quality / Supervisor, with their PIN: { id, kind, note, signer, device }.
+exports.decideReel = onCall(async (req) => {
+  await requireMember(req);
+  const test = isTest(req);
+  const signer = await requireSignature(req.data);
+  if (!reelsLib.canDecide(signer.roles)) throw new HttpsError("permission-denied", `${signer.name} can't decide on reels — a Line Lead, Quality, or Supervisor signs.`);
+  const { kind, note, error } = reelsLib.cleanDecision(req.data);
+  if (error) throw new HttpsError("invalid-argument", error);
+  const device = annLib.cleanDevice(req.data?.device);
+  const d = reelsLib.DECISIONS[kind];
+  return db.runTransaction(async (tx) => {
+    const snap = await getReel(tx, test, req.data?.id);
+    if (!["flagged", "staged"].includes(snap.get("status"))) throw new HttpsError("failed-precondition", "That reel already has a decision.");
+    const done = d.next === "done";
+    tx.update(snap.ref, {
+      status: d.next, decision: { kind, label: d.label, note, by: signer.employeeNumber, byName: signer.name, at: FieldValue.serverTimestamp(), atMs: Date.now(), device },
+      ...(done ? { doneAtMs: Date.now() } : {}),
+    });
+    logSignoff(tx, test, { kind: "reel-decision", refId: snap.id, version: 1, emp: signer.employeeNumber, name: signer.name, method: "pin", device, decision: kind });
+    auditRecord(tx, "decided", "reel", snap.id, signer.employeeNumber, { decision: kind, test });
+    return { ok: true, name: signer.name, next: d.next, test };
+  });
+});
+
+// Reclamation: { id, footage, segregation } — closes a regrind / scrap reel.
+exports.reclaimReel = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const { footage, segregation, error } = reelsLib.cleanReclaim(req.data);
+  if (error) throw new HttpsError("invalid-argument", error);
+  return db.runTransaction(async (tx) => {
+    const snap = await getReel(tx, test, req.data?.id);
+    if (snap.get("status") !== "reclaim") throw new HttpsError("failed-precondition", "That reel isn't waiting on Reclamation.");
+    tx.update(snap.ref, { status: "done", doneAtMs: Date.now(), reclaim: { footage, segregation, by: me.employeeNumber, byName: me.name, at: FieldValue.serverTimestamp() } });
+    auditRecord(tx, "reclaimed", "reel", snap.id, me.employeeNumber, { footage, test });
+    return { ok: true };
+  });
+});
+
+// Who can decide on this device (line tablets): Line Leads, Quality, Supervisors with a login.
+exports.reelDeciders = onCall(async (req) => {
+  const me = await requireMember(req);
+  const people = (await peopleList()).filter((p) => p.active && p.loginEnabled && p.id !== me.employeeNumber && reelsLib.canDecide(p.roles));
+  return { people: people.map((p) => ({ emp: p.id, name: p.name })) };
+});
+
+// Admins: { reasons?, sizes?, sdrs? } — the lists on the flag screen.
+exports.adminSaveReelSettings = onCall(async (req) => {
+  const adminNumber = await requireAdmin(req);
+  const cur = await reelSettings();
+  const next = { ...cur };
+  if (req.data?.reasons !== undefined) {
+    const { reasons, error } = reelsLib.cleanReasons(req.data.reasons);
+    if (error) throw new HttpsError("invalid-argument", error);
+    next.reasons = reasons;
+  }
+  for (const [k, what] of [["sizes", "sizes"], ["sdrs", "walls (SDR)"]]) {
+    if (req.data?.[k] === undefined) continue;
+    const { list, error } = reelsLib.cleanChoices(req.data[k], what);
+    if (error) throw new HttpsError("invalid-argument", error);
+    next[k] = list;
+  }
+  await reelSettingsDoc.set({ ...next, updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber });
+  await auditLog.add({ type: "updated", kind: "qc hold lists", recordId: "reelSettings", by: adminNumber, at: FieldValue.serverTimestamp() });
+  return { ok: true };
 });
 
 // ---------------------------------------------------------------------------

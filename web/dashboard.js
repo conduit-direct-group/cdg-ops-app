@@ -17,6 +17,7 @@ import { stationItems } from "./stations.js";
 import { lineCheckItems } from "./linecheck.js";
 import { db, TEST_MODE, callAdminListEmployees, callAnnouncementSummary } from "./firebase.js";
 import { siloItems, siloCard } from "./silos.js";
+import { reelItems, reelCard } from "./reels.js";
 import { collection, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 
 // Role order on a combined screen, and each role's "At a glance" cards (ids are shared, so duplicates merge).
@@ -24,12 +25,12 @@ import { collection, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/
 // requests, safety concerns) are gone — Needs you covers them.
 export const ROLE_CARDS = [
   ["admin", "Admin", ["system-alerts", "waiting-login"]],
-  ["plant-manager", "Plant Manager", ["pm-people", "ack-gaps", "silos"]],
+  ["plant-manager", "Plant Manager", ["pm-people", "ack-gaps", "silos", "reels-week"]],
   ["supervisor", "Supervisor", ["crew-gaps", "silos"]],
   ["lead", "Line Lead", []],
   ["operator", "Operator", []],
   ["maintenance", "Maintenance", []],
-  ["quality", "Quality", []],
+  ["quality", "Quality", ["reels-hold", "reels-shift"]],
   ["shipping", "Logistics & Distribution", ["silos"]],
   ["sales", "Sales", []],
   ["office", "Office", ["ack-gaps"]],
@@ -137,6 +138,7 @@ export function stopDashboard() {
 // Each returns { icon, title, num, line, alert, onOpen } or null while its data is still loading.
 function cardData(id, ctx) {
   const { go } = ctx;
+  if (id.startsWith("reels-")) return reelCard(id, () => go.reels(id === "reels-hold" ? "list" : "history"));
   const down = Object.entries(data.plantStatus?.down || {});
   const openIssues = data.openIssues || [];
   switch (id) {
@@ -281,6 +283,7 @@ function needsItems(ctx, roles) {
   }
 
   items.push(...siloItems(roles, go.silos));
+  items.push(...reelItems(roles, () => go.reels("list")));
   items.push(...handoffItems(me, go.handoff));
   items.push(...shopItems(me, roles, go.shop));
   if (machines) items.push(...stationItems(roles, go.station));

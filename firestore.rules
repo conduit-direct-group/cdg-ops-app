@@ -292,6 +292,17 @@ service cloud.firestore {
       }
     }
 
+    // Flagged reels / QC hold and its lists (reasons, sizes, SDRs): everyone signed in reads — the floor works the list.
+    match /reels/{id} {
+      allow read: if member();
+    }
+    match /test_reels/{id} {
+      allow read: if member();
+    }
+    match /meta/reelSettings {
+      allow read: if member();
+    }
+
     // Silo levels (from the Shift Handoff and "Update silo levels") and their low lines: everyone signed in reads.
     match /siloLevels/{id} {
       allow read: if member();

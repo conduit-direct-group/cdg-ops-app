@@ -1375,3 +1375,39 @@ body.has-nav .toast { bottom: calc(84px + env(safe-area-inset-bottom)); }
 .silo-row.low .silo-level { color: var(--white); }
 .silo-set { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 var(--s3); padding: var(--s2) 0; border-bottom: 1px solid var(--line); }
 @media (min-width: 760px) { .silo-set { grid-template-columns: 140px minmax(0, 200px) minmax(0, 1fr); align-items: center; } }
+
+/* ---- Flagged reels / QC hold --------------------------------------------------------------------------------- */
+.reel-cols { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 var(--s4); align-items: start; }
+.reel-col { min-width: 0; }
+.reel-list { display: flex; flex-direction: column; gap: var(--s2); margin: 0 0 var(--s3); }
+.reel { display: flex; flex-direction: column; gap: var(--s1); padding: var(--s3); border: var(--border-width) solid var(--line); border-radius: var(--radius); background: var(--surface-1); min-width: 0; }
+.reel.late { border-color: var(--red); background: var(--red-tint); }
+.reel.done { color: var(--muted); }
+.reel-status { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); margin: 0; font-weight: bold; }
+.reel-title { font-size: var(--text-section); }
+.reel-note { margin: 0; white-space: pre-line; }
+.reel > .btn { margin: var(--s2) 0 0; }
+.reel > .link-btn { align-self: flex-start; }
+.reel-decide { display: flex; flex-direction: column; gap: var(--s2); margin-top: var(--s2); }
+.reel-form .field-label.strong { margin-top: var(--s3); }
+.reel-tag-row { display: flex; gap: var(--s2); align-items: center; }
+.reel-tag-row .field { flex: 1 1 auto; min-width: 0; }
+.reel-tag-row .chip { flex: none; }
+.reel-photo { width: 160px; max-width: 100%; border-radius: var(--radius); }
+.reel-reasons { display: flex; flex-direction: column; gap: var(--s2); margin: var(--s2) 0; }
+.reel-reason { display: flex; gap: var(--s2); align-items: center; }
+.reel-reason .field { flex: 1 1 auto; min-width: 0; }
+.reel-filters { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: var(--s2); margin: var(--s2) 0; }
+.trend-wrap { overflow-x: auto; margin: var(--s2) 0 var(--s3); }
+.trend { border-collapse: separate; border-spacing: 2px; font-size: var(--text-small); min-width: 560px; }
+.trend caption { text-align: left; color: var(--muted); padding-bottom: var(--s1); }
+.trend th { font-weight: normal; color: var(--muted); text-align: left; padding: var(--s1) var(--s2); white-space: nowrap; }
+.trend thead th { text-align: center; }
+.trend td { text-align: center; padding: var(--s1) var(--s2); border-radius: 4px; min-width: 48px; }
+.trend td.cell { background: color-mix(in srgb, var(--orange) var(--heat, 0%), var(--surface-1)); color: var(--white); }
+.trend td.cell.zero { background: var(--surface-1); color: var(--muted); }
+.trend td.total { font-weight: bold; }
+@media (min-width: 900px) {
+  .reel-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  main[data-width="wide"] .reel > .btn { width: 100%; margin-right: 0; }
+}

@@ -142,6 +142,13 @@ export const callLineLogReviewers = call("lineLogReviewers");
 export const callSaveRefDoc = call("saveRefDoc");
 // Machines — parts & specs
 export const callSaveMachineSpecs = call("saveMachineSpecs");
+// Flagged reels / QC hold
+export const callFlagReel = call("flagReel");
+export const callStageReel = call("stageReel");
+export const callDecideReel = call("decideReel");
+export const callReclaimReel = call("reclaimReel");
+export const callReelDeciders = call("reelDeciders");
+export const callAdminSaveReelSettings = call("adminSaveReelSettings");
 // Silo levels
 export const callUpdateSiloLevels = call("updateSiloLevels");
 export const callAdminSaveSiloSettings = call("adminSaveSiloSettings");
