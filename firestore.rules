@@ -14,7 +14,7 @@ service cloud.firestore {
 
     // Signed in with employee # + PIN, and already picked their own PIN (not on a temporary one).
     function signedIn() {
-      return request.auth != null && request.auth.token.pinTemp != true;
+      return request.auth != null && request.auth.token.get('pinTemp', false) != true;
     }
 
     function employee() {

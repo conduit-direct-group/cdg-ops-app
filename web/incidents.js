@@ -6,9 +6,9 @@
 
 import { el, breakable, friendlyError, spinner, emptyState, banner, toast, picker, confirmSheet } from "./ui.js";
 import { data, onDataChange } from "./data.js";
-import { db, storage, TEST_MODE, callReportIncident, callMyIncidents, callSaveIncidentFollowUp, callAddIncidentAction, callCompleteIncidentAction, callCloseIncident, callMarkIncidentShared, callIncidentPeople, callAdminSaveRotation, callSignIncident } from "./firebase.js";
+import { db, storage, TEST_MODE, callReportIncident, callMyIncidents, callSaveIncidentFollowUp, callAddIncidentAction, callCompleteIncidentAction, callCloseIncident, callMarkIncidentShared, callIncidentPeople, callAdminSaveRotation, callSignIncident, callIncidentFiles, callExportInjuryReports } from "./firebase.js";
 import { collection, doc, getDoc, getDocs, query, where } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
-import { ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-storage.js";
+import { ref, uploadBytesResumable } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-storage.js";
 import { signOff, deviceInfo } from "./signoff.js";
 import { sigPad } from "./sigpad.js";
 
@@ -17,8 +17,6 @@ export const canFollowIncidents = (roles) => roles.some((r) => FOLLOW_ROLES.incl
 const TYPES = [["near-miss", "⚠ Near miss"], ["first-aid", "🩹 First aid"], ["injury", "🚑 Injury"], ["property", "🏚 Property damage"], ["spill", "🛢 Spill / environmental"]];
 const TYPE_LABEL = Object.fromEntries(TYPES);
 const STATUS = { reported: "🆕 Reported", investigating: "🔍 Investigating", actions: "🛠 Actions open", closed: "✓ Closed" };
-const TREATMENTS = [["", "—"], ["first-aid-only", "First aid only"], ["medical-treatment", "Medical treatment beyond first aid"], ["emergency-room", "Emergency room"], ["hospitalized-overnight", "Hospitalized overnight"]];
-const OUTCOMES = [["", "—"], ["not-recordable", "Not recordable"], ["other-recordable", "Other recordable case"], ["restricted", "Job transfer or restriction"], ["days-away", "Days away from work"], ["death", "Death"]];
 const ANON_KEY = "cdg.anonIncidents";
 const SIG_TYPES = ["injury", "first-aid"]; // Supervisor + witnesses sign with a finger (Chris, 10-21-2026)
 const WHY_PROMPTS = ["Why did it happen?", "Why was that?", "Why was that?", "Why was that?", "Why was that? (often the root cause)"];
@@ -34,12 +32,25 @@ const fmtWhen = (iso) => (iso ? new Date(iso).toLocaleString("en-US", { month: "
 const fmtDay = (day) => (day ? new Date(`${day}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "");
 const monthName = (m) => new Date(`${m}-15T12:00:00`).toLocaleDateString("en-US", { month: "short", year: "2-digit" });
 
-function upload(file, emp, onProgress) {
-  return new Promise((resolve, reject) => {
-    const safe = file.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-80);
-    const task = uploadBytesResumable(ref(storage, `uploads/${emp}/${Date.now()}_${safe}`), file, { contentType: file.type });
-    task.on("state_changed", (s) => onProgress(Math.round((s.bytesTransferred / s.totalBytes) * 100)), reject, async () => resolve(await getDownloadURL(task.snapshot.ref)));
+// Safety photos go to the PRIVATE drop folder safety/incoming/ under a random name — no employee number anywhere, so
+// anonymous near misses stay anonymous. The photo is shrunk first (max 1600 px, JPEG). Nobody can open it from there;
+// the server moves it into the report's private folder. Returns { id, preview } (preview = a picture on this phone only).
+const randomId = () => Array.from(crypto.getRandomValues(new Uint8Array(24)), (b) => "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789"[b % 56]).join("");
+async function shrink(file) {
+  const img = await createImageBitmap(file);
+  const scale = Math.min(1, 1600 / Math.max(img.width, img.height));
+  const canvas = Object.assign(document.createElement("canvas"), { width: Math.round(img.width * scale), height: Math.round(img.height * scale) });
+  canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+  return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.8));
+}
+async function uploadSafetyPhoto(file, onProgress) {
+  const blob = await shrink(file);
+  const id = `${randomId()}.jpg`;
+  await new Promise((resolve, reject) => {
+    const task = uploadBytesResumable(ref(storage, `safety/incoming/${id}`), blob, { contentType: "image/jpeg" });
+    task.on("state_changed", (s) => onProgress(Math.round((s.bytesTransferred / s.totalBytes) * 100)), reject, resolve);
   });
+  return { id, preview: URL.createObjectURL(blob) };
 }
 
 // ---- Home ----------------------------------------------------------------------------------------------------------
@@ -122,7 +133,7 @@ export function openIncidents(container, { me, start = "home", startId = null, o
     if (!navigator.onLine) return say(friendlyError({ code: "offline" }));
     Object.assign(ui, { busy: true, message: "" });
     try {
-      ui.form.photos.push(await upload(file, me.emp, (p) => { ui.upload = `Uploading photo: ${p}%`; render(); }));
+      ui.form.photos.push(await uploadSafetyPhoto(file, (p) => { ui.upload = `Uploading photo: ${p}%`; render(); }));
       Object.assign(ui, { busy: false, upload: "" });
       render();
     } catch (err) { say(friendlyError(err)); }
@@ -142,7 +153,7 @@ export function openIncidents(container, { me, start = "home", startId = null, o
     if (signatures && !signatures.supervisor && !(await confirmSheet({ title: "Send without the Supervisor's signature?", text: "The report is sent now and waits for the Supervisor to sign it from My reports on this device. It can't be closed until they sign.", confirmLabel: "Send now, sign later" }))) return;
     const out = await act(() => callReportIncident({
       type: f.type, occurredAt: f.occurredAt, place: { lineId: f.lineId, stationId: f.stationId, label: f.label }, what: f.what, immediate: f.immediate,
-      photos: f.photos, witnesses: signatures ? f.witnessRows.map((w) => w.name).filter(Boolean).join(", ") : f.witnesses, anonymous: f.anonymous, hurt: { name: f.hurtName, bodyPart: f.bodyPart },
+      photos: f.photos.map((p) => p.id), witnesses: signatures ? f.witnessRows.map((w) => w.name).filter(Boolean).join(", ") : f.witnesses, anonymous: f.anonymous, hurt: { name: f.hurtName, bodyPart: f.bodyPart },
       ...(signatures ? { signatures, device: deviceInfo() } : {}),
     }), submit);
     if (out) pads.clear();
@@ -178,12 +189,14 @@ export function openIncidents(container, { me, start = "home", startId = null, o
         el("input", { class: "field", value: f.label, maxlength: "80", placeholder: "Or type the spot (e.g. break room, dock 2)", oninput: (e) => { f.label = e.target.value; } }),
         hurt ? [label("Who was hurt?"), el("input", { class: "field", value: f.hurtName, maxlength: "80", oninput: (e) => { f.hurtName = e.target.value; } }),
           label("Body part (optional)"), el("input", { class: "field", value: f.bodyPart, maxlength: "80", placeholder: "e.g. left hand", oninput: (e) => { f.bodyPart = e.target.value; } }),
-          el("p", { class: "card-note" }, "Only Training & Safety, the Plant Manager, and Admins see this report. Leave out medical details — they're added at follow-up only if needed.")] : null,
+          el("p", { class: "inc-hr-note" }, "📄 Medical paperwork goes to HR, not here."),
+          el("p", { class: "card-note" }, "Only Training & Safety, the Plant Manager, and Admins see this report.")] : null,
         label("What happened?"), el("textarea", { class: "field", rows: "3", maxlength: "2000", oninput: (e) => { f.what = e.target.value; } }, f.what),
         label("What was done right away?"), el("textarea", { class: "field", rows: "2", maxlength: "1000", placeholder: "e.g. stopped the line, cleaned up the spill", oninput: (e) => { f.immediate = e.target.value; } }, f.immediate),
         hurt ? null : [label("Witnesses (optional)"), el("input", { class: "field", value: f.witnesses, maxlength: "300", oninput: (e) => { f.witnesses = e.target.value; } })],
         label("Photos (optional)"),
-        f.photos.length ? el("div", { class: "inc-photos" }, f.photos.map((u) => el("img", { src: u, alt: "Photo" }))) : null,
+        f.photos.length ? el("div", { class: "inc-photos" }, f.photos.map((p) => el("img", { src: p.preview, alt: "Photo" }))) : null,
+        el("p", { class: "card-note" }, "Photos of the area or the damage. Only Training & Safety, the Plant Manager, and Admins can see them."),
         fileInput,
         el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => fileInput.click() }, "📷 Add photo"),
         ui.upload ? el("p", { class: "card-note", role: "status" }, ui.upload) : null,
@@ -266,6 +279,8 @@ export function openIncidents(container, { me, start = "home", startId = null, o
       const osha = ["injury", "first-aid"].includes(inc.type) ? ((await getDoc(doc(db, base, inc.id, "private", "osha"))).data() || {}) : null;
       const acts = await getDocs(query(collection(db, inc.test ? "test_incidentActions" : "incidentActions"), where("incidentId", "==", inc.id)));
       const sigs = SIG_TYPES.includes(inc.type) ? ((await getDoc(doc(db, base, inc.id, "private", "signatures"))).data() || { supervisor: null, witnesses: [] }) : null;
+      ui.files = null;
+      callIncidentFiles({ id: inc.id }).then((r) => { ui.files = r.data; render(); }, () => { ui.files = { error: true }; render(); });
       ui.one = { inc, osha, sigs, actions: acts.docs.map((d) => ({ id: d.id, ...d.data() })), whys: [...(inc.whys || []), "", "", "", "", ""].slice(0, 5), rootCause: inc.rootCause || "", newAction: { text: "", ownerEmp: "", due: "" } };
       if (!ui.people) callIncidentPeople().then((r) => { ui.people = r.data; render(); }, () => { ui.people = { owners: [], closers: [] }; render(); });
     } catch (err) { ui.one = { error: friendlyError(err) }; }
@@ -330,7 +345,7 @@ export function openIncidents(container, { me, start = "home", startId = null, o
             el("strong", {}, "What happened"), el("p", { class: "inc-text" }, breakable(i.what)),
             i.immediate ? [el("strong", {}, "Done right away"), el("p", { class: "inc-text" }, breakable(i.immediate))] : null,
             el("p", { class: "card-note" }, [i.anonymous ? "Sent anonymously" : `Reported by ${i.createdByName || ""}`, i.witnesses ? `Witnesses: ${i.witnesses}` : null].filter(Boolean).join(" · ")),
-            i.photos?.length ? el("div", { class: "inc-photos" }, i.photos.map((u) => el("a", { href: u, target: "_blank", rel: "noopener" }, el("img", { src: u, alt: "Photo" })))) : null),
+            i.photoPaths?.length ? (ui.files === null ? spinner("Loading photos…") : ui.files.error ? el("p", { class: "card-note" }, "Photos couldn't load — reopen the report.") : el("div", { class: "inc-photos" }, ui.files.photos.filter(Boolean).map((u) => el("img", { src: u, alt: "Photo", class: "inc-photo-big" })))) : null),
           o.sigs ? el("section", { class: o.sigs.supervisor ? "card" : "card inc-sig-missing" },
             el("strong", {}, "✍ Signatures"),
             o.sigs.supervisor ? sigView("Supervisor", o.sigs.supervisor) : el("p", {}, "⚠ The Supervisor hasn't signed yet — the report can't be closed until they do."),
@@ -344,21 +359,15 @@ export function openIncidents(container, { me, start = "home", startId = null, o
             o.whys.map((w, n) => field(`${n + 1}. ${WHY_PROMPTS[n]}`, el("input", { class: "field", value: w, maxlength: "500", disabled: closed, oninput: (e) => { o.whys[n] = e.target.value; } }), true)),
             field("Root cause", el("textarea", { class: "field", rows: "2", maxlength: "1000", disabled: closed, oninput: (e) => { o.rootCause = e.target.value; } }, o.rootCause), true),
             o.osha ? [
-              el("strong", { class: "inc-sub" }, "OSHA 300 / 301 details"),
-              el("p", { class: "card-note" }, "Kept for recordkeeping and export later. Only Training & Safety, the Plant Manager, and Admins can see these. Record only what's needed."),
+              el("strong", { class: "inc-sub" }, "Injury record"),
+              el("p", { class: "inc-hr-note" }, "📄 Medical paperwork goes to HR, not here — no doctor's notes, diagnoses, or claim forms in the app."),
               el("div", { class: "spec-fields" },
-                field("Injured person", txt(o.osha, "injuredName", 80)), field("Employee #", txt(o.osha, "injuredEmp", 10)), field("Job title", txt(o.osha, "jobTitle", 60)),
-                field("Date of hire", el("input", { class: "field", type: "date", value: o.osha.dateOfHire || "", disabled: closed, oninput: (e) => { o.osha.dateOfHire = e.target.value; } })),
-                field("Time began work", el("input", { class: "field", type: "time", value: o.osha.timeBeganWork || "", disabled: closed, oninput: (e) => { o.osha.timeBeganWork = e.target.value; } })),
-                field("Body part", txt(o.osha, "bodyPart", 80)), field("Injury or illness (e.g. cut, strain)", txt(o.osha, "nature", 120)),
-                field("Object or substance", txt(o.osha, "objectOrSubstance", 200)),
-                field("What they were doing", el("textarea", { class: "field", rows: "2", maxlength: "500", disabled: closed, oninput: (e) => { o.osha.activity = e.target.value; } }, o.osha.activity || ""), true),
-                field("Treatment", sel(TREATMENTS, o.osha.treatment || "", (v) => { o.osha.treatment = v; })),
-                field("Physician / provider", txt(o.osha, "physician", 120)), field("Facility", txt(o.osha, "facility", 160)),
-                field("Outcome", sel(OUTCOMES, o.osha.outcome || "", (v) => { o.osha.outcome = v; })),
-                field("Days away", el("input", { class: "field", type: "number", min: "0", value: o.osha.daysAway ?? "", disabled: closed, oninput: (e) => { o.osha.daysAway = e.target.value; } })),
-                field("Days restricted / transferred", el("input", { class: "field", type: "number", min: "0", value: o.osha.daysRestricted ?? "", disabled: closed, oninput: (e) => { o.osha.daysRestricted = e.target.value; } }))),
-              el("label", { class: "check-row" }, el("input", { type: "checkbox", checked: o.osha.privacyCase === true, disabled: closed, onchange: (e) => { o.osha.privacyCase = e.target.checked; } }), el("span", {}, "Privacy case (name left off the 300 log)")),
+                field("Who was hurt", txt(o.osha, "injuredName", 80)),
+                field("Injury type (e.g. cut, burn)", txt(o.osha, "injuryType", 80)),
+                field("Body part", txt(o.osha, "bodyPart", 80)),
+                field("First aid given", txt(o.osha, "firstAidGiven", 200), true),
+                field("Went to a doctor?", sel([["", "—"], ["no", "No"], ["yes", "Yes"]], o.osha.wentToDoctor || "", (v) => { o.osha.wentToDoctor = v; }))),
+              el("p", { class: "card-note" }, "Kept 5 years after the report is closed — it can't be deleted in the app."),
             ] : null,
             closed ? null : el("div", { class: "btn-row" },
               el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: () => saveFollowUp(false) }, "Save"),
@@ -389,8 +398,10 @@ export function openIncidents(container, { me, start = "home", startId = null, o
   }
 
   function sigView(who, s) {
+    const files = ui.files?.signatures;
+    const pic = who === "Supervisor" ? files?.supervisor?.image : files?.witnesses?.[Number(who.replace(/\D/g, "")) - 1]?.image;
     return el("figure", { class: "inc-sig" },
-      el("img", { src: s.png, alt: `${who} signature: ${s.name}` }),
+      pic ? el("img", { src: pic, alt: `${who} signature: ${s.name}` }) : el("div", { class: "inc-sig-wait" }, ui.files === null ? "Loading signature…" : "Signature on file"),
       el("figcaption", {}, `${who}: ${s.name}${s.atMs ? ` · ${new Date(s.atMs).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : ""}`));
   }
 
@@ -522,4 +533,70 @@ export function openRotationAdmin(container, { onExit }) {
 
   render();
   return onDataChange(() => { if (!ui.draft) render(); });
+}
+
+// ---- Admin → Export a year's injury reports (PDF) ------------------------------------------------------------
+// For the locked HR folder: injury and first-aid reports for one year, with the injury record (type, body part, first
+// aid, doctor yes/no), root cause, actions, and signatures. "Print / Save as PDF" uses the browser's own PDF save.
+
+
+export function openInjuryExport(container, { onExit }) {
+  const thisYear = Number(today().slice(0, 4));
+  const ui = { year: String(thisYear), data: null, busy: false, message: "", messageKind: "", retry: null };
+
+  async function load() {
+    if (!navigator.onLine) { Object.assign(ui, { message: friendlyError({ code: "offline" }), messageKind: "error", retry: load }); return render(); }
+    Object.assign(ui, { busy: true, data: null, message: "", retry: null });
+    render();
+    try {
+      ui.data = (await callExportInjuryReports({ year: ui.year })).data;
+    } catch (err) {
+      Object.assign(ui, { message: friendlyError(err), messageKind: "error", retry: load });
+    }
+    ui.busy = false;
+    render();
+  }
+
+  const sig = (who, s) => (s ? el("figure", { class: "exp-sig" }, s.image ? el("img", { src: s.image, alt: `${who} signature` }) : null, el("figcaption", {}, `${who}: ${s.name}${s.atMs ? ` · ${new Date(s.atMs).toLocaleString("en-US")}` : ""}`)) : el("p", {}, `${who}: not signed`));
+
+  function report(r) {
+    const inj = r.injury || {};
+    return el("section", { class: "exp-report" },
+      el("h2", {}, `${TYPE_LABEL[r.type]} · ${fmtWhen(r.occurredAt)} · ${r.placeName}`),
+      el("table", { class: "print-table" },
+        [["Status", STATUS[r.status] || r.status], ["Reported by", r.reportedBy], ["Who was hurt", inj.injuredName], ["Injury type", inj.injuryType], ["Body part", inj.bodyPart],
+          ["First aid given", inj.firstAidGiven], ["Went to a doctor", inj.wentToDoctor === "yes" ? "Yes" : inj.wentToDoctor === "no" ? "No" : ""],
+          ["What happened", r.what], ["Done right away", r.immediate], ["Witnesses", r.witnesses], ["Root cause", r.rootCause],
+          ["Why (5 Whys)", (r.whys || []).filter(Boolean).map((w, n) => `${n + 1}. ${w}`).join("  ")],
+          ["Corrective actions", (r.actions || []).map((a) => `${a.done ? "✓" : "○"} ${a.text} — ${a.owner}, due ${a.due}`).join("  ")],
+          ["Closed", r.closedAtMs ? `${new Date(r.closedAtMs).toLocaleDateString("en-US")} by ${r.closedBy}` : "Not closed"],
+          ["Photos on file", String(r.photoCount || 0)]].map(([k, v]) => el("tr", {}, el("th", {}, k), el("td", {}, v || "—")))),
+      el("div", { class: "exp-sigs" }, sig("Supervisor", r.signatures?.supervisor), (r.signatures?.witnesses || []).map((w, n) => sig(`Witness ${n + 1}`, w))));
+  }
+
+  function render() {
+    const years = Array.from({ length: 6 }, (_, n) => String(thisYear - n));
+    const d = ui.data;
+    container.replaceChildren(...[
+      el("div", { class: "no-print" },
+        el("button", { class: "link-btn", type: "button", onclick: onExit }, "← Admin"),
+        el("h1", {}, "🗂 Export injury reports"),
+        el("p", { class: "hint" }, "Injury and first-aid reports for one year, for the locked HR folder. Reports are kept 5 years after closing and can't be deleted in the app. Every export is logged."),
+        banner(ui),
+        el("div", { class: "btn-row" },
+          picker({ title: "Year", value: ui.year, options: years.map((y) => ({ value: y, label: y })), onChange: (v) => { ui.year = v; ui.data = null; render(); } }),
+          el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: load }, ui.busy ? "Loading…" : "Show the year's reports"),
+          d ? el("button", { class: "btn secondary", type: "button", onclick: () => window.print() }, "🖨 Print / Save as PDF") : null),
+        d ? el("p", { class: "card-note" }, "In the print window, choose “Save as PDF” as the printer, then save it to the HR folder.") : null),
+      ui.busy ? spinner("Loading the year's reports…") : null,
+      d ? el("article", { class: "print-doc exp-doc" },
+        el("h1", {}, `Injury and first-aid reports — ${d.year}${d.test ? " (TEST SITE — practice data)" : ""}`),
+        el("p", {}, `${d.rows.length} report${d.rows.length === 1 ? "" : "s"} · exported ${new Date().toLocaleString("en-US")} · Conduit Direct Group · CDG Ops`),
+        d.rows.length ? d.rows.map(report) : el("p", {}, "No injury or first-aid reports that year."),
+        el("p", { class: "print-foot" }, "Medical paperwork (doctor's notes, diagnoses, claim forms) is kept by HR, not in this app.")) : null,
+    ].flat(3).filter(Boolean));
+  }
+
+  render();
+  return () => {};
 }

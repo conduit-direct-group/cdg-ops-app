@@ -7,7 +7,7 @@ service firebase.storage {
 
     // Signed in with employee # + PIN, and already picked their own PIN.
     function signedIn() {
-      return request.auth != null && request.auth.token.pinTemp != true;
+      return request.auth != null && request.auth.token.get('pinTemp', false) != true;
     }
 
     // Fix Library files copied from the old library (written by the server only).
@@ -23,6 +23,25 @@ service firebase.storage {
         && request.auth.token.emp == employeeNumber
         && request.resource.size < 250 * 1024 * 1024
         && request.resource.contentType.matches('image/.*|video/.*|application/pdf');
+    }
+
+    // Safety reports (near misses, injuries, first aid): the PRIVATE folder. Photos and drawn signatures are readable
+    // only by Training & Safety, Plant Manager, and Admin (checked against the live employee record). Only the server
+    // writes here, except the phone's photo upload into safety/incoming/ — a random file name (no employee number, so
+    // anonymous near misses stay anonymous), JPEG, under 5 MB. Nobody else can read incoming photos.
+    function safetyFollower() {
+      return signedIn()
+        && firestore.get(/databases/(default)/documents/employees/$(request.auth.token.emp)).data.roles.hasAny(['training-safety', 'plant-manager', 'admin'])
+        && firestore.get(/databases/(default)/documents/employees/$(request.auth.token.emp)).data.active != false;
+    }
+    match /safety/incoming/{fileName} {
+      allow create: if signedIn()
+        && fileName.matches('^[A-Za-z0-9]{20,40}[.]jpg$')
+        && request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType == 'image/jpeg';
+    }
+    match /safety/{allPaths=**} {
+      allow read: if safetyFollower();
     }
 
     // Everything else stays locked.

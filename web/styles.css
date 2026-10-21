@@ -1457,3 +1457,15 @@ a.btn { text-decoration: none; }
 .inc-sig img { display: block; width: 100%; max-width: 360px; border-radius: var(--radius); background: var(--white); }
 .inc-sig figcaption { color: var(--muted); font-size: var(--text-small); margin-top: var(--s1); }
 .inc-sig-missing { border-left-color: var(--red); }
+
+/* ---- Injury records: HR note, export (print / PDF) -------------------------------------------------------------- */
+.inc-hr-note { margin: var(--s2) 0; padding: var(--s2) var(--s3); border-left: 5px solid var(--orange); background: var(--orange-tint); border-radius: var(--radius); }
+.inc-photo-big { width: 160px; height: 160px; }
+.inc-sig-wait { padding: var(--s3); border-radius: var(--radius); background: var(--surface-2); color: var(--muted); }
+.exp-report { break-inside: avoid; margin: var(--s4) 0; }
+.exp-report h2 { font-size: var(--text-body); margin: 0 0 var(--s2); }
+.exp-sigs { display: flex; flex-wrap: wrap; gap: var(--s3); margin-top: var(--s2); }
+.exp-sig { margin: 0; }
+.exp-sig img { display: block; width: 240px; max-width: 100%; border: 1px solid var(--line); }
+.exp-sig figcaption { font-size: var(--text-small); }
+@media print { .app-nav, .call-btn, .topbar-right { display: none !important; } body.has-nav { padding: 0 !important; } }

@@ -152,6 +152,9 @@ export const callCloseIncident = call("closeIncident");
 export const callMarkIncidentShared = call("markIncidentShared");
 export const callIncidentPeople = call("incidentPeople");
 export const callSignIncident = call("signIncident");
+export const callIncidentFiles = call("incidentFiles");
+export const callExportInjuryReports = call("exportInjuryReports", { timeout: 120000 });
+export const callAdminMoveSafetyFiles = call("adminMoveSafetyFiles", { timeout: 300000 });
 export const callAdminSaveRotation = call("adminSaveRotation");
 // Who to Call
 export const callAdminSaveCallSheet = call("adminSaveCallSheet");

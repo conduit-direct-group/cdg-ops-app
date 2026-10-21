@@ -37,7 +37,7 @@ import { openTestReset } from "./testdata.js";
 import { openTrucks, canViewTrucks, canCheckTrucks } from "./trucks.js";
 import { openReels, openReelAdmin } from "./reels.js";
 import { openWhoToCall, openCallAdmin, lineDownReminder } from "./whotocall.js";
-import { openIncidents, openRotationAdmin } from "./incidents.js";
+import { openIncidents, openRotationAdmin, openInjuryExport } from "./incidents.js";
 import { openSilos, openSiloAdmin, UPDATE_ROLES as SILO_UPDATE_ROLES, ALERT_ROLES as SILO_ALERT_ROLES } from "./silos.js";
 
 const screen = document.getElementById("screen");
@@ -725,6 +725,7 @@ function renderAdminMenu() {
     el("button", { class: "btn", type: "button", onclick: () => openModule(openReelAdmin) }, "🏷 QC hold lists"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openCallAdmin) }, "📞 Who to Call"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openRotationAdmin) }, "🗓 Shift rotation"),
+    el("button", { class: "btn", type: "button", onclick: () => openModule(openInjuryExport) }, "🗂 Export injury reports (PDF)"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openTrainingAdmin) }, "🎓 Training setup"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openActivity) }, "📜 Admin activity"),
     TEST_MODE ? el("button", { class: "btn secondary", type: "button", onclick: () => openModule((c, o) => openTestReset(c, { ...o, onIssues: () => openIssues() })) }, "🧹 Reset test data") : null,

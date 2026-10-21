@@ -3129,7 +3129,47 @@ async function refreshIncident(tx, test, incRef, curStatus, started) {
   return { openActions: open, status: incidentsLib.nextStatus(curStatus, { openActions: open, started }) };
 }
 
-// Anyone: { type, occurredAt, place, what, immediate, photos, witnesses, anonymous, hurt }.
+// Safety-report files (photos, drawn signatures): the PRIVATE storage folder — safety/{incidentId}/… (test site:
+// safety/test/{incidentId}/…). Storage rules let only Training & Safety, Plant Manager, Admin read it; the app shows the
+// files through incidentFiles (never a shareable link). Phones upload photos to safety/incoming/{random id}.jpg.
+const safetyFolder = (test, incidentId) => `safety/${test ? "test/" : ""}${incidentId}`;
+const bucketRef = () => getStorage().bucket();
+
+// Saves bytes as a private file (no download link is ever made for it).
+async function savePrivate(path, buffer, contentType) {
+  await bucketRef().file(path).save(buffer, { contentType, resumable: false, metadata: { cacheControl: "private, max-age=0" } });
+  return path;
+}
+
+// Moves the phone's uploads from safety/incoming into the report's folder. Returns the new paths.
+async function moveIncoming(uploadIds, folder) {
+  const out = [];
+  for (const [n, id] of uploadIds.entries()) {
+    const src = bucketRef().file(`safety/incoming/${id}`);
+    const [exists] = await src.exists();
+    if (!exists) throw new HttpsError("failed-precondition", "A photo didn't upload. Add it again.");
+    const [buf] = await src.download();
+    out.push(await savePrivate(`${folder}/photo-${n + 1}.jpg`, buf, "image/jpeg"));
+    await src.delete({ ignoreNotFound: true });
+  }
+  return out;
+}
+
+// A drawn signature (PNG data URL) → a private file; returns its path.
+async function saveSignature(folder, name, png) {
+  return savePrivate(`${folder}/${name}.png`, Buffer.from(png.split(",")[1], "base64"), "image/png");
+}
+
+async function fileDataUrl(path, type) {
+  try {
+    const [buf] = await bucketRef().file(path).download();
+    return `data:${type};base64,${buf.toString("base64")}`;
+  } catch {
+    return null;
+  }
+}
+
+// Anyone: { type, occurredAt, place, what, immediate, photos (upload ids), witnesses, anonymous, hurt, signatures }.
 exports.reportIncident = onCall(async (req) => {
   const me = await requireMember(req);
   const test = isTest(req);
@@ -3137,7 +3177,7 @@ exports.reportIncident = onCall(async (req) => {
   const { report, hurt, error } = incidentsLib.cleanReport(req.data, {
     lineIds: lineSnaps.docs.filter((l) => l.get("active") !== false).map((l) => l.id),
     stationIds: stationSnaps.docs.filter((s) => s.get("active") !== false).map((s) => s.id),
-    isOurFile: isOurUpload, nowIso: incidentsLib.plantNowIso(),
+    nowIso: incidentsLib.plantNowIso(),
   });
   if (error) throw new HttpsError("invalid-argument", error);
   const needsSigs = incidentsLib.SIG_TYPES.includes(report.type);
@@ -3150,18 +3190,24 @@ exports.reportIncident = onCall(async (req) => {
   const device = annLib.cleanDevice(req.data?.device);
   const placeLabel = report.place.label || stationSnaps.docs.find((s) => s.id === report.place.stationId)?.get("label") || lineSnaps.docs.find((l) => l.id === report.place.lineId)?.get("name") || "";
   const ref = col("incidents", test).doc();
+  // Files first, into the report's private folder: photos moved from incoming, signatures saved as PNG files.
+  const folder = safetyFolder(test, ref.id);
+  const photoPaths = await moveIncoming(report.photos, folder);
+  const stamp = async (x, file) => ({ name: x.name, path: await saveSignature(folder, file, x.png), atMs: Date.now(), device, collectedBy: me.employeeNumber });
+  const sigDoc = needsSigs ? {
+    supervisor: sigs.supervisor ? await stamp(sigs.supervisor, "sig-supervisor") : null,
+    witnesses: await Promise.all(sigs.witnesses.map((w, n) => stamp(w, `sig-witness-${n + 1}`))),
+  } : null;
+  const { photos: _drop, ...reportFields } = report;
   await db.runTransaction(async (tx) => {
     tx.create(ref, {
-      ...report, placeName: placeLabel, status: "reported", openActions: 0, whys: [], rootCause: "",
+      ...reportFields, photoPaths, placeName: placeLabel, status: "reported", openActions: 0, whys: [], rootCause: "",
       ...(needsSigs ? { supervisorSigned: !!sigs.supervisor, supervisorSignedName: sigs.supervisor?.name || "", witnessSignatures: sigs.witnesses.length } : {}),
       ...(report.anonymous ? {} : { createdBy: me.employeeNumber, createdByName: me.name }),
       createdAt: FieldValue.serverTimestamp(), createdAtMs: Date.now(), month: report.occurredAt.slice(0, 7), ...(test ? { test: true } : {}),
     });
     if (hurt) tx.create(ref.collection("private").doc("osha"), { injuredName: hurt.name, bodyPart: hurt.bodyPart });
-    if (needsSigs) {
-      const stamp = (x) => ({ ...x, atMs: Date.now(), device, collectedBy: me.employeeNumber });
-      tx.create(ref.collection("private").doc("signatures"), { supervisor: sigs.supervisor ? stamp(sigs.supervisor) : null, witnesses: sigs.witnesses.map(stamp) });
-    }
+    if (sigDoc) tx.create(ref.collection("private").doc("signatures"), sigDoc);
     auditRecord(tx, "reported", "incident", ref.id, report.anonymous ? "anonymous" : me.employeeNumber, { type: report.type, test });
   });
   const t = incidentsLib.TYPES[report.type];
@@ -3273,7 +3319,8 @@ exports.closeIncident = onCall(async (req) => {
     const { openActions } = await refreshIncident(tx, test, ref, snap.get("status"), true);
     if (openActions) throw new HttpsError("failed-precondition", `Finish the ${openActions} open action${openActions === 1 ? "" : "s"} first.`);
     if (incidentsLib.SIG_TYPES.includes(snap.get("type")) && snap.get("supervisorSigned") !== true) throw new HttpsError("failed-precondition", "The Supervisor hasn't signed this report yet.");
-    tx.update(ref, { status: "closed", openActions: 0, closed: { by: signer.employeeNumber, byName: signer.name, at: FieldValue.serverTimestamp(), device } });
+    const closedAtMs = Date.now();
+    tx.update(ref, { status: "closed", openActions: 0, closedAtMs, keepUntilMs: incidentsLib.keepUntilMs({ closedAtMs }), closed: { by: signer.employeeNumber, byName: signer.name, at: FieldValue.serverTimestamp(), device } });
     logSignoff(tx, test, { kind: "incident-closed", refId: ref.id, version: 1, emp: signer.employeeNumber, name: signer.name, method: "pin", device });
     auditRecord(tx, "closed", "incident", ref.id, signer.employeeNumber, { test });
     return { ok: true, name: signer.name, test };
@@ -3299,8 +3346,11 @@ exports.signIncident = onCall(async (req) => {
   const { sig, error } = incidentsLib.cleanSignature(req.data, role === "supervisor" ? "Supervisor" : "Witness");
   if (error) throw new HttpsError("invalid-argument", error);
   const device = annLib.cleanDevice(req.data?.device);
+  const incId = String(req.data?.id || "");
+  if (!/^[A-Za-z0-9]{10,40}$/.test(incId)) throw new HttpsError("not-found", "That report no longer exists.");
+  const sigPath = await saveSignature(safetyFolder(test, incId), `sig-${role}-${Date.now()}`, sig.png);
   return db.runTransaction(async (tx) => {
-    const ref = col("incidents", test).doc(String(req.data?.id || ""));
+    const ref = col("incidents", test).doc(incId);
     const snap = await tx.get(ref);
     if (!snap.exists) throw new HttpsError("not-found", "That report no longer exists.");
     if (snap.get("createdBy") !== me.employeeNumber && !incidentsLib.canFollow(me.roles)) throw new HttpsError("permission-denied", "Signatures are collected on the reporter's device or by Training & Safety.");
@@ -3308,7 +3358,7 @@ exports.signIncident = onCall(async (req) => {
     if (snap.get("status") === "closed") throw new HttpsError("failed-precondition", "That report is closed.");
     const sigRef = ref.collection("private").doc("signatures");
     const cur = (await tx.get(sigRef)).data() || { supervisor: null, witnesses: [] };
-    const stamped = { ...sig, atMs: Date.now(), device, collectedBy: me.employeeNumber };
+    const stamped = { name: sig.name, path: sigPath, atMs: Date.now(), device, collectedBy: me.employeeNumber };
     if (role === "supervisor") {
       if (cur.supervisor) throw new HttpsError("failed-precondition", `Already signed by ${cur.supervisor.name}.`);
       cur.supervisor = stamped;
@@ -3321,6 +3371,94 @@ exports.signIncident = onCall(async (req) => {
     auditRecord(tx, `signed (${role})`, "incident", ref.id, me.employeeNumber, { name: sig.name, test });
     return { ok: true, role, name: sig.name };
   });
+});
+
+// Follow-up: { id } — the report's photos and signatures as pictures (read here on the server from the private folder).
+exports.incidentFiles = onCall(async (req) => {
+  await requireIncidentFollower(req);
+  const test = isTest(req);
+  const snap = await col("incidents", test).doc(String(req.data?.id || "")).get();
+  if (!snap.exists) throw new HttpsError("not-found", "That report no longer exists.");
+  const sigs = (await snap.ref.collection("private").doc("signatures").get()).data() || null;
+  const sigOut = async (s) => (s ? { name: s.name, atMs: s.atMs || null, image: s.path ? await fileDataUrl(s.path, "image/png") : null } : null);
+  return {
+    photos: await Promise.all((snap.get("photoPaths") || []).map((p) => fileDataUrl(p, "image/jpeg"))),
+    signatures: sigs ? { supervisor: await sigOut(sigs.supervisor), witnesses: await Promise.all((sigs.witnesses || []).map(sigOut)) } : null,
+  };
+});
+
+// Admins: { year } — that year's injury and first-aid reports with the injury record and signatures, for the locked HR
+// folder (the screen turns it into a PDF). Every export is in the activity log.
+exports.exportInjuryReports = onCall({ timeoutSeconds: 120, memory: "512MiB" }, async (req) => {
+  const adminNumber = await requireAdmin(req);
+  const test = isTest(req);
+  const year = String(req.data?.year || "");
+  if (!/^20\d\d$/.test(year)) throw new HttpsError("invalid-argument", "Pick a year.");
+  const snaps = await col("incidents", test).where("month", ">=", `${year}-01`).where("month", "<=", `${year}-12`).get();
+  const rows = [];
+  for (const d of snaps.docs.filter((x) => incidentsLib.SIG_TYPES.includes(x.get("type"))).sort((a, b) => String(a.get("occurredAt")).localeCompare(String(b.get("occurredAt"))))) {
+    const [osha, sigs, acts] = await Promise.all([
+      d.ref.collection("private").doc("osha").get(), d.ref.collection("private").doc("signatures").get(),
+      col("incidentActions", test).where("incidentId", "==", d.id).get(),
+    ]);
+    const s = sigs.data() || {};
+    const sigOut = async (x) => (x ? { name: x.name, atMs: x.atMs || null, image: x.path ? await fileDataUrl(x.path, "image/png") : null } : null);
+    const injury = Object.fromEntries(incidentsLib.INJURY_FIELDS.map((k) => [k, osha.get(k) || ""]));
+    rows.push({
+      id: d.id, type: d.get("type"), occurredAt: d.get("occurredAt"), placeName: d.get("placeName") || "", what: d.get("what") || "", immediate: d.get("immediate") || "",
+      witnesses: d.get("witnesses") || "", reportedBy: d.get("anonymous") ? "anonymous" : d.get("createdByName") || "", status: d.get("status"),
+      whys: d.get("whys") || [], rootCause: d.get("rootCause") || "", closedBy: d.get("closed")?.byName || "", closedAtMs: d.get("closedAtMs") || null,
+      injury, photoCount: (d.get("photoPaths") || []).length,
+      actions: acts.docs.map((a) => ({ text: a.get("text"), owner: a.get("ownerName"), due: a.get("due"), done: !!a.get("done") })),
+      signatures: { supervisor: await sigOut(s.supervisor), witnesses: await Promise.all((s.witnesses || []).map(sigOut)) },
+    });
+  }
+  await auditLog.add({ type: "exported", kind: "injury reports", recordId: year, by: adminNumber, at: FieldValue.serverTimestamp(), count: rows.length, test });
+  return { year, rows, test };
+});
+
+// Admins, one-time (safe to run again): moves safety-report photos and signatures made before the private folder
+// existed (photos in uploads/…, signatures stored as pictures in the database) into safety/{incidentId}/….
+exports.adminMoveSafetyFiles = onCall({ timeoutSeconds: 300, memory: "512MiB" }, async (req) => {
+  const adminNumber = await requireAdmin(req);
+  let photos = 0, signatures = 0, reports = 0;
+  for (const test of [false, true]) {
+    for (const d of (await col("incidents", test).get()).docs) {
+      const folder = safetyFolder(test, d.id);
+      const update = {};
+      const old = d.get("photos");
+      if (Array.isArray(old) && old.length) {
+        const paths = [...(d.get("photoPaths") || [])];
+        for (const url of old) {
+          const p = fixesLib.storagePath(url, BUCKET);
+          if (!p) continue;
+          try {
+            const [buf] = await bucketRef().file(p).download();
+            paths.push(await savePrivate(`${folder}/photo-${paths.length + 1}.jpg`, buf, "image/jpeg"));
+            await bucketRef().file(p).delete({ ignoreNotFound: true });
+            photos++;
+          } catch (err) { console.warn("photo not moved", p, err.message); }
+        }
+        Object.assign(update, { photoPaths: paths, photos: FieldValue.delete() });
+      }
+      const sigRef = d.ref.collection("private").doc("signatures");
+      const s = (await sigRef.get()).data();
+      if (s) {
+        let changed = false;
+        const fix = async (x, file) => {
+          if (!x?.png) return x;
+          changed = true; signatures++;
+          const { png, ...rest } = x;
+          return { ...rest, path: await saveSignature(folder, file, png) };
+        };
+        const next = { supervisor: await fix(s.supervisor, "sig-supervisor"), witnesses: await Promise.all((s.witnesses || []).map((w, n) => fix(w, `sig-witness-${n + 1}`))) };
+        if (changed) await sigRef.set(next);
+      }
+      if (Object.keys(update).length) { await d.ref.update(update); reports++; }
+    }
+  }
+  await auditLog.add({ type: "moved", kind: "safety files", recordId: "safety", by: adminNumber, at: FieldValue.serverTimestamp(), photos, signatures, reports });
+  return { photos, signatures, reports };
 });
 
 // After posting a lessons-learned announcement from a near miss: { id, annId }.
@@ -3665,7 +3803,10 @@ exports.undoTruck = onCall(async (req) => {
 // ---------------------------------------------------------------------------
 
 async function cleanTestData(opts) {
-  const out = await testData.clearTestData(db, { ...opts, deleteDoc: (ref) => db.recursiveDelete(ref) });
+  const out = await testData.clearTestData(db, { ...opts, deleteDoc: async (ref) => {
+    if (ref.parent.id === "test_incidents") await bucketRef().deleteFiles({ prefix: `safety/test/${ref.id}/` }).catch(() => {});
+    await db.recursiveDelete(ref);
+  } });
   if (!opts.dryRun && out.total) {
     await writePlantStatus(true); // practice line-downs gone → the test site's line status follows
     await auditLog.add({ type: "cleared", kind: "test data", recordId: "test", by: opts.by || "system", at: FieldValue.serverTimestamp(), total: out.total, olderThanMs: opts.olderThanMs ?? null });

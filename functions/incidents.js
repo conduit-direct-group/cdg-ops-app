@@ -3,9 +3,14 @@
 // the company OSHA-compliant, and it gives no legal advice.
 //
 //   incidents/{auto}            type, occurredAt ("YYYY-MM-DDTHH:MM", plant time), place { lineId, stationId, label },
-//                               what, immediate, photos, witnesses, anonymous, createdBy (none when anonymous),
+//                               what, immediate, photoPaths, witnesses, anonymous, createdBy (none when anonymous),
 //                               status, whys [5], rootCause, actionCount/openActions, closed {…}, sharedAnnId
 //   incidents/{id}/private/osha the injured person and OSHA 300/301 details (Training & Safety, Plant Manager, Admin)
+//   incidents/{id}/private/signatures  names + times; the drawn signatures themselves are files (below)
+//
+// Files (photos and signatures) live in the PRIVATE storage folder safety/{incidentId}/… — readable only by Training &
+// Safety, Plant Manager, Admin (storage rules), served through the server, never as shareable links. The phone uploads
+// a photo to safety/incoming/{random id} (no employee number anywhere — anonymous stays anonymous); the server moves it.
 //   incidentActions/{auto}      incidentId, text, ownerEmp, ownerName, due ("YYYY-MM-DD"), done {…} — the owner sees
 //                               their own (no names or medical details in the text)
 //   Test site: test_ copies.
@@ -33,8 +38,11 @@ const canFollow = (roles) => (roles || []).some((r) => FOLLOW_ROLES.includes(r))
 const isDateTime = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d$/.test(v);
 const isDay = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
 
-// A new report. lineIds / stationIds: what exists. isOurFile(url) for photos. nowIso: plant "YYYY-MM-DDTHH:MM".
-function cleanReport(raw, { lineIds = [], stationIds = [], isOurFile = () => false, nowIso = "9999" } = {}) {
+// A photo the phone uploaded to safety/incoming/: a random id (20–40 letters/digits) + .jpg — nothing else.
+const isUploadId = (v) => typeof v === "string" && /^[A-Za-z0-9]{20,40}\.jpg$/.test(v);
+
+// A new report. lineIds / stationIds: what exists. photos: upload ids. nowIso: plant "YYYY-MM-DDTHH:MM".
+function cleanReport(raw, { lineIds = [], stationIds = [], nowIso = "9999" } = {}) {
   const type = Object.prototype.hasOwnProperty.call(TYPES, raw?.type) ? raw.type : null;
   if (!type) return { error: "Pick what kind of report it is." };
   if (!isDateTime(raw?.occurredAt)) return { error: "When did it happen?" };
@@ -47,7 +55,7 @@ function cleanReport(raw, { lineIds = [], stationIds = [], isOurFile = () => fal
   if (what.length < 5) return { error: "Say what happened (a few words is fine)." };
   const immediate = clean(raw?.immediate, 1000);
   const photos = Array.isArray(raw?.photos) ? raw.photos.slice(0, 6).map(String) : [];
-  if (photos.some((u) => !isOurFile(u))) return { error: "A photo didn't upload. Add it again." };
+  if (photos.some((u) => !isUploadId(u))) return { error: "A photo didn't upload. Add it again." };
   const witnesses = line(raw?.witnesses, 300);
   const anonymous = type === "near-miss" && raw?.anonymous === true; // only near misses can be anonymous
   // Injury / first aid: who was hurt and where on the body (the rest is filled in at follow-up).
@@ -104,21 +112,27 @@ function cleanAction(raw, owners) {
   return { action: { text, ownerEmp: owner.id, ownerName: owner.name, due: raw.due } };
 }
 
-// OSHA 300 / 301 details (follow-up, injury and first aid). Stored apart from the report, readable only by
-// Training & Safety, Plant Manager, Admin.
+// The injury record (follow-up, injury and first aid) — ONLY these, in plain words (Chris, 10-21-2026). No medical
+// documents in the app: doctor's notes, diagnoses, and claim forms go to HR. Any other field sent is dropped.
+// Stored apart from the report, readable only by Training & Safety, Plant Manager, Admin.
+const INJURY_FIELDS = ["injuredName", "injuryType", "bodyPart", "firstAidGiven", "wentToDoctor"];
 function cleanOsha(raw) {
-  const n = (v) => (v === "" || v == null ? null : Number.isInteger(Number(v)) && Number(v) >= 0 && Number(v) <= 999 ? Number(v) : NaN);
+  const doc = raw?.wentToDoctor;
   const out = {
-    injuredName: line(raw?.injuredName, 80), injuredEmp: line(raw?.injuredEmp, 10), jobTitle: line(raw?.jobTitle, 60),
-    dateOfHire: isDay(raw?.dateOfHire) ? raw.dateOfHire : "", timeBeganWork: /^([01]\d|2[0-3]):[0-5]\d$/.test(raw?.timeBeganWork || "") ? raw.timeBeganWork : "",
-    bodyPart: line(raw?.bodyPart, 80), nature: line(raw?.nature, 120), activity: clean(raw?.activity, 500),
-    objectOrSubstance: line(raw?.objectOrSubstance, 200), treatment: TREATMENTS.includes(raw?.treatment) ? raw.treatment : "",
-    physician: line(raw?.physician, 120), facility: line(raw?.facility, 160),
-    outcome: OUTCOMES.includes(raw?.outcome) ? raw.outcome : "", daysAway: n(raw?.daysAway), daysRestricted: n(raw?.daysRestricted),
-    dateOfDeath: isDay(raw?.dateOfDeath) ? raw.dateOfDeath : "", privacyCase: raw?.privacyCase === true,
+    injuredName: line(raw?.injuredName, 80), injuryType: line(raw?.injuryType, 80), bodyPart: line(raw?.bodyPart, 80),
+    firstAidGiven: line(raw?.firstAidGiven, 200), wentToDoctor: doc === "yes" || doc === "no" ? doc : "",
   };
-  if (Number.isNaN(out.daysAway) || Number.isNaN(out.daysRestricted)) return { error: "Days must be whole numbers." };
   return { osha: out };
+}
+
+// Records rule (Chris, 10-21-2026): injury and first-aid reports are kept 5 years — nothing in the app deletes them
+// (no trash, no purge). The year runs from when the report was closed (or made, if still open).
+const RETAIN_YEARS = 5;
+function keepUntilMs(inc) {
+  const from = inc?.closedAtMs || inc?.createdAtMs || Date.now();
+  const d = new Date(from);
+  d.setFullYear(d.getFullYear() + RETAIN_YEARS);
+  return d.getTime();
 }
 
 // Status after a change: closed stays closed; otherwise open actions → "actions", investigating once whys or
@@ -135,4 +149,4 @@ function plantNowIso(ms = Date.now()) {
   return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
 }
 
-module.exports = { SIG_TYPES, MAX_WITNESSES, cleanSignature, cleanSignatures, TYPES, STATUSES, FOLLOW_ROLES, NOTIFY_ROLES, TREATMENTS, OUTCOMES, canFollow, cleanReport, cleanWhys, cleanAction, cleanOsha, nextStatus, plantNowIso };
+module.exports = { INJURY_FIELDS, RETAIN_YEARS, keepUntilMs, isUploadId, SIG_TYPES, MAX_WITNESSES, cleanSignature, cleanSignatures, TYPES, STATUSES, FOLLOW_ROLES, NOTIFY_ROLES, TREATMENTS, OUTCOMES, canFollow, cleanReport, cleanWhys, cleanAction, cleanOsha, nextStatus, plantNowIso };

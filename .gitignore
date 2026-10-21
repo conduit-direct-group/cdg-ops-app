@@ -23,3 +23,7 @@ private/
 
 # Zip files (e.g. a packed copy of the floor plan with SOP text) — never committed. This repo is public.
 *.zip
+
+# Emulator logs (rules tests)
+*-debug.log
+rules-tests/*.txt
