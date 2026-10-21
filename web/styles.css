@@ -1345,3 +1345,21 @@ body.has-nav .toast { bottom: calc(84px + env(safe-area-inset-bottom)); }
   main[data-width="wide"] .mach-app .person-list, main[data-width="wide"] .mach-hits .person-list { grid-template-columns: 1fr; }
   main[data-width="wide"] .mach-col .card > .btn { min-width: 0; }
 }
+
+/* ---- Trucks board — no red/green here (exception to the status color rule): words and icons only ------------- */
+.truck-cols { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 var(--s4); align-items: start; }
+.truck-col { min-width: 0; }
+.truck-list { display: flex; flex-direction: column; gap: var(--s2); margin: 0 0 var(--s3); }
+.truck { display: flex; flex-direction: column; gap: var(--s1); padding: var(--s3); border: var(--border-width) solid var(--line); border-radius: var(--radius); background: var(--surface-1); min-width: 0; }
+.truck.done { background: transparent; color: var(--muted); }
+.truck.done .truck-carrier { color: var(--muted); }
+.truck-status { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); margin: 0; font-weight: bold; }
+.truck-carrier { font-size: var(--text-section); }
+.truck-notes { margin: 0; white-space: pre-line; }
+.truck > .btn { margin: var(--s2) 0 0; }
+.truck > .link-btn { align-self: flex-start; }
+.truck-form .choices { margin: var(--s2) 0; }
+@media (min-width: 900px) {
+  .truck-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  main[data-width="wide"] .truck > .btn { width: 100%; margin-right: 0; }
+}

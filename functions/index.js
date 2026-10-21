@@ -31,6 +31,7 @@ const annLib = require("./announcements");
 const formsLib = require("./forms");
 const specsLib = require("./machinespecs");
 const testData = require("./testdata");
+const trucksLib = require("./trucks");
 const crypto = require("node:crypto");
 const { getMessaging } = require("firebase-admin/messaging");
 const { defineSecret } = require("firebase-functions/params");
@@ -519,6 +520,11 @@ exports.adminSaveRole = onCall(async (req) => {
       if (!Array.isArray(d.editForms) || d.editForms.length > 50 || !d.editForms.every(records.isRecordId)) throw new HttpsError("invalid-argument", "Pick forms from the list.");
       extra.editForms = [...new Set(d.editForms)];
     }
+    // { postTrucks: true|false } — may post the day's trucks (Trucks board). Unset = Logistics & Distribution.
+    if (d.postTrucks !== undefined) {
+      if (typeof d.postTrucks !== "boolean") throw new HttpsError("invalid-argument", "postTrucks must be true or false.");
+      extra.postTrucks = d.postTrucks;
+    }
     // { editMachines: true|false } — may add and edit machine parts & specs (Machines). Unset = Maintenance and Admin.
     if (d.editMachines !== undefined) {
       if (typeof d.editMachines !== "boolean") throw new HttpsError("invalid-argument", "editMachines must be true or false.");
@@ -526,7 +532,7 @@ exports.adminSaveRole = onCall(async (req) => {
     }
     return extra;
   });
-  await writeMachineAccess();
+  await Promise.all([writeMachineAccess(), writeTruckAccess()]);
   return out;
 });
 
@@ -3070,6 +3076,125 @@ exports.restoreMachineSpecItem = onCall(async (req) => {
     });
     tx.delete(rRef);
     return out;
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Trucks board — Logistics & Distribution (Chris, 10-21-2026). Rules in trucks.js. Test site: test_trucks.
+// Posting rights per role on the Roles screen ("Can post trucks"); the database rules read meta/truckAccess.
+// ---------------------------------------------------------------------------
+
+async function writeTruckAccess() {
+  const list = await roleList();
+  const ids = [...new Set([...trucksLib.VIEW_ROLES, ...list.filter((r) => r.active !== false && trucksLib.rolePostsTrucks(r)).map((r) => r.id)])];
+  await db.collection("meta").doc("truckAccess").set({ roles: ids, updatedAt: FieldValue.serverTimestamp() });
+}
+
+async function requireTruckRole(req, kind) {
+  const me = await requireMember(req);
+  const list = await roleList();
+  const ok = kind === "post" ? trucksLib.canPostTrucks(list, me.roles) : trucksLib.canCheckTrucks(list, me.roles);
+  if (!ok) throw new HttpsError("permission-denied", kind === "post" ? "Your role can't post trucks. An admin can allow it in Admin → Roles." : "Only Logistics & Distribution checks trucks off.");
+  return me;
+}
+
+// The people who post trucks (the managers) — they get the arrived / out the door notifications.
+async function truckManagers() {
+  const list = await roleList();
+  const posting = new Set(list.filter((r) => r.active !== false && trucksLib.rolePostsTrucks(r)).map((r) => r.id));
+  return (await activeEmployees()).filter((e) => e.active !== false && e.roles.some((r) => posting.has(r))).map((e) => e.id);
+}
+
+// Poster: new { date, dir, carrier, time, forKind, ref, material, notes } or edit (same + id).
+exports.saveTruck = onCall(async (req) => {
+  const me = await requireTruckRole(req, "post");
+  const test = isTest(req);
+  const { truck, error } = trucksLib.cleanTruck(req.data);
+  if (error) throw new HttpsError("invalid-argument", error);
+  const list = col("trucks", test);
+  const id = req.data?.id ? String(req.data.id) : null;
+  return db.runTransaction(async (tx) => {
+    if (id) {
+      const snap = await tx.get(list.doc(id));
+      if (!snap.exists || snap.get("status") === "removed") throw new HttpsError("not-found", "That truck is no longer on the board.");
+      tx.update(snap.ref, { ...truck, updatedAt: FieldValue.serverTimestamp(), updatedBy: me.employeeNumber, updatedByName: me.name });
+      auditRecord(tx, "updated", "truck", id, me.employeeNumber, { label: trucksLib.label(truck), test });
+      return { id };
+    }
+    const ref = list.doc();
+    tx.create(ref, { ...truck, status: "expected", createdAt: FieldValue.serverTimestamp(), createdBy: me.employeeNumber, createdByName: me.name, ...(test ? { test: true } : {}) });
+    auditRecord(tx, "created", "truck", ref.id, me.employeeNumber, { label: trucksLib.label(truck), date: truck.date, test });
+    return { id: ref.id };
+  });
+});
+
+// Poster: { id } — take a truck off the board (kept in history as removed).
+exports.removeTruck = onCall(async (req) => {
+  const me = await requireTruckRole(req, "post");
+  const test = isTest(req);
+  const ref = col("trucks", test).doc(String(req.data?.id || ""));
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists || snap.get("status") === "removed") throw new HttpsError("not-found", "That truck is no longer on the board.");
+    tx.update(ref, { status: "removed", removedAt: FieldValue.serverTimestamp(), removedBy: me.employeeNumber, removedByName: me.name });
+    auditRecord(tx, "removed", "truck", ref.id, me.employeeNumber, { label: trucksLib.label(snap.data()), test });
+    return { id: ref.id };
+  });
+});
+
+// Poster: { date } — copy the last day with trucks (looking back up to 7 days) onto `date` as expected trucks.
+exports.copyTrucksFromDay = onCall(async (req) => {
+  const me = await requireTruckRole(req, "post");
+  const test = isTest(req);
+  const date = String(req.data?.date || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new HttpsError("invalid-argument", "Pick the day.");
+  const list = col("trucks", test);
+  const back = (n) => new Date(Date.parse(`${date}T12:00:00Z`) - n * 86400000).toISOString().slice(0, 10);
+  const recent = await list.where("date", ">=", back(7)).where("date", "<", date).get();
+  const days = [...new Set(recent.docs.filter((d) => d.get("status") !== "removed").map((d) => d.get("date")))].sort();
+  const fromDate = days.pop();
+  if (!fromDate) throw new HttpsError("not-found", "No trucks in the last 7 days to copy.");
+  const from = recent.docs.filter((d) => d.get("date") === fromDate).map((d) => d.data());
+  const existing = (await list.where("date", "==", date).get()).docs.map((d) => d.data());
+  const copies = trucksLib.copyTrucks(from, existing, date).slice(0, trucksLib.MAX_PER_DAY - existing.length);
+  const batch = db.batch();
+  for (const t of copies) batch.create(list.doc(), { ...t, status: "expected", copiedFrom: fromDate, createdAt: FieldValue.serverTimestamp(), createdBy: me.employeeNumber, createdByName: me.name, ...(test ? { test: true } : {}) });
+  batch.create(auditLog.doc(), { type: "copied", kind: "trucks", recordId: date, by: me.employeeNumber, at: FieldValue.serverTimestamp(), fromDate, count: copies.length, test });
+  await batch.commit();
+  return { count: copies.length, fromDate };
+});
+
+// Yard: { id } — one tap: "Arrived" (inbound) or "Out the door" (outbound). Stamps the time and who; tells the managers.
+exports.checkTruck = onCall(async (req) => {
+  const me = await requireTruckRole(req, "check");
+  const test = isTest(req);
+  const ref = col("trucks", test).doc(String(req.data?.id || ""));
+  const t = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists || snap.get("status") === "removed") throw new HttpsError("not-found", "That truck is no longer on the board.");
+    if (snap.get("status") === "done") throw new HttpsError("failed-precondition", `Already checked off by ${snap.get("doneByName")}.`);
+    tx.update(ref, { status: "done", doneAt: FieldValue.serverTimestamp(), doneAtMs: Date.now(), doneBy: me.employeeNumber, doneByName: me.name });
+    auditRecord(tx, snap.get("dir") === "in" ? "arrived" : "out the door", "truck", ref.id, me.employeeNumber, { label: trucksLib.label(snap.data()), test });
+    return snap.data();
+  });
+  const what = t.dir === "in" ? "📥 Arrived" : "🚚 Out the door";
+  const to = test ? [me.employeeNumber] : (await truckManagers()).filter((e) => e !== me.employeeNumber);
+  await pushTo(to, { title: `${test ? "[TEST] " : ""}${what}: ${t.carrier}`, body: `${[t.ref, t.material].filter(Boolean).join(" · ") || (t.dir === "in" ? "Inbound" : "Outbound")} — ${me.name}`, url: "/?trucks=1" });
+  return { ok: true, test };
+});
+
+// Yard: { id } — undo a check-off within 5 minutes (a mis-tap).
+exports.undoTruck = onCall(async (req) => {
+  const me = await requireTruckRole(req, "check");
+  const test = isTest(req);
+  const ref = col("trucks", test).doc(String(req.data?.id || ""));
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "That truck is no longer on the board.");
+    if (!trucksLib.canUndo(snap.data(), Date.now())) throw new HttpsError("failed-precondition", "Undo is only for 5 minutes after the tap.");
+    tx.update(ref, { status: "expected", doneAt: FieldValue.delete(), doneAtMs: FieldValue.delete(), doneBy: FieldValue.delete(), doneByName: FieldValue.delete() });
+    auditRecord(tx, "undo", "truck", ref.id, me.employeeNumber, { label: trucksLib.label(snap.data()), was: snap.get("doneByName"), test });
+    return { ok: true };
   });
 });
 

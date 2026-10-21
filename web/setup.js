@@ -7,6 +7,7 @@ import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, pi
 import { data, onDataChange, lineName } from "./data.js";
 import { rolePosts } from "./announcements.js";
 import { roleEditsMachines } from "./machines.js";
+import { rolePostsTrucks } from "./trucks.js";
 import { callAdminSaveLine, callAdminSaveMachine, callAdminSaveRole, callAdminSaveTeam, callAdminSaveMachineType, callAdminListEmployees } from "./firebase.js";
 
 // The starting roles from the plan (§5). Ids are permanent; names can be edited later.
@@ -602,7 +603,7 @@ export function openRoles(container, { onExit }) {
       title: "Roles", noun: "role", a: "a role", plural: "roles", nameLabel: "Role name (e.g. Quality)",
       hint: "A person's roles decide what shows on their home screen and what they can do.",
       items: () => data.roles, save: callAdminSaveRole, rename: true,
-      meta: (r) => [rolePosts(r) ? "📣 Can post announcements" : null, roleEditsMachines(r) ? "⚙ Can edit machines" : null].filter(Boolean).join(" · ") || null,
+      meta: (r) => [rolePosts(r) ? "📣 Can post announcements" : null, roleEditsMachines(r) ? "⚙ Can edit machines" : null, rolePostsTrucks(r) ? "🚚 Can post trucks" : null].filter(Boolean).join(" · ") || null,
       // Who may post announcements (Decision 58). Starts on for Admin, Plant Manager, Supervisor, Training & Safety, Office.
       members: (r, { kit, show }) => {
         const on = rolePosts(r);
@@ -618,6 +619,12 @@ export function openRoles(container, { onExit }) {
           if (ok) show("item", `${r.name}: forms they can edit updated`, "ok");
         };
         const forms = (data.formTemplates || []).filter((t) => t.active !== false);
+        // Who may post the day's trucks (Trucks board). Starts on for Logistics & Distribution.
+        const postsTrucks = rolePostsTrucks(r);
+        const flipTrucks = async () => {
+          const ok = await kit.act(() => callAdminSaveRole({ id: r.id, name: r.name, postTrucks: !postsTrucks }), flipTrucks);
+          if (ok) show("item", postsTrucks ? `${r.name}: posting trucks turned off` : `${r.name} can now post trucks`, "ok");
+        };
         // Who may add and edit machine parts & specs (Decision 51). Starts on for Maintenance and Admin.
         const edits = roleEditsMachines(r);
         const flipMachines = async () => {
@@ -633,6 +640,10 @@ export function openRoles(container, { onExit }) {
             el("strong", {}, "⚙ Machines"),
             el("p", { class: "card-note" }, edits ? "People with this role can add and edit machine parts, specs, photos, and notes." : "People with this role can't edit machines. (Maintenance, Plant Manager, and Admin can always view them.)"),
             el("button", { class: edits ? "btn secondary" : "btn", type: "button", disabled: kit.busy, onclick: flipMachines }, edits ? "Turn off editing" : "✔ Allow editing")),
+          el("div", { class: "card" },
+            el("strong", {}, "🚚 Trucks"),
+            el("p", { class: "card-note" }, postsTrucks ? "People with this role post the day's trucks (add, edit, copy from yesterday) and get a notification when one arrives or leaves." : "People with this role can't post trucks. (Logistics & Distribution always checks trucks off.)"),
+            el("button", { class: postsTrucks ? "btn secondary" : "btn", type: "button", disabled: kit.busy, onclick: flipTrucks }, postsTrucks ? "Turn off posting" : "✔ Allow posting")),
           el("div", { class: "card" },
             el("strong", {}, "📝 Forms this role can edit"),
             r.id === "admin"

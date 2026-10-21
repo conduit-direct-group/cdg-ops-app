@@ -14,6 +14,7 @@ Tuck secondary things into the big `picker()` / `collapsible()` parts (ui.js) to
 urgent or daily items (alerts, sign-offs due, Report a problem, a role's main actions), and tell Chris what was tucked away and why.
 
 Every item appears on Home only once. Status colors: gray = not due yet (with due time), red ⚠ = last hour or overdue, green ✓ = done. No other status colors.
+Exception: the Trucks board uses no red/green at all — plain status words and icons only (🕒 Expected · 📥 Arrived · 🚚 Out the door).
 
 "Done" means: checked at phone (375px), tablet (1024px), and desktop widths; self-reviewed against the standard;
 then screenshots and the dev test link shown to Chris.

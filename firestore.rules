@@ -292,6 +292,20 @@ service cloud.firestore {
       }
     }
 
+    // Trucks board: Logistics & Distribution, Plant Manager, Sales, Admin, plus roles allowed to post trucks in
+    // Admin → Roles (the server keeps that list in meta/truckAccess). Changed only by the server. Test site: test_trucks.
+    function truckViewer() {
+      return member() && (employee().roles.hasAny(['shipping', 'plant-manager', 'sales', 'admin'])
+        || (exists(/databases/$(database)/documents/meta/truckAccess)
+          && employee().roles.hasAny(get(/databases/$(database)/documents/meta/truckAccess).data.roles)));
+    }
+    match /trucks/{id} {
+      allow read: if truckViewer();
+    }
+    match /test_trucks/{id} {
+      allow read: if truckViewer();
+    }
+
     // Admin-only lists: who did what (every admin action), Odoo sync status, searches with no results.
     match /auditLog/{id} {
       allow read: if admin();

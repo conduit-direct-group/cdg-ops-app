@@ -34,6 +34,7 @@ import { openLineCheck } from "./linecheck.js";
 import { openRefDocs } from "./refdocs.js";
 import { openMachines, canViewMachines } from "./machines.js";
 import { openTestReset } from "./testdata.js";
+import { openTrucks, canViewTrucks, canCheckTrucks } from "./trucks.js";
 
 const screen = document.getElementById("screen");
 const deviceBadge = document.getElementById("device-badge");
@@ -285,7 +286,7 @@ function renderHome() {
 // ---------------------------------------------------------------------------
 // Navigation bar (Decision 66): always visible once signed in — a bottom bar on phones and tablets, a side bar on
 // desktops. Home · Map · Checklists (people who work with the machines) · Machines (Maintenance, Plant Manager, Admin)
-// · Announcements · More.
+// · Trucks (Logistics & Distribution; view-only roles find it in More) · Announcements · More.
 // ---------------------------------------------------------------------------
 
 const nav = document.getElementById("app-nav");
@@ -312,6 +313,7 @@ function renderNav() {
     item("map", "🗺", "Map", () => openMap()),
     usesMachines(shownRoles()) ? item("checklists", "📋", "Checklists", () => openChecklistsHub()) : null,
     canViewMachines(shownRoles()) ? item("machines", "⚙", "Machines", () => openMachineScreen()) : null,
+    canCheckTrucks(shownRoles()) ? item("trucks", "🚚", "Trucks", () => openTrucksScreen()) : null,
     item("ann", "📣", "Announce\u00adments" /* soft hyphen: wraps as Announce-ments on phones */, () => openAnn(), unsigned),
     item("more", "☰", "More", openMore),
   ].filter(Boolean));
@@ -331,6 +333,7 @@ function openMore() {
     usesMachines(roles) ? row("🔧", "Fix Library", () => openFixes()) : null,
     roles.some((r) => ["maintenance", "admin", "plant-manager"].includes(r)) ? row("🚨", "Open issues", () => openIssues()) : null,
     roles.some((r) => ["training-safety", "admin"].includes(r)) ? row("🎓", "Training", () => { location.href = "training.html"; }) : null,
+    canViewTrucks(roles) && !canCheckTrucks(roles) ? row("🚚", "Trucks", () => openTrucksScreen()) : null,
     row("📄", "Reference documents", () => openDocsScreen()),
     !m.admin && editableForms(m.roles).length ? row("📝", "Edit forms", () => openFormsScreen()) : null,
     m.admin ? row("⚙", "Admin", () => go("adminMenu")) : null,
@@ -462,6 +465,15 @@ function openLineCheckScreen(lineId = null, logId = null) {
   setNav("checklists");
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openLineCheck(screen, { me: me(), startLine: lineId, startLogId: logId, onExit: () => go("home") });
+}
+
+// Trucks board (from the bar, or a truck notification: ?trucks=1).
+function openTrucksScreen() {
+  if (!canViewTrucks(me().roles)) return go("home");
+  if (closeModule) closeModule();
+  setNav(canCheckTrucks(shownRoles()) ? "trucks" : "more");
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  closeModule = openTrucks(screen, { me: me(), onExit: () => go("home") });
 }
 
 // Machines — parts & specs (from the bar, or a machine on the Shop Map).
@@ -822,13 +834,15 @@ onAuthStateChanged(auth, async (user) => {
     const lineLog = params.get("linelog"); // an out-of-spec line check alert
     const docs = params.get("docs"); // the Training page's "Reference documents" link
     const machinePage = params.get("machine"); // a link to one machine's parts & specs page
-    if (cat || machine || req || issuesLink || ann || handoff || shop || lineLog || docs || machinePage) history.replaceState(null, "", location.pathname);
+    const trucksLink = params.get("trucks"); // a truck arrived / out the door notification
+    if (cat || machine || req || issuesLink || ann || handoff || shop || lineLog || docs || machinePage || trucksLink) history.replaceState(null, "", location.pathname);
     if (ann) openAnn(ann);
     else if (handoff) openHandoffScreen(handoff);
     else if (shop) openShopScreen(shop);
     else if (lineLog) openLineCheckScreen(lineLog.split("__")[2] || null, lineLog);
     else if (docs) openDocsScreen();
     else if (machinePage) openMachineScreen(machinePage);
+    else if (trucksLink) openTrucksScreen();
     else if (req) openRequestScreen(req);
     else if (issuesLink) openIssues();
     else if (cat || machine) openFixes(cat, machine);

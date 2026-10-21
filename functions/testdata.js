@@ -22,6 +22,7 @@ const TEST_COLLECTIONS = [
   ["test_stationLists", "Station checklists"],
   ["test_fixes", "Fix Library practice fixes"],
   ["test_trash", "Fix Library practice trash"],
+  ["test_trucks", "Trucks"],
 ];
 const DAY_MS = 86400000;
 
