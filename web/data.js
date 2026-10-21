@@ -26,7 +26,7 @@ export const data = {
   fixes: null, myFixes: null, openIssues: null, myIssues: null, checklistUnits: null, requestsForMe: null, requestsSent: null,
   plantStatus: null, urgentRequests: null, announcements: null, mySigs: null, mySigList: null, formTemplates: null, handoffsOpen: null, shopLists: null, stationLists: null, lineLogs: null, plantLogs: null, refDocs: null,
   machineSpecs: null, machineSpecsError: false, siloLevels: null, siloSettings: null,
-  openReels: null, recentReels: null, reelSettings: null,
+  openReels: null, recentReels: null, reelSettings: null, callSheet: null, callTaps: null,
 };
 
 const listeners = new Set();
@@ -129,6 +129,10 @@ export function startData(me) {
   // Silo levels (test site: practice levels laid over the real ones) and their low lines (Admin → Silo alerts).
   stopFns.push(watchMerged("siloLevels", collection(db, "siloLevels"), collection(db, "test_siloLevels"), byId));
   stopFns.push(onSnapshot(doc(db, "meta", "siloSettings"), (snap) => { data.siloSettings = snap.exists() ? snap.data() : {}; changed(); }, () => { data.siloSettings = {}; changed(); }));
+  // Who to Call: the call sheet, and call-button taps from the last day (for the line-down reminder).
+  stopFns.push(onSnapshot(doc(db, "meta", "callSheet"), (snap) => { data.callSheet = snap.exists() ? snap.data() : {}; changed(); }, () => { data.callSheet = {}; changed(); }));
+  const taps = (name) => query(collection(db, name), where("atMs", ">=", Date.now() - 86400000));
+  stopFns.push(watchMerged("callTaps", taps("callTaps"), taps("test_callTaps"), (a, b) => (b.atMs || 0) - (a.atMs || 0)));
   // Flagged reels / QC hold: reels not done yet (everyone — the floor works the list), the last 15 days (Quality,
   // Plant Manager, Supervisor, Admin — for their cards), and the reason / size / SDR lists.
   const openReels = (name) => query(collection(db, name), where("status", "in", ["flagged", "staged", "reclaim"]));

@@ -36,6 +36,7 @@ import { openMachines, canViewMachines } from "./machines.js";
 import { openTestReset } from "./testdata.js";
 import { openTrucks, canViewTrucks, canCheckTrucks } from "./trucks.js";
 import { openReels, openReelAdmin } from "./reels.js";
+import { openWhoToCall, openCallAdmin, lineDownReminder } from "./whotocall.js";
 import { openSilos, openSiloAdmin, UPDATE_ROLES as SILO_UPDATE_ROLES, ALERT_ROLES as SILO_ALERT_ROLES } from "./silos.js";
 
 const screen = document.getElementById("screen");
@@ -76,6 +77,11 @@ function store(key, value) {
     if (value == null) localStorage.removeItem(key);
     else localStorage.setItem(key, value);
   } catch {}
+}
+
+// The line a line tablet is on: the line its Line Check Log last used.
+function lineTabletLine() {
+  return stored("cdg.lineCheckLine") || null;
 }
 
 function isLineTablet() {
@@ -279,6 +285,8 @@ function renderHome() {
         roles ? el("p", { class: "roles" }, `Employee ${state.claims.emp} · ${roles}`) : null),
       p.viewAs,
       p.status),
+    // Line tablets: a line down an hour with nobody tapping Call Maintenance (this tablet's line when it has one).
+    isLineTablet() ? lineDownReminder(lineTabletLine()) : null,
     m.admin && state.viewAs ? el("p", { class: "view-note" }, `👁 Viewing as ${roleNames.get(state.viewAs) || state.viewAs} — lists show your own account's data.`) : null,
     messageBox(),
     el("div", { class: p.cards ? "home-grid" : "home-grid no-side-cards" },
@@ -294,6 +302,9 @@ function renderHome() {
 // ---------------------------------------------------------------------------
 
 const nav = document.getElementById("app-nav");
+// 📞 Who to Call, in the top bar on every screen once signed in.
+const callBtn = document.getElementById("call-btn");
+callBtn.addEventListener("click", () => openCallScreen());
 function setNav(key) {
   state.nav = key;
   renderNav();
@@ -303,6 +314,7 @@ const shownRoles = () => (me().admin && state.viewAs ? [state.viewAs] : me().rol
 function renderNav() {
   const on = !!state.user && !NARROW_STEPS.includes(state.step) && state.claims.pinTemp !== true;
   nav.hidden = !on;
+  callBtn.hidden = !on;
   document.body.classList.toggle("has-nav", on);
   if (!on) return;
   const unsigned = data.announcements && data.mySigs ? announcementsToSign(state.claims.emp).length : 0;
@@ -340,6 +352,7 @@ function openMore() {
     roles.some((r) => ["training-safety", "admin"].includes(r)) ? row("🎓", "Training", () => { location.href = "training.html"; }) : null,
     canViewTrucks(roles) && !canCheckTrucks(roles) ? row("🚚", "Trucks", () => openTrucksScreen()) : null,
     usesQc(roles) && !roles.includes("quality") ? row("🏷", "QC hold — flagged reels", () => openReelScreen()) : null,
+    row("📞", "Who to Call", () => openCallScreen()),
     row("📄", "Reference documents", () => openDocsScreen()),
     !m.admin && editableForms(m.roles).length ? row("📝", "Edit forms", () => openFormsScreen()) : null,
     m.admin ? row("⚙", "Admin", () => go("adminMenu")) : null,
@@ -473,6 +486,18 @@ function openLineCheckScreen(lineId = null, logId = null) {
   setNav("checklists");
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openLineCheck(screen, { me: me(), startLine: lineId, startLogId: logId, onExit: () => go("home") });
+}
+
+// Who to Call (📞 in the top bar, or More). Maintenance's "No" opens the Fix Library; "Yes, but can't run" the request form.
+function openCallScreen() {
+  if (closeModule) closeModule();
+  setNav("more");
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  closeModule = openWhoToCall(screen, {
+    onExit: () => go("home"),
+    onFixes: usesMachines(me().roles) ? () => openFixes() : null,
+    onReport: usesMachines(me().roles) ? () => openReport(null, openCallScreen) : null,
+  });
 }
 
 // Flagged reels / QC hold: Quality's bar, the Checklists page (Flag a reel), More, Home items and cards (?reels=1).
@@ -679,6 +704,7 @@ function renderAdminMenu() {
     el("button", { class: "btn", type: "button", onclick: () => openModule(openMapAdmin) }, "🗺 Shop map setup"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openSiloAdmin) }, "🛢 Silo alerts"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openReelAdmin) }, "🏷 QC hold lists"),
+    el("button", { class: "btn", type: "button", onclick: () => openModule(openCallAdmin) }, "📞 Who to Call"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openTrainingAdmin) }, "🎓 Training setup"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openActivity) }, "📜 Admin activity"),
     TEST_MODE ? el("button", { class: "btn secondary", type: "button", onclick: () => openModule((c, o) => openTestReset(c, { ...o, onIssues: () => openIssues() })) }, "🧹 Reset test data") : null,

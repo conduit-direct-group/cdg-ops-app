@@ -34,6 +34,7 @@ const testData = require("./testdata");
 const trucksLib = require("./trucks");
 const silosLib = require("./silos");
 const reelsLib = require("./reels");
+const callLib = require("./callsheet");
 const crypto = require("node:crypto");
 const { getMessaging } = require("firebase-admin/messaging");
 const { defineSecret } = require("firebase-functions/params");
@@ -3081,6 +3082,30 @@ exports.restoreMachineSpecItem = onCall(async (req) => {
     tx.delete(rRef);
     return out;
   });
+});
+
+// ---------------------------------------------------------------------------
+// Who to Call (Chris, 10-21-2026). Rules in callsheet.js. The numbers are kept only here in the database.
+// ---------------------------------------------------------------------------
+
+// Admins: { mainNumber, entries, onCall } — the call sheet.
+exports.adminSaveCallSheet = onCall(async (req) => {
+  const adminNumber = await requireAdmin(req);
+  const { sheet, error } = callLib.cleanSheet(req.data);
+  if (error) throw new HttpsError("invalid-argument", error);
+  await db.collection("meta").doc("callSheet").set({ ...sheet, updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber });
+  await auditLog.add({ type: "updated", kind: "call sheet", recordId: "callSheet", by: adminNumber, at: FieldValue.serverTimestamp(), entries: sheet.entries.length, onCall: sheet.onCall.length });
+  return { ok: true };
+});
+
+// Anyone: { ext, kind, lineId? } — a tap on a call button (stops the line-down reminder once Maintenance is called).
+exports.logCallTap = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const kind = callLib.KINDS.includes(req.data?.kind) ? req.data.kind : "other";
+  const lineId = req.data?.lineId && records.isRecordId(String(req.data.lineId)) ? String(req.data.lineId) : null;
+  await col("callTaps", test).add({ ext: String(req.data?.ext || "").replace(/\D/g, "").slice(0, 6), kind, lineId, at: FieldValue.serverTimestamp(), atMs: Date.now(), by: me.employeeNumber, byName: me.name, ...(test ? { test: true } : {}) });
+  return { ok: true };
 });
 
 // ---------------------------------------------------------------------------

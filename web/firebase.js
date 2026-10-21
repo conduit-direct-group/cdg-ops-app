@@ -142,6 +142,9 @@ export const callLineLogReviewers = call("lineLogReviewers");
 export const callSaveRefDoc = call("saveRefDoc");
 // Machines — parts & specs
 export const callSaveMachineSpecs = call("saveMachineSpecs");
+// Who to Call
+export const callAdminSaveCallSheet = call("adminSaveCallSheet");
+export const callLogCallTap = call("logCallTap");
 // Flagged reels / QC hold
 export const callFlagReel = call("flagReel");
 export const callStageReel = call("stageReel");

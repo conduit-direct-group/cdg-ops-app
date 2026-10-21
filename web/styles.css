@@ -1411,3 +1411,24 @@ body.has-nav .toast { bottom: calc(84px + env(safe-area-inset-bottom)); }
   .reel-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   main[data-width="wide"] .reel > .btn { width: 100%; margin-right: 0; }
 }
+
+/* ---- Who to Call ---------------------------------------------------------------------------------------------- */
+.topbar-right { display: flex; align-items: center; gap: var(--s2); }
+.call-btn { display: inline-flex; align-items: center; justify-content: center; width: var(--tap); height: var(--tap); border: var(--border-width) solid var(--line); border-radius: 50%; background: var(--surface-1); font-size: 22px; cursor: pointer; touch-action: manipulation; }
+.call-btn:active { background: var(--surface-3); }
+a.btn { text-decoration: none; }
+.call-911 { margin: var(--s2) 0 var(--s3); }
+.call-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s3); }
+.call-card { margin: 0; display: flex; flex-direction: column; gap: var(--s2); }
+.call-card h2 { margin: 0; }
+.call-card.safety { border-left-color: var(--red); }
+.call-lines { margin: 0; padding-left: var(--s4); }
+.call-lines li { margin: var(--s1) 0; }
+.call-q { margin: var(--s2) 0 0; font-weight: bold; }
+.call-step { display: flex; flex-direction: column; gap: var(--s2); padding: var(--s3); border-radius: var(--radius); background: var(--surface-2); }
+.call-step p { margin: 0; }
+.call-card .btn, .call-step .btn { margin: 0; }
+.call-person { text-decoration: none; }
+.call-remind { display: flex; flex-direction: column; gap: var(--s2); margin: var(--s3) 0; padding: var(--s3); border: var(--border-width) solid var(--red); border-radius: var(--radius); background: var(--red-tint); }
+.call-remind p { margin: 0; }
+@media (min-width: 900px) { .call-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

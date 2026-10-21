@@ -292,6 +292,18 @@ service cloud.firestore {
       }
     }
 
+    // Who to Call: the call sheet (numbers, extensions, on-call contacts who agreed) and call-button taps (for the
+    // line-down reminder). Everyone signed in reads; only the server writes.
+    match /meta/callSheet {
+      allow read: if member();
+    }
+    match /callTaps/{id} {
+      allow read: if member();
+    }
+    match /test_callTaps/{id} {
+      allow read: if member();
+    }
+
     // Flagged reels / QC hold and its lists (reasons, sizes, SDRs): everyone signed in reads — the floor works the list.
     match /reels/{id} {
       allow read: if member();
