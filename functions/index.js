@@ -30,6 +30,7 @@ const trainingApi = require("./training-api");
 const annLib = require("./announcements");
 const formsLib = require("./forms");
 const specsLib = require("./machinespecs");
+const testData = require("./testdata");
 const crypto = require("node:crypto");
 const { getMessaging } = require("firebase-admin/messaging");
 const { defineSecret } = require("firebase-functions/params");
@@ -2371,7 +2372,8 @@ async function handoffAutoFill(test) {
     for (const [k, v] of Object.entries(items)) if (!done[d.id][k] || (v.at || 0) > (done[d.id][k].at || 0)) done[d.id][k] = v;
   }
   const now = Date.now();
-  const overdueChecklists = unitsLive.units
+  // Test site: checklists start fresh each shift (14-day items can't fall overdue within one shift), so none are overdue.
+  const overdueChecklists = test ? [] : unitsLive.units
     .map((u) => ({ u, t: unitsLive.templates.find((t) => t.id === u.templateId) }))
     .filter(({ u, t }) => t && checklistsLib.unitStatus(t, done[u.id], now).overdue)
     .map(({ u, t }) => (u.lineId ? `${lineName.get(u.lineId) || u.lineId} · ${t.name}` : t.name));
@@ -3069,6 +3071,44 @@ exports.restoreMachineSpecItem = onCall(async (req) => {
     tx.delete(rRef);
     return out;
   });
+});
+
+// ---------------------------------------------------------------------------
+// Test site cleanup (Chris, 10-21-2026) — practice (test_) records only; rules and the live-safety test in testdata.js.
+// Never touches live records, Odoo, or the training workbook.
+// ---------------------------------------------------------------------------
+
+async function cleanTestData(opts) {
+  const out = await testData.clearTestData(db, { ...opts, deleteDoc: (ref) => db.recursiveDelete(ref) });
+  if (!opts.dryRun && out.total) {
+    await writePlantStatus(true); // practice line-downs gone → the test site's line status follows
+    await auditLog.add({ type: "cleared", kind: "test data", recordId: "test", by: opts.by || "system", at: FieldValue.serverTimestamp(), total: out.total, olderThanMs: opts.olderThanMs ?? null });
+  }
+  return out;
+}
+
+// Admins, test site only: { reset: false } → counts of practice records, plus the real open requests (to close in
+// Odoo or mark "Line is back up" — listed, never changed). { reset: true } → removes every practice record.
+exports.adminTestData = onCall(async (req) => {
+  const adminNumber = await requireAdmin(req);
+  const origin = String(req.rawRequest?.headers?.origin || "");
+  if (origin === LIVE_ORIGIN) throw new HttpsError("failed-precondition", "This only works on the test site.");
+  const reset = req.data?.reset === true;
+  const out = await cleanTestData({ dryRun: !reset, by: adminNumber });
+  if (reset) return out;
+  const [open, machineSnaps] = await Promise.all([issues.where("open", "==", true).get(), machines.get()]);
+  const machineName = new Map(machineSnaps.docs.map((m) => [m.id, m.get("name")]));
+  const real = open.docs.map((d) => ({
+    odooId: d.get("odooId") || null, title: String(d.get("title") || "").slice(0, 160), machineId: d.get("machineId") || null,
+    machine: machineName.get(d.get("machineId")) || null, lineDown: d.get("lineDown") === true, unsafe: d.get("unsafe") === true,
+    reportedAt: d.get("reportedAt")?.toMillis?.() || null,
+  })).sort((a, b) => (b.lineDown + b.unsafe) - (a.lineDown + a.unsafe) || (a.reportedAt || 0) - (b.reportedAt || 0));
+  return { ...out, real };
+});
+
+// Every day at 3:30 a.m. plant time: practice records not changed for 24 hours are removed.
+exports.purgeTestData = onSchedule({ schedule: "every day 03:30", timeZone: "America/Chicago", retryCount: 0 }, async () => {
+  await cleanTestData({ olderThanMs: Date.now() - testData.DAY_MS });
 });
 
 // ---------------------------------------------------------------------------

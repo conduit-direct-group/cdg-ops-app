@@ -142,6 +142,8 @@ export const callLineLogReviewers = call("lineLogReviewers");
 export const callSaveRefDoc = call("saveRefDoc");
 // Machines — parts & specs
 export const callSaveMachineSpecs = call("saveMachineSpecs");
+// Test site cleanup (Admin, test site only)
+export const callAdminTestData = call("adminTestData", { timeout: 120000 });
 export const callCopyMachineSpecs = call("copyMachineSpecs");
 export const callRestoreMachineSpecsVersion = call("restoreMachineSpecsVersion");
 export const callRestoreMachineSpecItem = call("restoreMachineSpecItem");

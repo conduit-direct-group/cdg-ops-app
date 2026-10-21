@@ -33,6 +33,7 @@ import { openStations, stationForms } from "./stations.js";
 import { openLineCheck } from "./linecheck.js";
 import { openRefDocs } from "./refdocs.js";
 import { openMachines, canViewMachines } from "./machines.js";
+import { openTestReset } from "./testdata.js";
 
 const screen = document.getElementById("screen");
 const deviceBadge = document.getElementById("device-badge");
@@ -641,6 +642,7 @@ function renderAdminMenu() {
     el("button", { class: "btn", type: "button", onclick: () => openModule(openMapAdmin) }, "🗺 Shop map setup"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openTrainingAdmin) }, "🎓 Training setup"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openActivity) }, "📜 Admin activity"),
+    TEST_MODE ? el("button", { class: "btn secondary", type: "button", onclick: () => openModule((c, o) => openTestReset(c, { ...o, onIssues: () => openIssues() })) }, "🧹 Reset test data") : null,
     deviceCard(), // one-time device setup, so it lives here rather than on Home
   ];
 }

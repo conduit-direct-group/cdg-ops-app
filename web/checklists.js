@@ -12,6 +12,7 @@ import {
 } from "./firebase.js";
 import { ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-storage.js";
 import { signOff } from "./signoff.js";
+import { shiftNow } from "./shift.js";
 
 const DAY_MS = 86400000;
 
@@ -48,8 +49,22 @@ export function unitLabel(u) {
   return u.lineId ? `${lineName(u.lineId)} · ${u.template.name}` : u.template.name;
 }
 
+// Test site: checklists start fresh each shift — every item counts as done at the start of this shift unless it was
+// practiced since, so overdue counts don't pile up while nothing real is signed there. The live site is unchanged.
+function testBaseline(now) {
+  if (!TEST_MODE) return 0;
+  return shiftNow(now)?.startMs || new Date(now).setHours(0, 0, 0, 0);
+}
+
+// When each item of a checklist was last done (on the test site, never earlier than the start of this shift).
+export function doneFor(u, now = Date.now()) {
+  const base = testBaseline(now);
+  const raw = data.checklistUnits?.[u.id] || {};
+  return base ? Object.fromEntries((u.template.items || []).map((i) => [i.id, raw[i.id]?.at > base ? raw[i.id] : { at: base, byName: "start of shift (test site)" }])) : raw;
+}
+
 export function unitStatus(u, now = Date.now()) {
-  const done = data.checklistUnits?.[u.id] || {};
+  const done = doneFor(u, now);
   const dueMs = (u.template.everyDays || 14) * DAY_MS;
   let soonestDue = Infinity;
   let never = 0;
@@ -190,7 +205,7 @@ export function openChecklist(container, { me, unitId: id, onExit }) {
     if (!data.checklistTemplates || !data.checklistUnits) return [back("Back", () => onExit()), spinner("Loading checklist…")];
     const u = unit();
     if (!u) return [back("Back", () => onExit()), emptyState("This checklist isn't in use any more", "An admin may have changed it.")];
-    const done = data.checklistUnits[u.id] || {};
+    const done = doneFor(u);
     const dueMs = (u.template.everyDays || 14) * DAY_MS;
     const items = u.template.items || [];
     const allOn = items.length && items.every((i) => ui.checked.has(i.id));
