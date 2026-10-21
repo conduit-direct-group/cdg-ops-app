@@ -3,7 +3,7 @@
 // each person marks their own task done with their PIN (on a line tablet: tap their name, then PIN); the Supervisor
 // check is a PIN sign-off once every task is done. Unfinished tasks show on Home — red in the last hour of the shift.
 
-import { el, friendlyError, spinner, emptyState, banner, toast, picker, statusFold, collapsible } from "./ui.js";
+import { el, friendlyError, spinner, emptyState, banner, toast, picker, collapsible } from "./ui.js";
 import { data, onDataChange } from "./data.js";
 import {
   TEST_MODE, callStartShopTasks, callShopTaskPeople, callAssignShopTask, callMarkShopTaskDone, callCheckShopTasks, callShopTaskSigners,
@@ -57,50 +57,54 @@ function thisShift() {
   return { form, now, list: now ? (data.shopLists || []).find((l) => l.id === now.id) || null : null };
 }
 
-// ---- Home ---------------------------------------------------------------------------------------------------------
-
-// "Needs you": my own tasks not done (anyone), and for leads/supervisors the shift's list (not started / x of y done /
-// supervisor check needed / done). Orange while the shift runs; red in the last hour and after.
-export function shopFolds(me, roles, onOpen) {
+// ---- Home items (Decision 66) -----------------------------------------------------------------------------------
+// Your own unfinished task (anyone), and for leads/supervisors this shift's list: gray "due by 5:00 PM", red in the
+// last hour of the shift, green when every task is done and the supervisor has checked it.
+export function shopItems(me, roles, onOpen) {
   if (!data.shopLists || !data.formTemplates) return [];
   const out = [];
-  const mineLate = [];
   const mine = [];
   for (const l of data.shopLists) {
     if (l.check) continue;
-    for (const t of tasksOf(l)) {
-      if (l.assign?.[t.id] === me.emp && !l.done?.[t.id]) (listState(l).late ? mineLate : mine).push({ l, t });
-    }
+    for (const t of tasksOf(l)) if (l.assign?.[t.id] === me.emp && !l.done?.[t.id]) mine.push({ l, t });
   }
-  const myAll = [...mineLate, ...mine];
-  if (myAll.length) {
-    const f = statusFold("home-shop-mine", false, `${mineLate.length ? "⚠" : "🧹"} Your shop task${myAll.length === 1 ? "" : "s"} · ${myAll.map((x) => x.t.label).join(", ")}`.slice(0, 120),
-      el("div", { class: "person-list" }, myAll.map(({ l, t }) => el("button", { class: "person-row", type: "button", onclick: () => onOpen(l.id) },
-        el("span", { class: "person-name" }, t.label), el("span", { class: "person-meta" }, `${l.shift.name} shift · ends ${fmtTime(l.endMs)} · tap to mark done`)))));
-    if (!mineLate.length) f.classList.replace("fold-todo", "fold-due");
-    out.push(f);
+  if (mine.length) {
+    const late = mine.some(({ l }) => listState(l).late);
+    out.push({ key: "shop-mine", icon: "🧹", title: `Your shop task${mine.length === 1 ? "" : "s"}: ${mine.map((x) => x.t.label).join(", ")}`,
+      detail: `due by ${fmtTime(mine[0].l.endMs)}`, state: late ? "late" : "due", onOpen: () => onOpen(mine[0].l.id) });
   }
   if (runsShopList(roles)) {
     const { form, now, list } = thisShift();
     if (form && now) {
-      if (!list) {
-        const f = statusFold("home-shop", false, `🧹 Keep the Shop Clean · not started for the ${now.shift.name} shift`,
-          el("button", { class: "btn", type: "button", onclick: () => onOpen(null) }, "🧹 Start and assign tasks"));
-        f.classList.replace("fold-todo", "fold-due");
-        out.push(f);
-      } else {
-        const s = listState(list);
-        const text = s.checked ? "✓ Keep the Shop Clean · done and checked"
-          : s.allDone ? `${s.late ? "⚠" : "🧹"} Keep the Shop Clean · all done — supervisor check needed`
-          : `${s.late ? "⚠" : "🧹"} Keep the Shop Clean · ${s.done} of ${s.total} done${s.late ? ` — shift ends ${fmtTime(list.endMs)}` : ""}`;
-        const f = statusFold("home-shop", s.checked, text, el("button", { class: s.late && !s.checked ? "btn danger" : "btn secondary", type: "button", onclick: () => onOpen(list.id) }, "🧹 Open the task list"));
-        if (!s.checked && !s.late) f.classList.replace("fold-todo", "fold-due");
-        out.push(f);
-      }
+      const s = list ? listState(list) : null;
+      const late = list ? s.late : Date.now() >= currentEnd(form, now) - (form.redMinutes ?? 60) * 60000;
+      const by = `due by ${fmtTime(list ? list.endMs : currentEnd(form, now))}`;
+      if (!list) out.push({ key: "shop", icon: "🧹", title: "Keep the Shop Clean — start and assign tasks", detail: by, state: late ? "late" : "due", onOpen: () => onOpen(null) });
+      else if (s.checked) out.push({ key: "shop", icon: "🧹", title: "Keep the Shop Clean", detail: "done and checked", state: "done", onOpen: () => onOpen(list.id) });
+      else out.push({ key: "shop", icon: "🧹", title: s.allDone ? "Keep the Shop Clean — supervisor check needed" : `Keep the Shop Clean — ${s.done} of ${s.total} done`,
+        detail: by, state: late ? "late" : "due", onOpen: () => onOpen(list.id) });
     }
   }
   return out;
 }
+// When this shift ends (before the list exists): plant date + the shift's end time.
+function currentEnd(form, now) {
+  const s = form.shifts.find((x) => x.id === now.shift.id);
+  const day = s && toMin(s.end) <= toMin(s.start) ? addDay(now.date, 1) : now.date;
+  return plantMs(day, s?.end || "00:00");
+}
+function plantMs(date, hhmm) {
+  const [y, m, d] = date.split("-").map(Number);
+  const want = Date.UTC(y, m - 1, d, Number(hhmm.slice(0, 2)), Number(hhmm.slice(3)));
+  let guess = want;
+  for (let i = 0; i < 2; i++) {
+    const c = plantClock(guess);
+    const [cy, cm, cd] = c.date.split("-").map(Number);
+    guess += want - Date.UTC(cy, cm - 1, cd, Math.floor(c.minutes / 60), c.minutes % 60);
+  }
+  return guess;
+}
+
 
 // ===========================================================================
 

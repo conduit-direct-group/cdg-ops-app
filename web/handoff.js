@@ -4,7 +4,8 @@
 // The outgoing lead signs with PIN; a Line Lead on the incoming team signs received (it's on their Home until then).
 // Readers: Line Leads, Supervisors, Plant Manager, Admin.
 
-import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, picker, collapsible, statusFold } from "./ui.js";
+import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, picker, collapsible } from "./ui.js";
+import { dueByShiftEnd } from "./shift.js";
 import { data, onDataChange, lineName } from "./data.js";
 import {
   db, TEST_MODE, callHandoffAutoFill, callStartHandoff, callSaveHandoffDraft, callSendHandoff, callDiscardHandoff,
@@ -33,26 +34,22 @@ export function toReceive(me) {
 }
 export const myDraft = (me) => (data.handoffsOpen || []).find((h) => h.status === "draft" && h.createdBy === me.emp) || null;
 
-// Home: "Needs you" lines — a handoff to sign received (orange, it's waiting on you), and your own unsent one.
-export function handoffFolds(me, onOpen) {
+// Home items (Decision 66): a handoff to sign received, and your own unsent one — due by the end of the shift
+// (gray), red in its last hour.
+export function handoffItems(me, onOpen) {
   if (!usesHandoffs(me.roles) || !data.handoffsOpen) return [];
   const out = [];
+  const due = dueByShiftEnd();
   const waiting = toReceive(me);
   if (waiting.length) {
-    const f = statusFold("home-handoff", false, `📝 Shift handoff · ${waiting.length} to read and sign received`,
-      el("div", { class: "person-list" }, waiting.map((h) => handoffRow(h, () => onOpen(h.id)))));
-    f.classList.replace("fold-todo", "fold-due");
-    out.push(f);
+    out.push({ key: "handoff-in", icon: "📝", ...due, onOpen: () => onOpen(waiting.length === 1 ? waiting[0].id : null),
+      title: waiting.length === 1 ? `Shift handoff from Team ${teamName(waiting[0].team)} — sign received` : `${waiting.length} shift handoffs to sign received` });
   }
   const draft = myDraft(me);
-  if (draft) {
-    const f = statusFold("home-handoff-draft", false, "📝 Your handoff isn't sent yet",
-      el("div", { class: "person-list" }, handoffRow(draft, () => onOpen(draft.id))));
-    f.classList.replace("fold-todo", "fold-due");
-    out.push(f);
-  }
+  if (draft) out.push({ key: "handoff-draft", icon: "📝", title: "Your shift handoff — not sent yet", ...due, onOpen: () => onOpen(draft.id) });
   return out;
 }
+
 
 const STATUS = { draft: ["Not sent yet", "tag warn"], sent: ["Sent — waiting for received", "tag warn"], received: ["✓ Received", "tag ok"], discarded: ["Discarded", "tag"] };
 function handoffRow(h, onclick, lineId = null) {

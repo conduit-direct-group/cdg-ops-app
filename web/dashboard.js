@@ -1,35 +1,38 @@
-// Home = the role dashboard (plan Decision 49). Same layout for every role:
-//   1. "Needs you" strip (hidden when empty)   2. Quick buttons   3. Plant status bar   4. Role cards
-// People with several roles get one screen with the cards merged (no duplicates). Admins can "View as" any role.
-//
-// Only cards whose data exists are here; cards for modules not built yet (schedule, handoffs, notices, PMs,
-// QC, trucks, write-ups…) are added when those modules are built — never as placeholders.
+// Home (Decision 66; layout replaces the Decision 49 dashboard). Top to bottom:
+//   1. Name and role, with each line's status right under it (green running / red down).
+//   2. Needs you — every item appears once, in one of three states: gray = not due yet (with its due time),
+//      red ⚠ = last hour of the shift or overdue, green ✓ = done. Tapping an item opens it.
+//   3. Quick buttons: Shop Map · Need something? · Maintenance Request.
+//   4. At a glance — summary cards about other people's work (only ones that don't repeat a Needs you item).
+// The navigation bar (Home · Map · Checklists · Announcements · More) is in app.js. Admins can "View as" any role.
 
-import { el, picker, statusFold } from "./ui.js";
+import { el, picker, choose } from "./ui.js";
 import { data, lineName } from "./data.js";
 import { overdueUnits, unitLabel } from "./checklists.js";
-import { requestRow, myOpenRequests } from "./requests.js";
-import { safetyBanner, needsYouFold } from "./announcements.js";
-import { handoffFolds } from "./handoff.js";
-import { shopFolds } from "./shoptasks.js";
-import { stationFold } from "./stations.js";
-import { lineCheckFolds } from "./linecheck.js";
+import { myOpenRequests } from "./requests.js";
+import { announcementItems } from "./announcements.js";
+import { handoffItems } from "./handoff.js";
+import { shopItems } from "./shoptasks.js";
+import { stationItems } from "./stations.js";
+import { lineCheckItems } from "./linecheck.js";
 import { db, TEST_MODE, callAdminListEmployees, callAnnouncementSummary } from "./firebase.js";
 import { collection, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 
-// Role order on a combined screen, and each role's cards (ids are shared, so duplicates merge).
+// Role order on a combined screen, and each role's "At a glance" cards (ids are shared, so duplicates merge).
+// Cards that would repeat a Needs you item (checklists due, requests for you, lines down, open maintenance
+// requests, safety concerns) are gone — Needs you covers them.
 export const ROLE_CARDS = [
-  ["admin", "Admin", ["plant-today", "system-alerts", "waiting-login"]],
-  ["plant-manager", "Plant Manager", ["safety", "pm-maintenance", "pm-people", "ack-gaps"]],
-  ["supervisor", "Supervisor", ["safety", "crew-gaps"]],
-  ["lead", "Line Lead", ["line-checklists"]],
-  ["operator", "Operator", ["line-checklists"]],
-  ["maintenance", "Maintenance", ["lines-down", "maint-requests", "routed"]],
+  ["admin", "Admin", ["system-alerts", "waiting-login"]],
+  ["plant-manager", "Plant Manager", ["pm-people", "ack-gaps"]],
+  ["supervisor", "Supervisor", ["crew-gaps"]],
+  ["lead", "Line Lead", []],
+  ["operator", "Operator", []],
+  ["maintenance", "Maintenance", []],
   ["quality", "Quality", []],
-  ["shipping", "Logistics & Distribution", ["routed"]],
+  ["shipping", "Logistics & Distribution", []],
   ["sales", "Sales", []],
-  ["office", "Office", ["routed", "ack-gaps"]],
-  ["training-safety", "Training & Safety", ["trainees", "expiring", "safety"]],
+  ["office", "Office", ["ack-gaps"]],
+  ["training-safety", "Training & Safety", ["trainees", "expiring"]],
 ];
 
 // Office, Sales, Quality, Logistics & Distribution see nothing about machines or maintenance (Decision 53).
@@ -136,47 +139,6 @@ function cardData(id, ctx) {
   const down = Object.entries(data.plantStatus?.down || {});
   const openIssues = data.openIssues || [];
   switch (id) {
-    case "line-checklists": {
-      if (!data.checklistUnits || !data.lines) return null;
-      const home = data.myself?.homeLineId || null;
-      const late = overdueUnits().filter((u) => !home || u.lineId === home || u.lineId === null);
-      return { icon: "📋", title: home ? `Checklists due · ${lineName(home)}` : "Checklists due · all lines", num: late.length,
-        line: late.length ? late.slice(0, 2).map(unitLabel).join(" · ") + (late.length > 2 ? ` +${late.length - 2}` : "") : "All clear",
-        alert: late.length > 0, onOpen: late.length ? () => go.checklist(late[0].id) : null };
-    }
-    case "safety": {
-      if (!data.urgentRequests) return null;
-      const open = data.urgentRequests.filter((r) => r.status !== "done");
-      const top = open[0];
-      return { icon: "⚠", title: "Open safety concerns", num: open.length,
-        line: top ? `${top.description?.slice(0, 60) || top.typeName}${top.lineName ? ` · ${top.lineName}` : ""}` : "All clear",
-        alert: open.length > 0, onOpen: top ? () => go.request(top.id) : null };
-    }
-    case "lines-down": {
-      if (!data.plantStatus) return null;
-      const longest = down.reduce((a, [, v]) => (v.since && (!a || v.since < a) ? v.since : a), 0);
-      return { icon: "⛔", title: "Lines down now", num: down.length,
-        line: down.length ? down.slice(0, 2).map(([l, v]) => `${lineName(l)}${v.since ? ` ${howLong(v.since)}` : ""}${v.machineIds.length ? ` (${v.machineIds.join(", ")})` : ""}`).join(" · ") : "All clear",
-        alert: down.length > 0, onOpen: down.length ? go.issues : null, longest };
-    }
-    case "maint-requests": {
-      if (!data.openIssues) return null;
-      const ld = openIssues.filter((i) => i.lineDown).length, unsafe = openIssues.filter((i) => i.unsafe && !i.lineDown).length;
-      const high = openIssues.filter((i) => !i.lineDown && !i.unsafe && ["urgent", "high"].includes(i.severity)).length;
-      const rest = openIssues.length - ld - unsafe - high;
-      const bits = [ld && `${ld} line down`, unsafe && `${unsafe} unsafe`, high && `${high} high`, rest && `${rest} normal`].filter(Boolean);
-      return { icon: "🚨", title: "Open Maintenance Requests", num: openIssues.length, line: bits.length ? bits.join(" · ") : "All clear",
-        alert: ld + unsafe + high > 0, onOpen: go.issues };
-    }
-    case "routed": {
-      if (!data.requestsForMe) return null;
-      const open = data.requestsForMe.filter((r) => r.status !== "done");
-      const urgent = open.filter((r) => r.urgent).length;
-      const oldest = open.reduce((a, r) => Math.min(a, toMs(r.createdAt) || a), Date.now());
-      return { icon: "📥", title: ctx.admin && !ctx.viewAs ? "Open requests (everyone's)" : "Requests for you", num: open.length,
-        line: open.length ? [urgent && `${urgent} urgent`, `oldest ${howLong(oldest)}`].filter(Boolean).join(" · ") : "All clear",
-        alert: open.length > 0, onOpen: open.length ? () => go.request(open[0].id) : null };
-    }
     case "trainees": {
       watchTraining();
       const t = extra.training;
@@ -193,14 +155,6 @@ function cardData(id, ctx) {
         line: t.overdue + t.soon ? [t.overdue && `${t.overdue} overdue`, t.soon && `${t.soon} due soon`].filter(Boolean).join(" · ") : "All clear",
         alert: t.overdue > 0, onOpen: go.training };
     }
-    case "pm-maintenance": {
-      if (!data.plantStatus || !data.openIssues) return null;
-      const longest = down.reduce((a, [, v]) => (v.since && (!a || v.since < a) ? v.since : a), 0);
-      const critical = openIssues.filter((i) => i.lineDown || i.unsafe || i.severity === "urgent").length;
-      return { icon: "🔧", title: "Maintenance", num: down.length,
-        line: down.length || critical ? [down.length && `${plural(down.length, "line")} down${longest ? ` (longest ${howLong(longest)})` : ""}`, critical && `${critical} critical`, `${openIssues.length} open`].filter(Boolean).join(" · ") : "All clear",
-        alert: down.length > 0 || critical > 0, onOpen: go.issues };
-    }
     case "pm-people": {
       watchTraining();
       const t = extra.training;
@@ -209,12 +163,6 @@ function cardData(id, ctx) {
       return { icon: "👥", title: "People · training", num: t.overdue,
         line: t.overdue || t.soon ? [t.overdue && `${t.overdue} refreshers overdue`, t.soon && `${t.soon} due in 30 days`].filter(Boolean).join(" · ") : "All clear",
         alert: t.overdue > 0, onOpen: go.training };
-    }
-    case "plant-today": {
-      if (!data.plantStatus || !data.lines) return null;
-      const lines = data.lines.filter((l) => l.active !== false);
-      return { icon: "🏭", title: "Plant today", num: down.length,
-        line: `${down.length} of ${lines.length} lines down · ${openIssues.length} open maintenance requests`, alert: down.length > 0, onOpen: openIssues.length ? go.issues : null };
     }
     case "system-alerts": {
       watchOdooSync();
@@ -274,108 +222,151 @@ export function cardsFor(roles) {
   return out;
 }
 
-// ---- the whole dashboard ------------------------------------------------------------------------------------
+// ---- Needs you ----------------------------------------------------------------------------------------------
 
-// ctx = { emp, roles, admin, viewAs, setViewAs, go: { checklist, request, issues, training, people, map, need, report, announcement, announcements, handoff, shop, station, lineCheck }, onRedraw }
-export function dashboard(ctx) {
-  redraw = ctx.onRedraw;
-  const roles = ctx.viewAs ? [ctx.viewAs] : ctx.roles;
+const STATE_ORDER = { late: 0, due: 1, done: 2 };
+const MARK = { late: "⚠", due: "", done: "✓" };
+const SAFETY_WATCHERS = ["supervisor", "training-safety", "plant-manager", "admin"];
+const ISSUE_ROLES = ["maintenance", "admin", "plant-manager"];
+
+function needRow(it) {
+  return el("button", { class: `need-item ${it.state}`, type: "button", onclick: it.onOpen, "data-key": it.key },
+    el("span", { class: "need-icon", "aria-hidden": "true" }, it.icon || "•"),
+    el("span", { class: "need-text" }, el("span", { class: "need-title" }, it.title), it.detail ? el("span", { class: "need-detail" }, it.detail) : null),
+    el("span", { class: "need-mark", "aria-label": it.state === "late" ? "Needs doing now" : it.state === "done" ? "Done" : "Not due yet" }, MARK[it.state] || "›"));
+}
+
+// Several things behind one item: a big pick-one sheet, then open the one picked.
+const pickThen = (title, list, open) => async () => {
+  if (list.length === 1) return open(list[0].value);
+  const v = await choose({ title, options: list });
+  if (v != null) open(v);
+};
+
+// Every Needs you item for these roles, each once, red first, then gray, then green.
+function needsItems(ctx, roles) {
+  const { go } = ctx;
+  const me = { emp: ctx.emp, roles };
   const machines = usesMachines(roles);
-  const ids = cardsFor(roles);
-  const lines = (data.lines || []).filter((l) => l.active !== false);
-  const down = data.plantStatus?.down || {};
-  const everyone = ctx.admin && !ctx.viewAs;
+  const items = [];
+  items.push(...announcementItems(ctx.emp, go.announcement));
 
-  // 1. Needs you: one fold-away line per list — red while something isn't done, green when it's all done.
-  // Announcements first (orange while waiting, red once overdue); unsigned Safety ones also sit at the very top.
-  const tabs = [];
-  const ann = needsYouFold(ctx.emp, ctx.go.announcement);
-  if (ann) tabs.push(ann);
-  tabs.push(...handoffFolds({ emp: ctx.emp, roles }, ctx.go.handoff)); // a handoff to sign received; your unsent one
-  tabs.push(...shopFolds({ emp: ctx.emp }, roles, ctx.go.shop)); // Keep the Shop Clean: your tasks; the shift list for leads
-  const stations = stationFold(roles, ctx.go.station); // Reel Building / Reclamation not signed off this shift (leads)
-  if (stations) tabs.push(stations);
-  tabs.push(...lineCheckFolds(roles, ctx.go.lineCheck)); // line checks due/overdue; logs to review (supervisors)
-  if (machines && data.checklistUnits && data.lines) {
-    const late = overdueUnits();
-    tabs.push(statusFold("home-checklists", !late.length,
-      late.length ? `⚠ Machine checklists · ${late.length} overdue` : "✓ Machine checklists · all done",
-      late.length
-        ? el("div", { class: "alert-pills" }, late.map((u) => el("button", { class: "alert-pill", type: "button", onclick: () => ctx.go.checklist(u.id) }, unitLabel(u))))
-        : el("p", { class: "card-note" }, "Every machine checklist is signed off and up to date.")));
+  // Open safety concerns (urgent requests) — Supervisor, Training & Safety, Plant Manager, Admin.
+  const watcher = roles.some((r) => SAFETY_WATCHERS.includes(r));
+  if (watcher && data.urgentRequests) {
+    const open = data.urgentRequests.filter((r) => r.status !== "done");
+    if (open.length) items.push({ key: "safety", icon: "⚠", title: `Open safety concern${open.length === 1 ? "" : "s"}: ${open[0].description?.slice(0, 60) || open[0].typeName}${open.length > 1 ? ` (+${open.length - 1})` : ""}`,
+      detail: open[0].lineName || "act now", state: "late", onOpen: pickThen("Safety concerns", open.map((r) => ({ value: r.id, label: `${r.description?.slice(0, 70) || r.typeName}${r.lineName ? ` · ${r.lineName}` : ""}` })), go.request) });
   }
-  const forMe = data.requestsForMe || [];
-  const forMeOpen = forMe.filter((r) => r.status !== "done");
+
+  // Open maintenance requests — Maintenance, Admin, Plant Manager (red when a line is down or it's unsafe).
+  if (machines && roles.some((r) => ISSUE_ROLES.includes(r)) && data.openIssues) {
+    const open = data.openIssues;
+    const ld = open.filter((i) => i.lineDown).length;
+    const unsafe = open.filter((i) => i.unsafe && !i.lineDown).length;
+    items.push(open.length
+      ? { key: "maint", icon: "🚨", title: `Open maintenance requests: ${open.length}`, detail: [ld && `${ld} line down`, unsafe && `${unsafe} unsafe`].filter(Boolean).join(" · ") || "none urgent", state: ld + unsafe ? "late" : "due", onOpen: go.issues }
+      : { key: "maint", icon: "🚨", title: "Maintenance requests", detail: "none open", state: "done", onOpen: go.issues });
+  }
+
+  items.push(...handoffItems(me, go.handoff));
+  items.push(...shopItems(me, roles, go.shop));
+  if (machines) items.push(...stationItems(roles, go.station));
+  if (machines) items.push(...lineCheckItems(roles, go.lineCheck));
+
+  // Machine checklists (14-day) — people who work with the machines; operators/leads with a home line: that line.
+  if (machines && data.checklistUnits && data.lines && data.checklistTemplates) {
+    const home = roles.some((r) => ["operator", "lead"].includes(r)) && !roles.some((r) => ISSUE_ROLES.includes(r)) ? data.myself?.homeLineId || null : null;
+    const late = overdueUnits().filter((u) => !home || u.lineId === home || u.lineId === null);
+    items.push(late.length
+      ? { key: "checklists", icon: "📋", title: `Machine checklists overdue: ${late.length}`, detail: late.slice(0, 2).map(unitLabel).join(" · ") + (late.length > 2 ? ` +${late.length - 2}` : ""), state: "late",
+          onOpen: pickThen("Overdue checklists", late.map((u) => ({ value: u.id, label: unitLabel(u) })), go.checklist) }
+      : { key: "checklists", icon: "📋", title: "Machine checklists", detail: "all up to date", state: "done", onOpen: go.checklists });
+  }
+
+  // "Need something?" requests sent to me (admins: every open one). Safety concerns are their own item above.
+  const forMe = (data.requestsForMe || []).filter((r) => r.status !== "done" && !(watcher && r.urgent));
   if (forMe.length) {
-    const urgent = forMeOpen.filter((r) => r.urgent).length;
-    const name = everyone ? "Open requests" : "Requests for you";
-    tabs.push(statusFold("home-for-me", !forMeOpen.length,
-      forMeOpen.length ? `⚠ ${name} · ${forMeOpen.length} open${urgent ? ` (${urgent} urgent)` : ""}` : `✓ ${name} · all done`,
-      forMeOpen.length
-        ? el("div", { class: "person-list" }, forMeOpen.map((r) => requestRow(r, () => ctx.go.request(r.id))))
-        : el("p", { class: "card-note" }, "Nothing waiting on you.")));
+    const urgent = forMe.filter((r) => r.urgent).length;
+    const oldest = forMe.reduce((a, r) => Math.min(a, toMs(r.createdAt) || a), Date.now());
+    items.push({ key: "requests", icon: "📥", title: `${ctx.admin && !ctx.viewAs ? "Open requests (everyone's)" : "Requests for you"}: ${forMe.length}`,
+      detail: [urgent && `${urgent} urgent`, `oldest ${howLong(oldest)}`].filter(Boolean).join(" · "), state: urgent ? "late" : "due",
+      onOpen: pickThen("Requests", forMe.map((r) => ({ value: r.id, label: `${r.icon || "💬"} ${r.typeName}: ${(r.description || "").slice(0, 60)}` })), go.request) });
   }
   const mine = myOpenRequests();
   if (mine.length) {
-    tabs.push(statusFold("home-mine", false, `⚠ My requests · ${mine.length} not done yet`,
-      el("div", { class: "person-list" }, mine.map((r) => requestRow(r, () => ctx.go.request(r.id))))));
+    items.push({ key: "my-requests", icon: "🧾", title: `My requests: ${mine.length} not done yet`, detail: "waiting on others", state: "due",
+      onOpen: pickThen("My requests", mine.map((r) => ({ value: r.id, label: `${r.icon || "💬"} ${r.typeName}: ${(r.description || "").slice(0, 60)}` })), go.request) });
   }
-  // My own training — only when this person is linked to their training record (Admin → People).
+
+  // My own yearly refreshers — only when this person is linked to their training record (Admin → People).
   myTrainingName = ctx.viewAs ? null : data.myself?.trainingName || null;
   if (myTrainingName) {
     watchTraining();
     const t = extra.training;
     if (t && !t.missing && t.myName === myTrainingName) {
-      const due = [...t.mine.overdue, ...t.mine.soon];
-      tabs.push(statusFold("home-training", !due.length,
-        t.mine.overdue.length ? `⚠ My training · ${t.mine.overdue.length} overdue`
-          : t.mine.soon.length ? `⚠ My training · ${t.mine.soon.length} due within 30 days` : "✓ My training · all current",
-        due.length
-          ? el("ul", { class: "count-list" }, due.map((x) => el("li", {}, el("span", {}, x.what), el("strong", {}, `due ${x.due}`))))
-          : el("p", { class: "card-note" }, "Your yearly refreshers are current."),
-        due.length ? el("p", { class: "card-note" }, "Ask the Training & Safety team to schedule it.") : null));
+      const overdue = t.mine.overdue, soon = t.mine.soon;
+      items.push(overdue.length
+        ? { key: "training", icon: "🎓", title: `My training overdue: ${overdue.map((x) => x.what).join(", ")}`, detail: "ask Training & Safety to schedule it", state: "late", onOpen: () => {} }
+        : soon.length
+          ? { key: "training", icon: "🎓", title: `My training: ${soon.map((x) => x.what).join(", ")}`, detail: `due by ${soon[0].due}`, state: "due", onOpen: () => {} }
+          : { key: "training", icon: "🎓", title: "My training", detail: "all current", state: "done", onOpen: () => {} });
     }
   }
-  const anyTodo = tabs.some((t) => t.classList.contains("fold-todo") || t.classList.contains("fold-due"));
-  const needs = tabs.length
-    ? el("section", { class: "needs-you", "aria-label": "Needs you" }, anyTodo ? el("strong", { class: "needs-title" }, "Needs you") : null, tabs)
+  return items.map((it, i) => ({ ...it, i })).sort((a, b) => STATE_ORDER[a.state] - STATE_ORDER[b.state] || a.i - b.i);
+}
+
+// ---- the whole Home -----------------------------------------------------------------------------------------
+
+// ctx = { emp, roles, admin, viewAs, setViewAs, go: { checklist, checklists, request, issues, training, people, map, need, report,
+//         announcement, announcements, handoff, shop, station, lineCheck }, onRedraw }
+// Returns the pieces; app.js lays them out (one column on phones, two on tablets and desktops).
+export function dashboard(ctx) {
+  redraw = ctx.onRedraw;
+  const roles = ctx.viewAs ? [ctx.viewAs] : ctx.roles;
+  const machines = usesMachines(roles);
+  const lines = (data.lines || []).filter((l) => l.active !== false);
+  const down = data.plantStatus?.down || {};
+
+  // Line status, right under the name: L1 / L2 / L3 — green running, red down.
+  const unknown = data.plantStatus?.unknown || 0;
+  const short = (name) => String(name).replace(/^Line\s*/i, "L");
+  const status = lines.length
+    ? el("div", { class: "line-status", role: "list", "aria-label": "Line status" },
+        lines.map((l) => {
+          const d = down[l.id];
+          return el("span", { class: d ? "line-pill down" : "line-pill up", role: "listitem", title: l.name },
+            el("strong", {}, short(l.name)), d ? ` ⛔ Down${d.since ? ` ${howLong(d.since)}` : ""}${d.test ? " (test)" : ""}` : " ✓ Running");
+        }),
+        unknown ? el("span", { class: "line-pill down", role: "listitem" }, `⛔ ${plural(unknown, "line-down request")} with no line set`) : null)
     : null;
 
-  // 2. Quick buttons (Maintenance Request only for people who work with the machines).
+  const items = needsItems(ctx, roles);
+  const needs = el("section", { class: "needs", "aria-label": "Needs you" },
+    el("h2", { class: "home-h2" }, "Needs you"),
+    items.length ? el("div", { class: "need-list" }, items.map(needRow)) : el("p", { class: "need-empty" }, "✓ Nothing needs you right now."));
+
   const quick = el("div", { class: machines ? "quick-row" : "quick-row two" },
     el("button", { class: "btn big secondary", type: "button", onclick: ctx.go.map }, "🗺 Shop Map"),
     el("button", { class: "btn big", type: "button", onclick: ctx.go.need }, "🙋 Need something?"),
     machines ? el("button", { class: "btn big danger", type: "button", onclick: ctx.go.report }, "🚨 Maintenance Request") : null);
 
-  // 3. Plant status: green ✓ Running, red ⛔ Down — the same source as the Open issues button (meta/plantStatus).
-  const unknown = data.plantStatus?.unknown || 0;
-  const bar = lines.length
-    ? el("section", { class: "plant-bar", "aria-label": "Plant status" },
-        lines.map((l) => {
-          const d = down[l.id];
-          return el("span", { class: d ? "line-chip down" : "line-chip up" },
-            el("strong", {}, l.name), d ? ` ⛔ Down${d.since ? ` ${howLong(d.since)}` : ""}${d.test ? " (TEST)" : ""}` : " ✓ Running");
-        }),
-        unknown ? el("span", { class: "line-chip down" }, `⛔ ${plural(unknown, "line-down request")} with no line set`) : null)
-    : null;
-
-  // Admin: View as any role (cards and lists still show your own account's data).
+  // Admin: View as any role (lists still show your own account's data).
   const viewAs = ctx.admin
     ? el("div", { class: "view-as" },
         picker({
           title: "View as", value: ctx.viewAs || "", placeholder: "👁 View as…",
           options: [{ value: "", label: "👁 My own screen" }, ...ROLE_CARDS.map(([id, name]) => ({ value: id, label: `👁 View as ${name}` }))],
           onChange: (v) => ctx.setViewAs(v || null),
-        }),
-        ctx.viewAs ? el("p", { class: "message" }, `Viewing as ${ROLE_CARDS.find(([id]) => id === ctx.viewAs)?.[1]}. Cards and lists show your own account's data.`) : null)
+        }))
     : null;
 
-  // 4. Role cards.
+  const ids = cardsFor(roles);
   const cards = ids.length
-    ? el("section", { class: "dash-cards", "aria-label": "Your cards" }, ids.map((id) => card(cardData(id, ctx), id)))
+    ? el("section", { class: "glance", "aria-label": "At a glance" }, el("h2", { class: "home-h2" }, "At a glance"), el("div", { class: "dash-cards" }, ids.map((id) => card(cardData(id, ctx), id))))
     : null;
 
-  return [safetyBanner(ctx.emp, ctx.go.announcement), viewAs, needs, quick, bar, cards];
+  return { status, viewAs, needs, quick, cards };
 }
 
 // Lines down for the Open issues button — from the same summary as the plant status bar.

@@ -1156,8 +1156,10 @@ async function writePlantStatus(test) {
     const lineIds = new Set((await lines.get()).docs.filter((l) => l.get("active") !== false).map((l) => l.id));
     const down = {};
     let unknown = 0;
+    const testCutoff = Date.now() - 24 * 3600000; // test site: practice line-downs stop counting after 24 hours
     for (const d of open.docs) {
       if (d.get("lineDown") !== true) continue;
+      if (test && (d.get("reportedAt")?.toMillis?.() || 0) < testCutoff) continue;
       // The machine's line; for requests with no machine (e.g. from the Microsoft Form, "CDG MACHINE ISSUE - 3-Extruder")
       // the line number written in the request's own title.
       let lineId = lineOf.get(d.get("machineId")) || null;

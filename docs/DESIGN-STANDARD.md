@@ -5,9 +5,9 @@ Every screen should look and feel like a finished, professional CDG product. Cle
 
 ## Look
 - CDG black / orange / white. One black, one orange, one red (alerts only). Defined once as color variables, never hard-coded.
-- Status colors (Decision 55): red = not done / down, green (--green) = all done / running. Only for status, and always paired with an icon and words ("⚠ Machine checklists · 15 overdue", "✓ Machine checklists · all done").
-- Waiting but not late (Decision 58): orange fold (fold-due), e.g. "📣 Announcements · 2 to read and sign" before the acknowledge-by date; it turns red once late.
-- Lists that can fold away do (statusFold in ui.js): one line each, tap to open.
+- Status colors (Decision 66): three only — gray = not due yet (always with its due time, e.g. "due by 5:00 PM"), red ⚠ = last hour of the shift or overdue, green ✓ = done. Always paired with an icon and words. No other status colors (no orange "waiting" style). Line status: green ✓ Running / red ⛔ Down.
+- Home: every item appears only once (Needs you); no card or button repeats a Needs you item. Tapping an item opens it.
+- Navigation bar on every screen once signed in: Home · Map · Checklists · Announcements · More — bottom bar on phones and tablets, side bar on desktops. Lists that can fold away elsewhere still do (collapsible in ui.js).
 - Every sign-off uses the one shared sign-off part (signoff.js): tap your name, then your PIN.
 - One font family. Fixed text sizes: page title, section title, body, small. Body text at least 16px on phones, 18px on tablets.
 - Fixed spacing steps (4 / 8 / 16 / 24 / 32px). No random gaps.

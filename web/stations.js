@@ -3,7 +3,8 @@
 // (saved as they go); one person signs it off with their PIN once everything is done.
 // Leads and supervisors see on Home which stations aren't signed off this shift (red in the last hour).
 
-import { el, friendlyError, spinner, emptyState, banner, toast, statusFold, collapsible } from "./ui.js";
+import { el, friendlyError, spinner, emptyState, banner, toast, collapsible } from "./ui.js";
+import { dueByShiftEnd } from "./shift.js";
 import { data, onDataChange } from "./data.js";
 import { TEST_MODE, callStartStationList, callSaveStationList, callSignStationList } from "./firebase.js";
 import { signOff } from "./signoff.js";
@@ -47,22 +48,20 @@ function missing(sections, values) {
   return out;
 }
 
-// Home (leads and supervisors): stations not signed off this shift — orange, red in the last hour; green when all are.
-export function stationFold(roles, onOpen) {
-  if (!(roles || []).some((r) => TASKLIST_ROLES.includes(r)) || !data.formTemplates || !data.stationLists) return null;
+// Home item (Decision 66), leads and supervisors: the station checklists for this shift — gray "due by 5:00 PM",
+// red in the last hour, green when every station is signed off.
+export function stationItems(roles, onOpen) {
+  if (!(roles || []).some((r) => TASKLIST_ROLES.includes(r)) || !data.formTemplates || !data.stationLists) return [];
   const forms = stationForms();
   const now = shiftNow();
-  if (!forms.length || !now) return null;
+  if (!forms.length || !now) return [];
   const open = forms.filter((f) => !listFor(f.id, now)?.signed);
-  if (!open.length) return statusFold("home-stations", true, "✓ Station checklists · all signed off this shift", el("p", { class: "card-note" }, forms.map((f) => f.name).join(" · ")));
-  const anyList = forms.map((f) => listFor(f.id, now)).find(Boolean);
-  const endMs = anyList?.endMs;
-  const late = endMs ? Date.now() >= endMs - (anyList.redMinutes ?? 60) * 60000 : false;
-  const f = statusFold("home-stations", false, `${late ? "⚠" : "📋"} Station checklists · not signed off: ${open.map((x) => x.name).join(", ")}`,
-    el("div", { class: "alert-pills" }, open.map((x) => el("button", { class: "alert-pill", type: "button", onclick: () => onOpen(x.id) }, x.name))));
-  if (!late) f.classList.replace("fold-todo", "fold-due");
-  return f;
+  if (!open.length) return [{ key: "stations", icon: "📋", title: "Station checklists", detail: "all signed off", state: "done", onOpen: () => onOpen(null) }];
+  const due = dueByShiftEnd();
+  return [{ key: "stations", icon: "📋", title: `Station checklists — not signed off: ${open.map((x) => x.name).join(", ")}`, ...due,
+    onOpen: () => onOpen(open.length === 1 ? open[0].id : null) }];
 }
+
 
 // ===========================================================================
 

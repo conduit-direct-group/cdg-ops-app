@@ -7,7 +7,7 @@
 // Tracking (poster, Plant Manager, Office, Admin; Supervisors for their crew) comes from the server, because the
 // app can't read other people's records: "18 of 24 signed", who hasn't, Remind, Reviewed in person, Print.
 
-import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, picker, collapsible, statusFold } from "./ui.js";
+import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, picker, collapsible } from "./ui.js";
 import { data, onDataChange, lineName } from "./data.js";
 import {
   storage, TEST_MODE, callAnnouncementPeople, callPostAnnouncement, callEndAnnouncement, callSignAnnouncement,
@@ -75,33 +75,26 @@ export function annRow(a, emp, onclick) {
   );
 }
 
-// ---- Home pieces (dashboard.js) ------------------------------------------------------------------------------
-
-// Unsigned Safety announcements: a red banner at the very top of Home. Null when there are none.
-export function safetyBanner(emp, onOpen) {
-  const list = toSign(emp).filter((a) => a.priority === "safety");
-  if (!list.length) return null;
-  return el(
-    "div",
-    { class: "alert-banner", role: "alert" },
-    el("strong", {}, `⚠ Safety announcement${list.length === 1 ? "" : "s"} — read and sign`),
-    el("div", { class: "alert-pills" }, list.map((a) => el("button", { class: "alert-pill", type: "button", onclick: () => onOpen(a.id) }, a.title)))
-  );
-}
-
-// "Needs you" fold: orange while waiting, red once one is past its acknowledge-by date, green when all signed.
-export function needsYouFold(emp, onOpen) {
-  if (!data.announcements || !data.mySigs) return null;
+// ---- Home item (Decision 66) ----------------------------------------------------------------------------------
+// One line on Home: gray = waiting, with its sign-by date; red ⚠ = a Safety announcement waiting, or past its
+// acknowledge-by date; green ✓ = all signed. Tapping opens the one to sign (or the list).
+export function announcementItems(emp, onOpen) {
+  if (!data.announcements || !data.mySigs) return [];
   const waiting = toSign(emp);
   if (!waiting.length) {
-    return forMeNow(emp).length ? statusFold("home-announcements", true, "✓ Announcements · all signed", el("p", { class: "card-note" }, "You've signed every announcement meant for you.")) : null;
+    return forMeNow(emp).length ? [{ key: "ann", icon: "📣", title: "Announcements", detail: "all signed", state: "done", onOpen: () => onOpen(null) }] : [];
   }
-  const late = waiting.filter((a) => isOverdue(a)).length;
-  const fold = statusFold("home-announcements", false,
-    late ? `⚠ Announcements · ${late} overdue${waiting.length > late ? `, ${waiting.length - late} more to sign` : ""}` : `📣 Announcements · ${waiting.length} to read and sign`,
-    el("div", { class: "person-list" }, waiting.map((a) => annRow(a, emp, () => onOpen(a.id)))));
-  if (!late) fold.classList.replace("fold-todo", "fold-due");
-  return fold;
+  const safety = waiting.filter((a) => a.priority === "safety");
+  const late = waiting.filter((a) => isOverdue(a));
+  const first = waiting[0];
+  const more = waiting.length > 1 ? ` (+${waiting.length - 1} more)` : "";
+  return [{
+    key: "ann", icon: "📣",
+    title: safety.length ? `Safety announcement: ${safety[0].title}${more}` : waiting.length === 1 ? `Announcement: ${first.title}` : `${waiting.length} announcements to read and sign`,
+    detail: late.length ? `was due ${fmtDay(late[0].ackBy)}` : safety.length ? "read and sign now" : `sign by ${fmtDay(first.ackBy)}`,
+    state: safety.length || late.length ? "late" : "due",
+    onOpen: () => onOpen(waiting.length === 1 ? first.id : null),
+  }];
 }
 
 // ---- upload (photo or PDF) -------------------------------------------------------------------------------------

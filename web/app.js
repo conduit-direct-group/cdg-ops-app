@@ -11,21 +11,21 @@
 
 import { auth, callPinLogin, callChangePin, TEST_MODE } from "./firebase.js";
 import { signInWithCustomToken, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
-import { el, friendlyError, spinner, toast, watchConnection } from "./ui.js";
+import { el, friendlyError, spinner, emptyState, toast, watchConnection } from "./ui.js";
 import { openAdmin } from "./admin.js";
 import { openLines, openRoles, openTeams, openMachineTypes } from "./setup.js";
 import { openFixLibrary } from "./fixlib.js";
 import { startData, stopData, data, onDataChange } from "./data.js";
 import { openIssueBoard, openReportForm } from "./issues.js";
-import { openChecklist, openChecklistAdmin } from "./checklists.js";
+import { openChecklist, openChecklistAdmin, checklistUnits, unitStatus, statusTag as checklistTag } from "./checklists.js";
 import { openActivity } from "./activity.js";
 import { openShopMap } from "./shopmap.js";
 import { openMapAdmin } from "./mapadmin.js";
 import { openTrainingAdmin } from "./trainingadmin.js";
 import { openNeedSomething, openRequest, openRequestTypesAdmin } from "./requests.js";
 import { pushState, turnOnPush, turnOffPush, refreshPush } from "./push.js";
-import { dashboard, stopDashboard, usesMachines, linesDownCount } from "./dashboard.js";
-import { openAnnouncements } from "./announcements.js";
+import { dashboard, stopDashboard, usesMachines } from "./dashboard.js";
+import { openAnnouncements, toSign as announcementsToSign } from "./announcements.js";
 import { openHandoff, usesHandoffs } from "./handoff.js";
 import { openFormsAdmin, editableForms } from "./forms.js";
 import { openShopTasks, runsShopList } from "./shoptasks.js";
@@ -126,7 +126,10 @@ function go(step, message = "", messageKind = "") {
     closeModule = null;
   }
   Object.assign(state, { step, typed: "", message, messageKind });
+  if (step === "home") state.nav = "home";
+  else if (step === "adminMenu") state.nav = "more";
   render();
+  window.scrollTo(0, 0);
 }
 
 function showError(message) {
@@ -235,16 +238,18 @@ function renderPinStep() {
 function renderHome() {
   const name = state.user?.displayName || "there";
   const m = me();
-  // Role names from the Roles list ("Production Lead / Supervisor"), not internal ids ("lead").
+  // Role names from the Roles list ("Line Lead"), not internal ids ("lead").
   const roleNames = new Map((data.roles || []).map((r) => [r.id, r.name]));
   const roles = (data.myself?.roles || state.claims.roles || []).map((r) => roleNames.get(r) || r).join(", ");
-  // The role dashboard (Decision 49): Needs you · quick buttons · plant status · role cards. The rest below.
-  const dash = dashboard({
+  // Home (Decision 66): name + line status · Needs you · quick buttons · at a glance. Everything else is in the
+  // navigation bar (Home · Map · Checklists · Announcements · More).
+  const p = dashboard({
     emp: m.emp, roles: m.roles, admin: m.admin, viewAs: m.admin ? state.viewAs : null,
-    setViewAs: (v) => { state.viewAs = v; render(); },
+    setViewAs: (v) => { state.viewAs = v; render(); renderNav(); },
     onRedraw: () => { if (state.step === "home") render(); },
     go: {
       checklist: (id) => openChecklistScreen(id, () => go("home")),
+      checklists: () => openChecklistsHub(),
       request: (id) => openRequestScreen(id),
       issues: () => openIssues(),
       training: () => { location.href = "training.html"; },
@@ -260,41 +265,138 @@ function renderHome() {
       lineCheck: (lineId, logId) => openLineCheckScreen(lineId, logId),
     },
   });
-  // What this screen shows follows the roles (or the role an admin is viewing as) — Decision 53.
-  const shown = m.admin && state.viewAs ? [state.viewAs] : m.roles;
   return [
-    el("h1", {}, `Hi, ${name}`),
-    roles ? el("p", { class: "roles" }, `Employee ${state.claims.emp} · ${roles}`) : null,
+    el("section", { class: "home-head" },
+      el("div", { class: "home-hello" },
+        el("h1", {}, `Hi, ${name}`),
+        roles ? el("p", { class: "roles" }, `Employee ${state.claims.emp} · ${roles}`) : null),
+      p.viewAs,
+      p.status),
+    m.admin && state.viewAs ? el("p", { class: "view-note" }, `👁 Viewing as ${roleNames.get(state.viewAs) || state.viewAs} — lists show your own account's data.`) : null,
     messageBox(),
-    ...dash,
-    el("button", { class: "btn big secondary", type: "button", onclick: () => openAnn() }, "📣 Announcements"),
-    // Shift handoff (Line Lead Pass Down): Line Leads, Supervisors, Plant Manager, Admin.
-    usesHandoffs(shown) ? el("button", { class: "btn big secondary", type: "button", onclick: () => openHandoffScreen() }, "📝 Shift handoff") : null,
-    // Keep the Shop Clean: leads and managers run it (everyone else reaches their own task from "Needs you").
-    runsShopList(shown) ? el("button", { class: "btn big secondary", type: "button", onclick: () => openShopScreen() }, "🧹 Keep the Shop Clean") : null,
-    // Station checklists (Reel Building, Reclamation): people who work on the floor.
-    usesMachines(shown) && stationForms().length ? el("button", { class: "btn big secondary", type: "button", onclick: () => openStationScreen() }, "📋 Station checklists") : null,
-    // Line Check Log (every 30 minutes per line, on the line tablet): people who work with the machines.
-    usesMachines(shown) && (data.formTemplates || []).some((t) => t.id === "line-check" && t.active !== false)
-      ? el("button", { class: "btn big secondary", type: "button", onclick: () => openLineCheckScreen() }, "📈 Line Check Log") : null,
-    // People whose role may edit a form (Admin → Roles) but who aren't admins.
-    !m.admin && editableForms(m.roles).length ? el("button", { class: "btn secondary", type: "button", onclick: () => openFormsScreen() }, "📝 Edit forms") : null,
-    // Open issues: Maintenance, Admin, Plant Manager only.
-    shown.some((r) => ["maintenance", "admin", "plant-manager"].includes(r)) ? issuesButton() : null,
-    // Fix Library: people who work with the machines (not Office, Sales, Quality, Logistics).
-    usesMachines(shown) ? el("button", { class: "btn big secondary", type: "button", onclick: () => openFixes() }, "🔧 Fix Library") : null,
-    // Training (the training team's own app, on its own page): Training & Safety and Admin.
-    shown.some((r) => ["training-safety", "admin"].includes(r)) ? el("a", { class: "btn big secondary", href: "training.html" }, "🎓 Training") : null,
-    isAdmin() ? el("button", { class: "btn secondary", type: "button", onclick: () => go("adminMenu") }, "⚙ Admin") : null,
-    pushCard(),
-    installCard(),
-    el("button", { class: "btn secondary", type: "button", onclick: signOutNow }, "↪ Sign out"),
+    el("div", { class: p.cards ? "home-grid" : "home-grid no-side-cards" },
+      p.needs,
+      el("div", { class: "home-side" }, p.quick, p.cards)),
   ];
+}
+
+// ---------------------------------------------------------------------------
+// Navigation bar (Decision 66): always visible once signed in — a bottom bar on phones and tablets, a side bar on
+// desktops. Home · Map · Checklists (people who work with the machines) · Announcements · More.
+// ---------------------------------------------------------------------------
+
+const nav = document.getElementById("app-nav");
+function setNav(key) {
+  state.nav = key;
+  renderNav();
+}
+// What the bar and the More menu show follow the roles (or the role an admin is viewing as).
+const shownRoles = () => (me().admin && state.viewAs ? [state.viewAs] : me().roles);
+function renderNav() {
+  const on = !!state.user && !NARROW_STEPS.includes(state.step) && state.claims.pinTemp !== true;
+  nav.hidden = !on;
+  document.body.classList.toggle("has-nav", on);
+  if (!on) return;
+  const unsigned = data.announcements && data.mySigs ? announcementsToSign(state.claims.emp).length : 0;
+  const item = (key, icon, label, onclick, badge = 0) =>
+    el("button", { class: state.nav === key ? "nav-btn on" : "nav-btn", type: "button", onclick, "aria-current": state.nav === key ? "page" : null },
+      el("span", { class: "nav-icon", "aria-hidden": "true" }, icon),
+      el("span", { class: "nav-label" }, label),
+      badge ? el("span", { class: "nav-badge", "aria-label": `${badge} to sign` }, String(badge)) : null);
+  nav.replaceChildren(...[
+    el("span", { class: "nav-brand" }, "CDG Ops"),
+    item("home", "🏠", "Home", () => go("home")),
+    item("map", "🗺", "Map", () => openMap()),
+    usesMachines(shownRoles()) ? item("checklists", "📋", "Checklists", () => openChecklistsHub()) : null,
+    item("ann", "📣", "Announce\u00adments" /* soft hyphen: wraps as Announce-ments on phones */, () => openAnn(), unsigned),
+    item("more", "☰", "More", openMore),
+  ].filter(Boolean));
+}
+
+// More: everything that isn't on Home or the bar, only for the roles that have it.
+function openMore() {
+  const roles = shownRoles();
+  const m = me();
+  const close = () => { document.removeEventListener("keydown", onKey); backdrop.remove(); };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  const act = (fn) => () => { close(); fn(); };
+  const row = (icon, label, fn, cls = "") => el("button", { class: `more-item ${cls}`, type: "button", onclick: act(fn) }, el("span", { "aria-hidden": "true" }, icon), el("span", {}, label));
+  const items = [
+    usesHandoffs(roles) ? row("📝", "Shift handoff", () => openHandoffScreen()) : null,
+    runsShopList(roles) ? row("🧹", "Keep the Shop Clean", () => openShopScreen()) : null,
+    usesMachines(roles) ? row("🔧", "Fix Library", () => openFixes()) : null,
+    roles.some((r) => ["maintenance", "admin", "plant-manager"].includes(r)) ? row("🚨", "Open issues", () => openIssues()) : null,
+    roles.some((r) => ["training-safety", "admin"].includes(r)) ? row("🎓", "Training", () => { location.href = "training.html"; }) : null,
+    row("📄", "Reference documents", () => openDocsScreen()),
+    !m.admin && editableForms(m.roles).length ? row("📝", "Edit forms", () => openFormsScreen()) : null,
+    m.admin ? row("⚙", "Admin", () => go("adminMenu")) : null,
+    pushNow === "off" ? row("🔔", "Turn on notifications", turnOnNotifications) : null,
+    !isInstalled() && (installPrompt || isIPhoneOrIPad())
+      ? row("📲", "Add CDG Ops to your home screen", installPrompt ? install : () => toast("In Safari, tap Share (the square with an arrow), then “Add to Home Screen.”")) : null,
+    row("↪", "Sign out", signOutNow, "danger"),
+  ].filter(Boolean);
+  const backdrop = el("div", { class: "sheet-backdrop", onclick: (e) => { if (e.target === backdrop) close(); } },
+    el("div", { class: "sheet more-sheet", role: "dialog", "aria-modal": "true", "aria-label": "More" },
+      el("h2", {}, "More"),
+      el("div", { class: "more-list" }, items),
+      el("button", { class: "btn secondary", type: "button", onclick: close }, "Close")));
+  document.addEventListener("keydown", onKey);
+  document.body.append(backdrop);
+  backdrop.querySelector(".more-item")?.focus();
+}
+
+async function turnOnNotifications() {
+  try {
+    pushNow = await turnOnPush(state.claims.emp);
+    if (pushNow === "on") toast("Notifications are on for this device");
+    else if (pushNow === "denied") toast("Notifications are blocked — turn them on in the phone's Settings → Notifications.", "error");
+    else if (pushNow === "install-first") toast("On iPhone, add CDG Ops to your home screen first, then open it from there.", "error");
+  } catch (err) {
+    toast(friendlyError(err), "error");
+  }
+}
+
+// Checklists: the machine checklists (14-day), the station checklists, and the Line Check Log, in one place.
+function openChecklistsHub() {
+  if (closeModule) closeModule();
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  setNav("checklists");
+  const draw = () => {
+    const units = checklistUnits();
+    const byLine = new Map();
+    for (const u of units) {
+      const k = u.lineId || "plant";
+      if (!byLine.has(k)) byLine.set(k, []);
+      byLine.get(k).push(u);
+    }
+    const loading = !data.checklistTemplates || !data.checklistUnits || !data.lines;
+    screen.replaceChildren(...[
+      el("button", { class: "link-btn", type: "button", onclick: () => go("home") }, "← Home"),
+      el("h1", {}, "📋 Checklists"),
+      el("div", { class: "hub-row" },
+        (data.formTemplates || []).some((t) => t.id === "line-check" && t.active !== false)
+          ? el("button", { class: "btn big secondary", type: "button", onclick: () => openLineCheckScreen() }, "📈 Line Check Log") : null,
+        stationForms().length ? el("button", { class: "btn big secondary", type: "button", onclick: () => openStationScreen() }, "📋 Station checklists") : null),
+      el("h2", {}, "Machine checklists"),
+      loading ? spinner() : !units.length ? emptyState("No machine checklists yet", "An admin sets them up in Admin → Checklists.") : null,
+      el("div", { class: "hub-lines" }, [...byLine.entries()].map(([lineId, list]) =>
+        el("section", { class: "card hub-line" },
+          el("strong", {}, lineId === "plant" ? "Plant-wide" : lineName(lineId)),
+          el("div", { class: "person-list" }, list.map((u) => {
+            const st = unitStatus(u);
+            return el("button", { class: st.overdue ? "person-row urgent" : "person-row", type: "button", onclick: () => openChecklistScreen(u.id, openChecklistsHub) },
+              el("span", { class: "person-name" }, u.template.name), el("span", { class: "tags" }, checklistTag(st)));
+          }))))),
+    ].flat(3).filter(Boolean));
+  };
+  draw();
+  closeModule = onDataChange(draw);
 }
 
 // Shop Map (plant floor map). A station linked to a machine opens its Fix Library page or a Maintenance Request.
 function openMap(station = null) {
   if (closeModule) closeModule();
+  setNav("map");
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openShopMap(screen, {
     startStation: station,
@@ -319,6 +421,7 @@ function openNeed() {
 // Announcements: the list, or one announcement to read and sign (from Home or a notification).
 function openAnn(id = null) {
   if (closeModule) closeModule();
+  setNav("ann");
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openAnnouncements(screen, { me: me(), startId: id, onExit: () => go("home") });
 }
@@ -326,6 +429,7 @@ function openAnn(id = null) {
 // Shift handoff: the list, or one handoff (from Home or a notification).
 function openHandoffScreen(id = null) {
   if (closeModule) closeModule();
+  setNav("more");
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openHandoff(screen, { me: me(), startId: id, onExit: () => go("home") });
 }
@@ -333,6 +437,7 @@ function openHandoffScreen(id = null) {
 // Keep the Shop Clean: this shift's task list, or one list (from Home or a notification).
 function openShopScreen(id = null) {
   if (closeModule) closeModule();
+  setNav("more");
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openShopTasks(screen, { me: me(), startId: id, onExit: () => go("home") });
 }
@@ -340,6 +445,7 @@ function openShopScreen(id = null) {
 // Station checklists: pick a station, or open one (from Home).
 function openStationScreen(formId = null) {
   if (closeModule) closeModule();
+  setNav("checklists");
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openStations(screen, { me: me(), startForm: formId, onExit: () => go("home") });
 }
@@ -347,6 +453,7 @@ function openStationScreen(formId = null) {
 // Line Check Log: pick a line, or open one line's log (from Home or a notification).
 function openLineCheckScreen(lineId = null, logId = null) {
   if (closeModule) closeModule();
+  setNav("checklists");
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openLineCheck(screen, { me: me(), startLine: lineId, startLogId: logId, onExit: () => go("home") });
 }
@@ -354,6 +461,7 @@ function openLineCheckScreen(lineId = null, logId = null) {
 // Reference documents (from the Shop Map, or the Training page's link: ?docs=1).
 function openDocsScreen(back = () => go("home"), backLabel = "Home") {
   if (closeModule) closeModule();
+  setNav("more");
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openRefDocs(screen, { me: me(), onExit: back, backLabel });
 }
@@ -361,6 +469,7 @@ function openDocsScreen(back = () => go("home"), backLabel = "Home") {
 // Forms editor for non-admins allowed on the Roles screen (admins use Admin → Forms).
 function openFormsScreen() {
   if (closeModule) closeModule();
+  setNav("more");
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openFormsAdmin(screen, { me: me(), onExit: () => go("home"), backLabel: "Home" });
 }
@@ -371,39 +480,14 @@ function openRequestScreen(id) {
   closeModule = openRequest(screen, { me: me(), id, onExit: () => go("home") });
 }
 
-// Notifications: one tap to turn on (per device). Shown until it's on; explains when it can't be.
+
+// Notifications: turned on once per device, from More (Decision 66). The current state decides whether More offers it.
 let pushNow = null;
 function refreshPushState() {
-  pushState().then((s) => { if (s !== pushNow) { pushNow = s; if (state.step === "home") render(); } });
+  pushState().then((s) => { pushNow = s; });
 }
-function pushCard() {
-  if (!pushNow || pushNow === "on" || pushNow === "unsupported") return null;
-  const note = {
-    off: "Get a notification when a request is sent to you, or when yours is in progress or done.",
-    denied: "Notifications are blocked for this app. Turn them on in the phone's Settings → Notifications.",
-    "install-first": "On iPhone, add CDG Ops to your home screen first (Share → Add to Home Screen), then open it from there to turn on notifications.",
-  }[pushNow];
-  return el(
-    "div",
-    { class: "card" },
-    el("strong", {}, "🔔 Notifications"),
-    el("p", { class: "card-note" }, note),
-    pushNow === "off"
-      ? el("button", {
-          class: "btn", type: "button",
-          onclick: async () => {
-            try {
-              pushNow = await turnOnPush(state.claims.emp);
-              render();
-              if (pushNow === "on") toast("Notifications are on for this device");
-            } catch (err) {
-              toast(friendlyError(err), "error");
-            }
-          },
-        }, "🔔 Turn on notifications")
-      : null
-  );
-}
+// The bar's Announcements badge follows the live data.
+onDataChange(() => { if (state.user) renderNav(); });
 
 // Signing out also stops this person's notifications on a shared line tablet.
 async function signOutNow() {
@@ -447,28 +531,6 @@ async function install() {
   render();
 }
 
-function installCard() {
-  if (isInstalled()) return null;
-  const title = el("strong", {}, "Put CDG Ops on your home screen");
-  if (installPrompt) {
-    return el(
-      "div",
-      { class: "card" },
-      title,
-      el("p", { class: "card-note" }, "Opens full screen like an app, even on bad Wi-Fi."),
-      el("button", { class: "btn", type: "button", onclick: install }, "Add to home screen")
-    );
-  }
-  if (isIPhoneOrIPad()) {
-    return el(
-      "div",
-      { class: "card" },
-      title,
-      el("p", { class: "card-note" }, "In Safari, tap the Share button (square with an arrow), then “Add to Home Screen.”")
-    );
-  }
-  return null;
-}
 
 function isAdmin() {
   return me().admin;
@@ -505,6 +567,7 @@ function me() {
 // `machine` (e.g. "M-001", from a machine's QR code ?m=M-001) opens that machine's page.
 function openFixes(category = null, machine = null) {
   if (closeModule) closeModule();
+  setNav("more");
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openFixLibrary(screen, {
     me: me(), onExit: () => go("home"), startCategory: category, startMachine: machine,
@@ -539,12 +602,6 @@ function openReport(machineTypes = null, back = () => go("home"), machineId = nu
   closeModule = openReportForm(screen, { me: me(), machineTypes, machineId, onExit: back, onDone: me().fixer ? () => openIssues() : null });
 }
 
-function issuesButton() {
-  const list = data.openIssues;
-  const down = linesDownCount(); // same source as the plant status bar
-  const label = !list ? "Open issues" : !list.length ? "Open issues — all clear" : `Open issues (${list.length})${down ? ` · ⛔ ${down} line${down === 1 ? "" : "s"} down` : ""}`;
-  return el("button", { class: down ? "btn big danger" : "btn big secondary", type: "button", onclick: openIssues }, label);
-}
 
 // Keep the home screen's issue count live.
 onDataChange(() => { if (state.step === "home") render(); });
@@ -597,6 +654,7 @@ const NARROW_STEPS = ["loading", "employee", "pin", "currentPin", "newPin", "con
 
 function render() {
   deviceBadge.hidden = !isLineTablet();
+  renderNav();
   screen.dataset.width = NARROW_STEPS.includes(state.step) ? "narrow" : "wide";
   if (state.step === "admin") return; // admin.js draws its own screens
   let content;

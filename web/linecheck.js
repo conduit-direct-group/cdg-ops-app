@@ -5,7 +5,7 @@
 // the Line Lead. A timer shows when the next check is due (red when overdue). Page 2 is plant-wide: one tap per item
 // stamps the time and name, with the expected count per shift. Operator signs at end of shift; Supervisor reviews.
 
-import { el, friendlyError, spinner, emptyState, banner, toast, statusFold, collapsible } from "./ui.js";
+import { el, friendlyError, spinner, emptyState, banner, toast, collapsible } from "./ui.js";
 import { data, onDataChange } from "./data.js";
 import {
   TEST_MODE, callStartLineLog, callAddLineRound, callSaveLineNotes, callTapPlantItem, callSignLineLog, callReviewLineLog, callLineLogReviewers,
@@ -74,43 +74,40 @@ function due(log, now, every) {
 }
 const dueText = (d) => (d.overdue ? `overdue by ${d.minutes} min` : d.minutes <= 1 ? "due now" : `next due in ${d.minutes} min`);
 
-// ---- Home -----------------------------------------------------------------------------------------------------------
-// Operators: their line (home line, or the line this tablet logs) when a check is due within 10 minutes or overdue.
-// Leads/supervisors: every overdue line, and logs waiting for the supervisor review.
-export function lineCheckFolds(roles, onOpen) {
+// ---- Home items (Decision 66) -----------------------------------------------------------------------------------
+// Operators: their line (home line, or the line this tablet logs) — gray "next check due 10:30 AM", red when overdue.
+// Leads/supervisors: one line for all lines (the soonest due, or which are overdue); lines that are down are left out.
+// Supervisors: logs waiting for their review.
+export function lineCheckItems(roles, onOpen) {
   const form = lineForm();
   const now = shiftNow();
   if (!form || !now || !data.lineLogs) return [];
   const out = [];
   const lead = (roles || []).some((r) => LEAD_ROLES.includes(r));
-  const lines = activeLines();
-  const down = data.plantStatus?.down || {}; // a line that's down isn't nagged for checks
-  const status = lines.filter((l) => !down[l.id]).map((l) => ({ l, log: logFor(l.id, now) })).filter(({ log }) => !log?.operatorSign).map((x) => ({ ...x, d: due(x.log, now, form.everyMinutes) }));
+  const down = data.plantStatus?.down || {};
+  const status = activeLines().filter((l) => !down[l.id]).map((l) => ({ l, log: logFor(l.id, now) }))
+    .filter(({ log }) => !log?.operatorSign).map((x) => ({ ...x, d: due(x.log, now, form.everyMinutes) }));
+  const item = (list, title) => {
+    const late = list.filter((x) => x.d.overdue);
+    const next = [...list].sort((a, b) => a.d.dueAt - b.d.dueAt)[0];
+    return late.length
+      ? { key: "linecheck", icon: "📈", title: list.length === 1 ? `${title} — overdue` : `${title} overdue: ${late.map((x) => x.l.name).join(", ")}`, detail: `${late[0].d.minutes} min late`, state: "late", onOpen: () => onOpen(late[0].l.id) }
+      : { key: "linecheck", icon: "📈", title, detail: `next due ${fmtTime(next.d.dueAt)}`, state: "due", onOpen: () => onOpen(list.length === 1 ? next.l.id : null) };
+  };
   if (lead) {
-    const late = status.filter((x) => x.d.overdue);
-    if (late.length) out.push(statusFold("home-linecheck", false, `⚠ Line checks overdue: ${late.map((x) => `${x.l.name} (${x.d.minutes} min)`).join(", ")}`,
-      el("div", { class: "alert-pills" }, late.map((x) => el("button", { class: "alert-pill", type: "button", onclick: () => onOpen(x.l.id) }, x.l.name)))));
+    if (status.length) out.push(item(status, "Line checks"));
     if ((roles || []).some((r) => CHECK_ROLES.includes(r))) {
       const review = (data.lineLogs || []).filter((g) => g.operatorSign && !g.review);
-      if (review.length) {
-        const f = statusFold("home-linecheck-review", false, `📈 Line logs to review: ${review.map((g) => `${g.lineName} (${g.shift?.name})`).join(", ")}`,
-          el("div", { class: "alert-pills" }, review.map((g) => el("button", { class: "alert-pill", type: "button", onclick: () => onOpen(g.lineId, g.id) }, `${g.lineName} · ${g.shift?.name}`))));
-        f.classList.replace("fold-todo", "fold-due");
-        out.push(f);
-      }
+      if (review.length) out.push({ key: "linecheck-review", icon: "📈", title: `Line logs to review: ${review.map((g) => `${g.lineName} (${g.shift?.name})`).join(", ")}`, detail: "supervisor review", state: "due", onOpen: () => onOpen(review[0].lineId, review[0].id) });
     }
   } else {
     const mine = data.myself?.homeLineId || stored(LINE_KEY);
     const x = status.find((s) => s.l.id === mine);
-    if (x && (x.d.overdue || x.d.minutes <= 10)) {
-      const f = statusFold("home-linecheck", false, `${x.d.overdue ? "⚠" : "📈"} Line check · ${x.l.name} · ${dueText(x.d)}`,
-        el("button", { class: x.d.overdue ? "btn danger" : "btn", type: "button", onclick: () => onOpen(x.l.id) }, "📈 Record a check"));
-      if (!x.d.overdue) f.classList.replace("fold-todo", "fold-due");
-      out.push(f);
-    }
+    if (x) out.push(item([x], `Line check · ${x.l.name}`));
   }
   return out;
 }
+
 
 // ===========================================================================
 

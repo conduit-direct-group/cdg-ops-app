@@ -1056,8 +1056,6 @@ details.fold.fold-ok { border-color: var(--green); background: var(--green-tint)
 /* =============================================================================
    Announcements + the shared PIN sign-off (Decision 58)
    ============================================================================= */
-/* Waiting to be signed, not yet overdue: orange (brand), with words. Turns red (fold-todo) once overdue. */
-details.fold.fold-due { border-color: var(--orange); background: var(--orange-tint); }
 .tag.ok { background: var(--green-tint); border: 1px solid var(--green); color: var(--white); font-weight: bold; }
 .message.ok { border-left-color: var(--green); background: var(--green-tint); }
 .choices.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -1221,3 +1219,89 @@ details.fold.fold-due { border-color: var(--orange); background: var(--orange-ti
 .sm-docs-btn { white-space: nowrap; margin-left: auto; min-width: 44px; justify-content: center; }
 @media (max-width: 520px) { .sm-docs-text { display: none; } .sm-docs-btn { font-size: var(--text-section); text-decoration: none; } }
 @media (max-width: 420px) { .sm-top .sm-tab { padding: 0 var(--s1); } } /* room for the 📄 button on small phones */
+
+/* =============================================================================
+   Home (Decision 66): name + line status · Needs you · quick buttons · at a glance; and the navigation bar.
+   Needs you has three states only: gray = not due yet (with its due time), red ⚠ = last hour or overdue,
+   green ✓ = done. No other status colors.
+   ============================================================================= */
+.home-head { display: flex; flex-direction: column; gap: var(--s2); margin: 0 0 var(--s3); }
+.home-hello h1 { margin: 0; }
+.home-hello .roles { margin: var(--s1) 0 0; }
+.home-head .view-as { margin: 0; }
+.home-head .view-as .picker { min-height: 48px; }
+.view-note { margin: 0 0 var(--s3); color: var(--muted); font-size: var(--text-small); }
+.line-status { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: var(--s2); }
+.line-pill { display: flex; align-items: center; justify-content: center; gap: var(--s1); min-height: 44px; padding: 2px var(--s2); border-radius: 999px; border: var(--border-width) solid var(--line); font-size: var(--text-small); text-align: center; line-height: 1.2; }
+.line-pill.up { background: var(--green-tint); border-color: var(--green); }
+.line-pill.down { background: var(--red-tint); border-color: var(--red); font-weight: bold; }
+.home-h2 { margin: 0 0 var(--s2); font-size: var(--text-small); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.home-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s4); }
+.home-side { display: flex; flex-direction: column; gap: var(--s4); min-width: 0; }
+.home-side .quick-row, .home-side .dash-cards { margin: 0; }
+.need-list { display: flex; flex-direction: column; gap: var(--s2); }
+.need-item { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: var(--s3); width: 100%; min-height: 64px; padding: var(--s2) var(--s3); border-radius: var(--radius); border: var(--border-width) solid var(--line); background: var(--surface-1); color: var(--white); font: inherit; text-align: left; cursor: pointer; touch-action: manipulation; transition: transform var(--fast), filter var(--fast); }
+.need-item:active { transform: scale(0.99); filter: brightness(0.9); }
+.need-item.late { border-color: var(--red); background: var(--red-tint); }
+.need-item.done { border-color: var(--green); background: var(--green-tint); }
+.need-icon { font-size: var(--text-section); text-align: center; line-height: 1; }
+.need-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.need-title { font-weight: bold; overflow-wrap: anywhere; }
+.need-detail { color: var(--muted); font-size: var(--text-small); }
+.need-item.late .need-detail, .need-item.done .need-detail { color: var(--white); }
+.need-mark { min-width: 24px; text-align: right; font-size: var(--text-section); font-weight: bold; color: var(--muted); }
+.need-item.late .need-mark, .need-item.done .need-mark { color: var(--white); }
+.need-empty { margin: 0; padding: var(--s3); border-radius: var(--radius); background: var(--green-tint); border: var(--border-width) solid var(--green); }
+@media (hover: hover) { .need-item:hover { filter: brightness(1.15); } }
+/* Tablets and desktops: two columns — Needs you on the left, quick buttons and cards on the right. */
+@media (min-width: 900px) {
+  .home-head { flex-direction: row; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: var(--s3); }
+  .home-head .line-status { flex-basis: 100%; grid-template-columns: repeat(auto-fill, minmax(150px, 200px)); }
+  .home-head .view-as { width: 320px; }
+  .home-grid { grid-template-columns: minmax(0, 3fr) minmax(280px, 2fr); align-items: start; }
+  main[data-width="wide"] .home-side .quick-row { grid-template-columns: 1fr; }
+  main[data-width="wide"] .home-side .quick-row .btn { min-height: 72px; }
+  .home-side .dash-cards { grid-template-columns: 1fr !important; }
+}
+@media (min-width: 1400px) {
+  .home-side .dash-cards { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)) !important; }
+}
+
+/* Navigation bar: bottom bar on phones and tablets, a side bar on desktops. Hidden on the sign-in screens. */
+.app-nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; display: flex; align-items: stretch; justify-content: center; background: var(--black); border-top: var(--border-width) solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
+.app-nav[hidden] { display: none; }
+.nav-brand { display: none; }
+.nav-btn { position: relative; flex: 1 1 0; min-width: 0; max-width: 180px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-height: 64px; padding: var(--s1) 2px; border: 0; background: none; color: var(--muted); font: inherit; font-size: var(--text-small); cursor: pointer; touch-action: manipulation; }
+.nav-btn.on { color: var(--orange); font-weight: bold; }
+.nav-btn:active { background: var(--surface-2); }
+.nav-icon { font-size: var(--text-section); line-height: 1; }
+.nav-label { max-width: 100%; text-align: center; line-height: 1.15; hyphens: manual; overflow-wrap: anywhere; }
+.nav-badge { position: absolute; top: var(--s1); left: calc(50% + 8px); min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; background: var(--red); color: var(--white); font-size: var(--text-small); font-weight: bold; line-height: 20px; text-align: center; }
+body.has-nav { padding-bottom: calc(68px + env(safe-area-inset-bottom)); }
+body.has-nav .toast { bottom: calc(84px + env(safe-area-inset-bottom)); }
+@media (max-width: 480px) { .nav-label { font-size: calc(var(--text-small) * 0.86); } }
+@media (min-width: 1200px) {
+  body.has-nav { padding-bottom: 0; padding-left: 232px; }
+  body.has-nav .toast { bottom: var(--s4); margin-left: 116px; }
+  .app-nav { top: 0; right: auto; width: 232px; flex-direction: column; justify-content: flex-start; gap: var(--s1); padding: var(--s3); border-top: 0; border-right: var(--border-width) solid var(--line); }
+  .nav-brand { display: block; padding: var(--s2) var(--s3) var(--s3); color: var(--orange); font-weight: bold; font-size: var(--text-section); }
+  .nav-btn { flex: none; max-width: none; flex-direction: row; justify-content: flex-start; gap: var(--s3); min-height: 56px; padding: 0 var(--s3); border-radius: var(--radius); font-size: var(--text-body); }
+  .nav-btn.on { background: var(--orange-tint); }
+  .nav-badge { position: static; margin-left: auto; }
+  .nav-label { white-space: nowrap; text-align: left; }
+}
+
+/* More menu: big rows, only what the role has. */
+.more-sheet { max-height: calc(100dvh - var(--s5)); overflow-y: auto; }
+.more-list { display: flex; flex-direction: column; gap: var(--s2); margin-bottom: var(--s2); }
+.more-item { display: flex; align-items: center; gap: var(--s3); min-height: var(--tap); padding: var(--s2) var(--s3); border-radius: var(--radius); border: var(--border-width) solid var(--line); background: var(--surface-2); color: var(--white); font: inherit; font-weight: bold; text-align: left; cursor: pointer; }
+.more-item:active { background: var(--surface-3); }
+.more-item.danger { border-color: var(--red); }
+@media (hover: hover) { .more-item:hover { border-color: var(--orange); } }
+
+/* Checklists page: Line Check Log and station checklists on top, machine checklists by line. */
+.hub-row { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.hub-row .btn { flex: 1 1 240px; margin: 0; }
+.hub-lines { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s3); }
+.hub-line { margin: 0; }
+@media (min-width: 900px) { .hub-lines { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); } main[data-width="wide"] .hub-line .person-list { grid-template-columns: 1fr; } }

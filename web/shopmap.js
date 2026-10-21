@@ -161,7 +161,9 @@ export function openShopMap(container, { onExit, onFixes, onReport, onDocs = nul
   // ---- sizing ----
   function measure() {
     const top = root.getBoundingClientRect().top;
-    root.style.height = px(Math.max(420, window.innerHeight - top));
+    const nav = document.getElementById("app-nav");
+    const navH = nav && !nav.hidden && nav.getBoundingClientRect().top > window.innerHeight / 2 ? nav.offsetHeight : 0; // bottom bar (phones, tablets)
+    root.style.height = px(Math.max(420, window.innerHeight - top - navH));
     const r = root.querySelector(".sm-body").getBoundingClientRect();
     const wasTab = tablet();
     st.w = r.width;

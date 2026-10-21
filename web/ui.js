@@ -124,13 +124,23 @@ export function picker({ id = null, title, value, options, placeholder = "Pick o
   );
 }
 
-function openPickerSheet(title, value, options, onChange) {
-  const close = () => {
+// Big "pick one" sheet on its own (no button): resolves with the chosen value, or null if cancelled.
+// options = [{ value, label }]
+export function choose({ title, options }) {
+  return new Promise((resolve) => {
+    let picked = false;
+    openPickerSheet(title, null, options, (v) => { picked = true; resolve(v); }, () => { if (!picked) resolve(null); });
+  });
+}
+
+function openPickerSheet(title, value, options, onChange, onClose = null) {
+  const close = (picked = false) => {
     document.removeEventListener("keydown", onKey);
     backdrop.remove();
+    if (!picked) onClose?.();
   };
   const onKey = (e) => { if (e.key === "Escape") close(); };
-  const pick = (v) => { close(); if (v !== value) onChange(v); };
+  const pick = (v) => { close(true); if (v !== value) onChange(v); };
   const list = options.map((o) =>
     el("button", { class: o.value === value ? "picker-option on" : "picker-option", type: "button", onclick: () => pick(o.value) },
       el("span", {}, breakable(o.label)), o.value === value ? el("span", { "aria-hidden": "true" }, "✔") : null)
@@ -143,7 +153,7 @@ function openPickerSheet(title, value, options, onChange) {
       { class: "sheet picker-sheet", role: "dialog", "aria-modal": "true", "aria-label": title },
       el("h2", {}, title),
       el("div", { class: "picker-list" }, list),
-      el("button", { class: "btn secondary", type: "button", onclick: close }, "Cancel")
+      el("button", { class: "btn secondary", type: "button", onclick: () => close() }, "Cancel")
     )
   );
   document.addEventListener("keydown", onKey);
