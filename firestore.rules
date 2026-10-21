@@ -292,6 +292,35 @@ service cloud.firestore {
       }
     }
 
+    // Near-miss & incident reports: Training & Safety, Plant Manager, Admin only — the injured person's details too
+    // (private/osha). Reporters follow their own report through the server (myIncidents), never by reading here.
+    // Corrective actions: the owner sees their own; follow-up sees all. Test site: test_ copies.
+    function incidentFollower() {
+      return member() && employee().roles.hasAny(['training-safety', 'plant-manager', 'admin']);
+    }
+    match /incidents/{id} {
+      allow read: if incidentFollower();
+      match /private/{doc} {
+        allow read: if incidentFollower();
+      }
+    }
+    match /test_incidents/{id} {
+      allow read: if incidentFollower();
+      match /private/{doc} {
+        allow read: if incidentFollower();
+      }
+    }
+    match /incidentActions/{id} {
+      allow read: if incidentFollower() || (member() && resource.data.ownerEmp == me());
+    }
+    match /test_incidentActions/{id} {
+      allow read: if incidentFollower() || (member() && resource.data.ownerEmp == me());
+    }
+    // Shift rotation (which team works which days): everyone signed in reads.
+    match /meta/rotation {
+      allow read: if member();
+    }
+
     // Who to Call: the call sheet (numbers, extensions, on-call contacts who agreed) and call-button taps (for the
     // line-down reminder). Everyone signed in reads; only the server writes.
     match /meta/callSheet {

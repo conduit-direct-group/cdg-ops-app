@@ -27,6 +27,8 @@ const TEST_COLLECTIONS = [
   ["test_siloReadings", "Silo readings"],
   ["test_reels", "Flagged reels"],
   ["test_callTaps", "Call button taps"],
+  ["test_incidents", "Near-miss & incident reports"],
+  ["test_incidentActions", "Incident corrective actions"],
 ];
 const DAY_MS = 86400000;
 

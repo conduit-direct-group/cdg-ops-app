@@ -37,6 +37,7 @@ import { openTestReset } from "./testdata.js";
 import { openTrucks, canViewTrucks, canCheckTrucks } from "./trucks.js";
 import { openReels, openReelAdmin } from "./reels.js";
 import { openWhoToCall, openCallAdmin, lineDownReminder } from "./whotocall.js";
+import { openIncidents, openRotationAdmin } from "./incidents.js";
 import { openSilos, openSiloAdmin, UPDATE_ROLES as SILO_UPDATE_ROLES, ALERT_ROLES as SILO_ALERT_ROLES } from "./silos.js";
 
 const screen = document.getElementById("screen");
@@ -276,6 +277,7 @@ function renderHome() {
       lineCheck: (lineId, logId) => openLineCheckScreen(lineId, logId),
       silos: () => openSiloScreen(),
       reels: (view) => openReelScreen(view),
+      incidents: (view, id) => openIncidentScreen(view, id),
     },
   });
   return [
@@ -352,6 +354,7 @@ function openMore() {
     roles.some((r) => ["training-safety", "admin"].includes(r)) ? row("🎓", "Training", () => { location.href = "training.html"; }) : null,
     canViewTrucks(roles) && !canCheckTrucks(roles) ? row("🚚", "Trucks", () => openTrucksScreen()) : null,
     usesQc(roles) && !roles.includes("quality") ? row("🏷", "QC hold — flagged reels", () => openReelScreen()) : null,
+    row("🦺", "Safety reports — near miss / incident", () => openIncidentScreen()),
     row("📞", "Who to Call", () => openCallScreen()),
     row("📄", "Reference documents", () => openDocsScreen()),
     !m.admin && editableForms(m.roles).length ? row("📝", "Edit forms", () => openFormsScreen()) : null,
@@ -486,6 +489,22 @@ function openLineCheckScreen(lineId = null, logId = null) {
   setNav("checklists");
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openLineCheck(screen, { me: me(), startLine: lineId, startLogId: logId, onExit: () => go("home") });
+}
+
+// Safety reports — near misses and incidents (Home quick button, More, notifications ?incident=<id>, actions ?actions=1).
+function openIncidentScreen(view = "home", id = null) {
+  if (closeModule) closeModule();
+  setNav(view === "report" ? "home" : "more");
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  closeModule = openIncidents(screen, {
+    me: me(), start: view, startId: id, onExit: () => go("home"),
+    // A near miss shared as lessons learned: the announcement form opens filled in.
+    onAnnounce: (prefill, onPosted) => {
+      if (closeModule) closeModule();
+      setNav("ann");
+      closeModule = openAnnouncements(screen, { me: me(), onExit: () => openIncidentScreen("one", id), prefill, onPosted });
+    },
+  });
 }
 
 // Who to Call (📞 in the top bar, or More). Maintenance's "No" opens the Fix Library; "Yes, but can't run" the request form.
@@ -705,6 +724,7 @@ function renderAdminMenu() {
     el("button", { class: "btn", type: "button", onclick: () => openModule(openSiloAdmin) }, "🛢 Silo alerts"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openReelAdmin) }, "🏷 QC hold lists"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openCallAdmin) }, "📞 Who to Call"),
+    el("button", { class: "btn", type: "button", onclick: () => openModule(openRotationAdmin) }, "🗓 Shift rotation"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openTrainingAdmin) }, "🎓 Training setup"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openActivity) }, "📜 Admin activity"),
     TEST_MODE ? el("button", { class: "btn secondary", type: "button", onclick: () => openModule((c, o) => openTestReset(c, { ...o, onIssues: () => openIssues() })) }, "🧹 Reset test data") : null,
@@ -890,7 +910,9 @@ onAuthStateChanged(auth, async (user) => {
     const trucksLink = params.get("trucks"); // a truck arrived / out the door notification
     const silosLink = params.get("silos"); // a low silo notification
     const reelsLink = params.get("reels"); // QC hold
-    if (cat || machine || req || issuesLink || ann || handoff || shop || lineLog || docs || machinePage || trucksLink || silosLink || reelsLink) history.replaceState(null, "", location.pathname);
+    const incidentLink = params.get("incident"); // a safety report notification
+    const actionsLink = params.get("actions"); // a safety action assigned to me
+    if (cat || machine || req || issuesLink || ann || handoff || shop || lineLog || docs || machinePage || trucksLink || silosLink || reelsLink || incidentLink || actionsLink) history.replaceState(null, "", location.pathname);
     if (ann) openAnn(ann);
     else if (handoff) openHandoffScreen(handoff);
     else if (shop) openShopScreen(shop);
@@ -900,6 +922,8 @@ onAuthStateChanged(auth, async (user) => {
     else if (trucksLink) openTrucksScreen();
     else if (silosLink) openSiloScreen();
     else if (reelsLink) openReelScreen();
+    else if (incidentLink) openIncidentScreen("one", incidentLink);
+    else if (actionsLink) openIncidentScreen("actions");
     else if (req) openRequestScreen(req);
     else if (issuesLink) openIssues();
     else if (cat || machine) openFixes(cat, machine);

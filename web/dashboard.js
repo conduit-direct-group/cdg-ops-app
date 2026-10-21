@@ -18,6 +18,7 @@ import { lineCheckItems } from "./linecheck.js";
 import { db, TEST_MODE, callAdminListEmployees, callAnnouncementSummary } from "./firebase.js";
 import { siloItems, siloCard } from "./silos.js";
 import { reelItems, reelCard } from "./reels.js";
+import { incidentItems, incidentCard } from "./incidents.js";
 import { collection, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 
 // Role order on a combined screen, and each role's "At a glance" cards (ids are shared, so duplicates merge).
@@ -25,7 +26,7 @@ import { collection, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/
 // requests, safety concerns) are gone — Needs you covers them.
 export const ROLE_CARDS = [
   ["admin", "Admin", ["system-alerts", "waiting-login"]],
-  ["plant-manager", "Plant Manager", ["pm-people", "ack-gaps", "silos", "reels-week"]],
+  ["plant-manager", "Plant Manager", ["pm-people", "ack-gaps", "silos", "reels-week", "incidents-open"]],
   ["supervisor", "Supervisor", ["crew-gaps", "silos"]],
   ["lead", "Line Lead", []],
   ["operator", "Operator", []],
@@ -34,7 +35,7 @@ export const ROLE_CARDS = [
   ["shipping", "Logistics & Distribution", ["silos"]],
   ["sales", "Sales", []],
   ["office", "Office", ["ack-gaps"]],
-  ["training-safety", "Training & Safety", ["trainees", "expiring"]],
+  ["training-safety", "Training & Safety", ["trainees", "expiring", "incidents-open", "incidents-month"]],
 ];
 
 // Office, Sales, Quality, Logistics & Distribution see nothing about machines or maintenance (Decision 53).
@@ -138,6 +139,7 @@ export function stopDashboard() {
 // Each returns { icon, title, num, line, alert, onOpen } or null while its data is still loading.
 function cardData(id, ctx) {
   const { go } = ctx;
+  if (id.startsWith("incidents-")) return incidentCard(id, () => go.incidents(id === "incidents-month" ? "trends" : "home"));
   if (id.startsWith("reels-")) return reelCard(id, () => go.reels(id === "reels-hold" ? "list" : "history"));
   const down = Object.entries(data.plantStatus?.down || {});
   const openIssues = data.openIssues || [];
@@ -284,6 +286,7 @@ function needsItems(ctx, roles) {
 
   items.push(...siloItems(roles, go.silos));
   items.push(...reelItems(roles, () => go.reels("list")));
+  items.push(...incidentItems(roles, { emp: ctx.emp }, go.incidents));
   items.push(...handoffItems(me, go.handoff));
   items.push(...shopItems(me, roles, go.shop));
   if (machines) items.push(...stationItems(roles, go.station));
@@ -364,6 +367,7 @@ export function dashboard(ctx) {
   const quick = el("div", { class: machines ? "quick-row" : "quick-row two" },
     el("button", { class: "btn big secondary", type: "button", onclick: ctx.go.map }, "🗺 Shop Map"),
     el("button", { class: "btn big", type: "button", onclick: ctx.go.need }, "🙋 Need something?"),
+    el("button", { class: "btn big secondary", type: "button", onclick: () => ctx.go.incidents("report") }, "🦺 Near miss / incident"),
     machines ? el("button", { class: "btn big danger", type: "button", onclick: ctx.go.report }, "🚨 Maintenance Request") : null);
 
   // Admin: View as any role (lists still show your own account's data).

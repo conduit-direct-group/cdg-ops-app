@@ -112,7 +112,8 @@ function upload(file, emp, onProgress) {
 // ===========================================================================
 
 // me = { emp, name, roles, admin }. startId opens one announcement (from Home or a notification).
-export function openAnnouncements(container, { me, startId = null, onExit }) {
+// prefill { title, body } opens the post form filled in (e.g. a lessons-learned near miss); onPosted(id) after posting.
+export function openAnnouncements(container, { me, startId = null, onExit, prefill = null, onPosted = null }) {
   const ui = {
     view: startId ? "read" : "list", id: startId, back: startId ? "home" : "list",
     busy: false, upload: "", message: "", messageKind: "", retry: null,
@@ -501,6 +502,7 @@ export function openAnnouncements(container, { me, startId = null, onExit }) {
         });
         toast(d.id ? (r.signAgain ? `Saved — everyone signs version ${r.version}` : "Saved") : `Posted to ${r.audience} ${r.audience === 1 ? "person" : "people"}${r.test ? " (test)" : ""}`);
         ui.draft = null;
+        if (!d.id) onPosted?.(r.id);
         openOne(r.id);
       } catch (err) {
         say(friendlyError(err), post);
@@ -582,6 +584,7 @@ export function openAnnouncements(container, { me, startId = null, onExit }) {
   // Live updates redraw the list and the reading view, but never while someone is typing or saving.
   const typing = () => ["ann-search", "ann-title", "ann-body", "ann-note"].includes(document.activeElement?.id);
   const stop = onDataChange(() => { if (!ui.busy && !typing() && ["list", "read"].includes(ui.view)) render(); });
+  if (prefill) { startForm(null); Object.assign(ui.draft, prefill); }
   render();
   return () => { stop(); endWatch?.disconnect(); container.classList.remove("printing"); };
 }

@@ -142,6 +142,16 @@ export const callLineLogReviewers = call("lineLogReviewers");
 export const callSaveRefDoc = call("saveRefDoc");
 // Machines — parts & specs
 export const callSaveMachineSpecs = call("saveMachineSpecs");
+// Near-miss & incident reports, shift rotation
+export const callReportIncident = call("reportIncident");
+export const callMyIncidents = call("myIncidents");
+export const callSaveIncidentFollowUp = call("saveIncidentFollowUp");
+export const callAddIncidentAction = call("addIncidentAction");
+export const callCompleteIncidentAction = call("completeIncidentAction");
+export const callCloseIncident = call("closeIncident");
+export const callMarkIncidentShared = call("markIncidentShared");
+export const callIncidentPeople = call("incidentPeople");
+export const callAdminSaveRotation = call("adminSaveRotation");
 // Who to Call
 export const callAdminSaveCallSheet = call("adminSaveCallSheet");
 export const callLogCallTap = call("logCallTap");

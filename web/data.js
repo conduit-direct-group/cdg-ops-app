@@ -27,6 +27,7 @@ export const data = {
   plantStatus: null, urgentRequests: null, announcements: null, mySigs: null, mySigList: null, formTemplates: null, handoffsOpen: null, shopLists: null, stationLists: null, lineLogs: null, plantLogs: null, refDocs: null,
   machineSpecs: null, machineSpecsError: false, siloLevels: null, siloSettings: null,
   openReels: null, recentReels: null, reelSettings: null, callSheet: null, callTaps: null,
+  openIncidents: null, recentIncidents: null, myIncidentActions: null, rotation: null,
 };
 
 const listeners = new Set();
@@ -129,6 +130,22 @@ export function startData(me) {
   // Silo levels (test site: practice levels laid over the real ones) and their low lines (Admin → Silo alerts).
   stopFns.push(watchMerged("siloLevels", collection(db, "siloLevels"), collection(db, "test_siloLevels"), byId));
   stopFns.push(onSnapshot(doc(db, "meta", "siloSettings"), (snap) => { data.siloSettings = snap.exists() ? snap.data() : {}; changed(); }, () => { data.siloSettings = {}; changed(); }));
+  // Safety reports: open ones and the last 12 months (Training & Safety, Plant Manager, Admin — the database refuses
+  // everyone else), and my corrective actions (everyone). Shift rotation (which team works when).
+  if ((me.roles || []).some((r) => ["training-safety", "plant-manager", "admin"].includes(r))) {
+    const openInc = (name) => query(collection(db, name), where("status", "in", ["reported", "investigating", "actions"]));
+    stopFns.push(watchMerged("openIncidents", openInc("incidents"), openInc("test_incidents"), (a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0)));
+    const d = new Date(); d.setMonth(d.getMonth() - 11);
+    const since = d.toISOString().slice(0, 7);
+    const recentInc = (name) => query(collection(db, name), where("month", ">=", since));
+    stopFns.push(watchMerged("recentIncidents", recentInc("incidents"), recentInc("test_incidents"), (a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0)));
+  } else {
+    data.openIncidents = [];
+    data.recentIncidents = [];
+  }
+  const myActs = (name) => query(collection(db, name), where("ownerEmp", "==", me.emp));
+  stopFns.push(watchMerged("myIncidentActions", myActs("incidentActions"), myActs("test_incidentActions"), (a, b) => String(a.due).localeCompare(String(b.due))));
+  stopFns.push(onSnapshot(doc(db, "meta", "rotation"), (snap) => { data.rotation = snap.exists() ? snap.data() : {}; changed(); }, () => { data.rotation = {}; changed(); }));
   // Who to Call: the call sheet, and call-button taps from the last day (for the line-down reminder).
   stopFns.push(onSnapshot(doc(db, "meta", "callSheet"), (snap) => { data.callSheet = snap.exists() ? snap.data() : {}; changed(); }, () => { data.callSheet = {}; changed(); }));
   const taps = (name) => query(collection(db, name), where("atMs", ">=", Date.now() - 86400000));

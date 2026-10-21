@@ -35,6 +35,8 @@ const trucksLib = require("./trucks");
 const silosLib = require("./silos");
 const reelsLib = require("./reels");
 const callLib = require("./callsheet");
+const incidentsLib = require("./incidents");
+const rotationLib = require("./rotation");
 const crypto = require("node:crypto");
 const { getMessaging } = require("firebase-admin/messaging");
 const { defineSecret } = require("firebase-functions/params");
@@ -3082,6 +3084,204 @@ exports.restoreMachineSpecItem = onCall(async (req) => {
     tx.delete(rRef);
     return out;
   });
+});
+
+// ---------------------------------------------------------------------------
+// Shift rotation (which team works which days / shift) — meta/rotation, Admin → Shift rotation. Rules in rotation.js.
+// ---------------------------------------------------------------------------
+
+const rotationDoc = db.collection("meta").doc("rotation");
+
+// Admins: { teams: [{ teamId, days, shiftId }] }.
+exports.adminSaveRotation = onCall(async (req) => {
+  const adminNumber = await requireAdmin(req);
+  const [teamSnaps, shiftForm] = await Promise.all([teams.get(), formTemplates.doc(formsLib.SHIFT_FORM).get()]);
+  const { teams: rows, error } = rotationLib.cleanRotation(req.data?.teams, teamSnaps.docs.filter((t) => t.get("active") !== false).map((t) => t.id), (shiftForm.get("shifts") || []).map((s) => s.id));
+  if (error) throw new HttpsError("invalid-argument", error);
+  await rotationDoc.set({ teams: rows, updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber });
+  await auditLog.add({ type: "updated", kind: "shift rotation", recordId: "rotation", by: adminNumber, at: FieldValue.serverTimestamp(), teams: rows });
+  return { ok: true };
+});
+
+// Supervisors of the team on shift right now (all Supervisors when the rotation doesn't say, e.g. Saturday).
+async function supervisorsOnShift() {
+  const [rot, shiftForm, people] = await Promise.all([rotationDoc.get(), formTemplates.doc(formsLib.SHIFT_FORM).get(), peopleList()]);
+  const sups = people.filter((p) => p.active && p.roles.includes("supervisor"));
+  const teamId = rotationLib.teamOnShift(rot.get("teams") || [], formsLib.currentShift(shiftForm.get("shifts") || [], Date.now()));
+  const onTeam = teamId ? sups.filter((p) => p.team === teamId) : [];
+  return (onTeam.length ? onTeam : sups).map((p) => p.id);
+}
+
+// ---------------------------------------------------------------------------
+// Near-Miss & Incident Reports (Chris, 10-21-2026). Rules in incidents.js. Reports are readable only by Training &
+// Safety, Plant Manager, Admin (database rules); the injured person's details are kept apart (private/osha).
+// The reporter follows their own report through myIncidents. Test site: test_incidents / test_incidentActions.
+// ---------------------------------------------------------------------------
+
+async function requireIncidentFollower(req) {
+  const me = await requireMember(req);
+  if (!incidentsLib.canFollow(me.roles)) throw new HttpsError("permission-denied", "Only Training & Safety, the Plant Manager, and Admins follow up on reports.");
+  return me;
+}
+
+async function refreshIncident(tx, test, incRef, curStatus, started) {
+  const open = (await tx.get(col("incidentActions", test).where("incidentId", "==", incRef.id))).docs.filter((d) => !d.get("done")).length;
+  return { openActions: open, status: incidentsLib.nextStatus(curStatus, { openActions: open, started }) };
+}
+
+// Anyone: { type, occurredAt, place, what, immediate, photos, witnesses, anonymous, hurt }.
+exports.reportIncident = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const [lineSnaps, stationSnaps] = await Promise.all([lines.get(), floorStations.get()]);
+  const { report, hurt, error } = incidentsLib.cleanReport(req.data, {
+    lineIds: lineSnaps.docs.filter((l) => l.get("active") !== false).map((l) => l.id),
+    stationIds: stationSnaps.docs.filter((s) => s.get("active") !== false).map((s) => s.id),
+    isOurFile: isOurUpload, nowIso: incidentsLib.plantNowIso(),
+  });
+  if (error) throw new HttpsError("invalid-argument", error);
+  const placeLabel = report.place.label || stationSnaps.docs.find((s) => s.id === report.place.stationId)?.get("label") || lineSnaps.docs.find((l) => l.id === report.place.lineId)?.get("name") || "";
+  const ref = col("incidents", test).doc();
+  await db.runTransaction(async (tx) => {
+    tx.create(ref, {
+      ...report, placeName: placeLabel, status: "reported", openActions: 0, whys: [], rootCause: "",
+      ...(report.anonymous ? {} : { createdBy: me.employeeNumber, createdByName: me.name }),
+      createdAt: FieldValue.serverTimestamp(), createdAtMs: Date.now(), month: report.occurredAt.slice(0, 7), ...(test ? { test: true } : {}),
+    });
+    if (hurt) tx.create(ref.collection("private").doc("osha"), { injuredName: hurt.name, bodyPart: hurt.bodyPart });
+    auditRecord(tx, "reported", "incident", ref.id, report.anonymous ? "anonymous" : me.employeeNumber, { type: report.type, test });
+  });
+  const t = incidentsLib.TYPES[report.type];
+  const to = test ? [me.employeeNumber] : [...new Set([
+    ...(await activeEmployees()).filter((e) => e.active !== false && e.roles.some((r) => ["training-safety", "plant-manager"].includes(r))).map((e) => e.id),
+    ...(await supervisorsOnShift()),
+  ])];
+  await pushTo(to, { title: `${test ? "[TEST] " : ""}${t.icon} ${t.label} reported${placeLabel ? ` · ${placeLabel}` : ""}`, body: report.what.slice(0, 120), url: `/?incident=${ref.id}`, urgent: report.type === "injury" });
+  return { id: ref.id, anonymous: report.anonymous, test };
+});
+
+// Anyone: { ids? } — the status of my own reports (signed) and of anonymous ones this device sent (their ids).
+exports.myIncidents = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const list = col("incidents", test);
+  const mine = (await list.where("createdBy", "==", me.employeeNumber).get()).docs;
+  const ids = (Array.isArray(req.data?.ids) ? req.data.ids : []).slice(0, 30).map(String).filter((x) => /^[A-Za-z0-9]{10,40}$/.test(x));
+  const anon = ids.length ? (await db.getAll(...ids.map((id) => list.doc(id)))).filter((s) => s.exists && s.get("anonymous") === true) : [];
+  const show = (d) => ({ id: d.id, type: d.get("type"), occurredAt: d.get("occurredAt"), placeName: d.get("placeName") || "", status: d.get("status"), anonymous: d.get("anonymous") === true, createdAtMs: d.get("createdAtMs") || 0 });
+  return { reports: [...mine, ...anon].map(show).sort((a, b) => b.createdAtMs - a.createdAtMs) };
+});
+
+// Follow-up: { id, whys, rootCause, osha?, start? } — 5 Whys, root cause, and (injury / first aid) OSHA details.
+exports.saveIncidentFollowUp = onCall(async (req) => {
+  const me = await requireIncidentFollower(req);
+  const test = isTest(req);
+  const { whys, rootCause } = incidentsLib.cleanWhys(req.data);
+  let osha = null;
+  if (req.data?.osha) {
+    const o = incidentsLib.cleanOsha(req.data.osha);
+    if (o.error) throw new HttpsError("invalid-argument", o.error);
+    osha = o.osha;
+  }
+  return db.runTransaction(async (tx) => {
+    const ref = col("incidents", test).doc(String(req.data?.id || ""));
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "That report no longer exists.");
+    if (snap.get("status") === "closed") throw new HttpsError("failed-precondition", "That report is closed.");
+    const started = req.data?.start === true || whys.some(Boolean) || !!rootCause;
+    const { status } = await refreshIncident(tx, test, ref, snap.get("status"), started);
+    tx.update(ref, { whys, rootCause, status, updatedAt: FieldValue.serverTimestamp(), updatedBy: me.employeeNumber, updatedByName: me.name });
+    if (osha && ["injury", "first-aid"].includes(snap.get("type"))) tx.set(ref.collection("private").doc("osha"), { ...osha, updatedAt: FieldValue.serverTimestamp(), updatedBy: me.employeeNumber });
+    auditRecord(tx, "followed-up", "incident", ref.id, me.employeeNumber, { status, test });
+    return { status };
+  });
+});
+
+// Follow-up: { id, text, ownerEmp, due } — a corrective action; it shows in the owner's Needs you.
+exports.addIncidentAction = onCall(async (req) => {
+  const me = await requireIncidentFollower(req);
+  const test = isTest(req);
+  const owners = (await peopleList()).map((p) => ({ id: p.id, name: p.name, active: p.active }));
+  const { action, error } = incidentsLib.cleanAction(req.data, owners);
+  if (error) throw new HttpsError("invalid-argument", error);
+  const out = await db.runTransaction(async (tx) => {
+    const ref = col("incidents", test).doc(String(req.data?.id || ""));
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "That report no longer exists.");
+    if (snap.get("status") === "closed") throw new HttpsError("failed-precondition", "That report is closed.");
+    const { openActions } = await refreshIncident(tx, test, ref, snap.get("status"), true);
+    const aRef = col("incidentActions", test).doc();
+    tx.create(aRef, { ...action, incidentId: ref.id, incidentType: snap.get("type"), createdAt: FieldValue.serverTimestamp(), createdBy: me.employeeNumber, done: null, ...(test ? { test: true } : {}) });
+    tx.update(ref, { openActions: openActions + 1, status: "actions", updatedAt: FieldValue.serverTimestamp() });
+    auditRecord(tx, "action-added", "incident", ref.id, me.employeeNumber, { owner: action.ownerEmp, due: action.due, test });
+    return { actionId: aRef.id };
+  });
+  await pushTo(test ? [me.employeeNumber] : [action.ownerEmp], { title: `${test ? "[TEST] " : ""}🛠 Safety action for you`, body: `${action.text} — due ${action.due}`, url: "/?actions=1" });
+  return out;
+});
+
+// The owner (or follow-up): { actionId, note } — action done.
+exports.completeIncidentAction = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const note = typeof req.data?.note === "string" ? req.data.note.trim().slice(0, 500) : "";
+  return db.runTransaction(async (tx) => {
+    const aRef = col("incidentActions", test).doc(String(req.data?.actionId || ""));
+    const a = await tx.get(aRef);
+    if (!a.exists) throw new HttpsError("not-found", "That action no longer exists.");
+    if (a.get("ownerEmp") !== me.employeeNumber && !incidentsLib.canFollow(me.roles)) throw new HttpsError("permission-denied", "Only the owner or Training & Safety can mark this done.");
+    if (a.get("done")) throw new HttpsError("failed-precondition", "That action is already done.");
+    const ref = col("incidents", test).doc(a.get("incidentId"));
+    const snap = await tx.get(ref);
+    const { openActions } = await refreshIncident(tx, test, ref, snap.get("status"), true);
+    const left = Math.max(0, openActions - 1);
+    tx.update(aRef, { done: { at: FieldValue.serverTimestamp(), atMs: Date.now(), by: me.employeeNumber, byName: me.name, note } });
+    if (snap.exists && snap.get("status") !== "closed") tx.update(ref, { openActions: left, status: incidentsLib.nextStatus(snap.get("status"), { openActions: left, started: true }) });
+    auditRecord(tx, "action-done", "incident", ref.id, me.employeeNumber, { action: aRef.id, test });
+    return { ok: true, left };
+  });
+});
+
+// Training & Safety or Plant Manager, with PIN: { id, signer, device } — close (every action done first).
+exports.closeIncident = onCall(async (req) => {
+  await requireMember(req);
+  const test = isTest(req);
+  const signer = await requireSignature(req.data);
+  if (!incidentsLib.canFollow(signer.roles)) throw new HttpsError("permission-denied", `${signer.name} can't close reports — Training & Safety or the Plant Manager signs.`);
+  const device = annLib.cleanDevice(req.data?.device);
+  return db.runTransaction(async (tx) => {
+    const ref = col("incidents", test).doc(String(req.data?.id || ""));
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "That report no longer exists.");
+    if (snap.get("status") === "closed") throw new HttpsError("failed-precondition", "Already closed.");
+    const { openActions } = await refreshIncident(tx, test, ref, snap.get("status"), true);
+    if (openActions) throw new HttpsError("failed-precondition", `Finish the ${openActions} open action${openActions === 1 ? "" : "s"} first.`);
+    tx.update(ref, { status: "closed", openActions: 0, closed: { by: signer.employeeNumber, byName: signer.name, at: FieldValue.serverTimestamp(), device } });
+    logSignoff(tx, test, { kind: "incident-closed", refId: ref.id, version: 1, emp: signer.employeeNumber, name: signer.name, method: "pin", device });
+    auditRecord(tx, "closed", "incident", ref.id, signer.employeeNumber, { test });
+    return { ok: true, name: signer.name, test };
+  });
+});
+
+// Follow-up: active people (for action owners), and who can close with a PIN on this device.
+exports.incidentPeople = onCall(async (req) => {
+  const me = await requireIncidentFollower(req);
+  const people = (await peopleList()).filter((p) => p.active);
+  return {
+    owners: people.map((p) => ({ id: p.id, name: p.name })).sort((a, b) => a.name.localeCompare(b.name)),
+    closers: people.filter((p) => p.loginEnabled && p.id !== me.employeeNumber && incidentsLib.canFollow(p.roles)).map((p) => ({ emp: p.id, name: p.name })),
+  };
+});
+
+// After posting a lessons-learned announcement from a near miss: { id, annId }.
+exports.markIncidentShared = onCall(async (req) => {
+  const me = await requireIncidentFollower(req);
+  const test = isTest(req);
+  const ref = col("incidents", test).doc(String(req.data?.id || ""));
+  const ann = await col("announcements", test).doc(String(req.data?.annId || "")).get();
+  if (!ann.exists) throw new HttpsError("not-found", "That announcement wasn't found.");
+  await ref.update({ sharedAnnId: ann.id, sharedAt: FieldValue.serverTimestamp(), sharedBy: me.employeeNumber });
+  return { ok: true };
 });
 
 // ---------------------------------------------------------------------------
