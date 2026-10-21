@@ -151,6 +151,7 @@ export const callCompleteIncidentAction = call("completeIncidentAction");
 export const callCloseIncident = call("closeIncident");
 export const callMarkIncidentShared = call("markIncidentShared");
 export const callIncidentPeople = call("incidentPeople");
+export const callSignIncident = call("signIncident");
 export const callAdminSaveRotation = call("adminSaveRotation");
 // Who to Call
 export const callAdminSaveCallSheet = call("adminSaveCallSheet");

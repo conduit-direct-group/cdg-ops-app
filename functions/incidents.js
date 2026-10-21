@@ -56,6 +56,37 @@ function cleanReport(raw, { lineIds = [], stationIds = [], isOurFile = () => fal
   return { report: { type, occurredAt: raw.occurredAt, place: { lineId, stationId, label }, what, immediate, photos, witnesses, anonymous }, hurt };
 }
 
+// Signatures (injury and first aid, Chris 10-21-2026): the Supervisor and every witness sign with a finger.
+// { name, png } — png is the drawn signature as a PNG data URL (kept small). Returns { sig } or { error }.
+const SIG_TYPES = ["injury", "first-aid"];
+const MAX_WITNESSES = 6;
+function cleanSignature(raw, who = "The signer") {
+  const name = line(raw?.name, 80);
+  if (!name) return { error: `${who}: print the name.` };
+  const png = typeof raw?.png === "string" ? raw.png : "";
+  if (!/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(png) || png.length < 200) return { error: `${who}: sign in the box.` };
+  if (png.length > 300000) return { error: `${who}: the signature is too large — clear it and sign again.` };
+  return { sig: { name, png } };
+}
+
+// Signatures sent with a report: { supervisor?, witnesses[] } — any can be added later too.
+function cleanSignatures(raw) {
+  const out = { supervisor: null, witnesses: [] };
+  if (raw?.supervisor) {
+    const s = cleanSignature(raw.supervisor, "Supervisor");
+    if (s.error) return { error: s.error };
+    out.supervisor = s.sig;
+  }
+  const w = Array.isArray(raw?.witnesses) ? raw.witnesses : [];
+  if (w.length > MAX_WITNESSES) return { error: `Up to ${MAX_WITNESSES} witnesses.` };
+  for (const [n, x] of w.entries()) {
+    const s = cleanSignature(x, `Witness ${n + 1}`);
+    if (s.error) return { error: s.error };
+    out.witnesses.push(s.sig);
+  }
+  return { signatures: out };
+}
+
 // 5 Whys + root cause (follow-up).
 function cleanWhys(raw) {
   const whys = Array.from({ length: 5 }, (_, i) => clean(raw?.whys?.[i], 500));
@@ -104,4 +135,4 @@ function plantNowIso(ms = Date.now()) {
   return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
 }
 
-module.exports = { TYPES, STATUSES, FOLLOW_ROLES, NOTIFY_ROLES, TREATMENTS, OUTCOMES, canFollow, cleanReport, cleanWhys, cleanAction, cleanOsha, nextStatus, plantNowIso };
+module.exports = { SIG_TYPES, MAX_WITNESSES, cleanSignature, cleanSignatures, TYPES, STATUSES, FOLLOW_ROLES, NOTIFY_ROLES, TREATMENTS, OUTCOMES, canFollow, cleanReport, cleanWhys, cleanAction, cleanOsha, nextStatus, plantNowIso };

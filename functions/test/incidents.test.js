@@ -42,3 +42,16 @@ test("follow-up: actions need owner and due date; OSHA days are whole numbers; s
   assert.strictEqual(i.canFollow(["training-safety"]), true);
   assert.match(i.plantNowIso(Date.UTC(2026, 9, 21, 17, 5)), /^2026-10-21T12:05$/);
 });
+
+test("injury / first aid signatures: printed name and a drawn signature (PNG), witnesses up to 6", () => {
+  const png = "data:image/png;base64," + "A".repeat(400);
+  assert.deepStrictEqual(i.cleanSignature({ name: " Morgan Diaz ", png }).sig, { name: "Morgan Diaz", png });
+  assert.match(i.cleanSignature({ name: "", png }, "Supervisor").error, /Supervisor: print/);
+  assert.match(i.cleanSignature({ name: "X", png: "data:image/jpeg;base64,AAAA" }).error, /sign in the box/);
+  assert.match(i.cleanSignature({ name: "X", png: "data:image/png;base64," + "A".repeat(300001) }).error, /too large/);
+  const ok = i.cleanSignatures({ supervisor: { name: "Morgan", png }, witnesses: [{ name: "Sam", png }] });
+  assert.strictEqual(ok.signatures.witnesses.length, 1);
+  assert.match(i.cleanSignatures({ witnesses: [{ name: "Sam", png: "" }] }).error, /Witness 1/);
+  assert.match(i.cleanSignatures({ witnesses: Array(7).fill({ name: "S", png }) }).error, /Up to 6/);
+  assert.deepStrictEqual(i.SIG_TYPES, ["injury", "first-aid"]);
+});

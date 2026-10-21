@@ -3140,15 +3140,28 @@ exports.reportIncident = onCall(async (req) => {
     isOurFile: isOurUpload, nowIso: incidentsLib.plantNowIso(),
   });
   if (error) throw new HttpsError("invalid-argument", error);
+  const needsSigs = incidentsLib.SIG_TYPES.includes(report.type);
+  let sigs = { supervisor: null, witnesses: [] };
+  if (needsSigs) {
+    const s = incidentsLib.cleanSignatures(req.data?.signatures);
+    if (s.error) throw new HttpsError("invalid-argument", s.error);
+    sigs = s.signatures;
+  }
+  const device = annLib.cleanDevice(req.data?.device);
   const placeLabel = report.place.label || stationSnaps.docs.find((s) => s.id === report.place.stationId)?.get("label") || lineSnaps.docs.find((l) => l.id === report.place.lineId)?.get("name") || "";
   const ref = col("incidents", test).doc();
   await db.runTransaction(async (tx) => {
     tx.create(ref, {
       ...report, placeName: placeLabel, status: "reported", openActions: 0, whys: [], rootCause: "",
+      ...(needsSigs ? { supervisorSigned: !!sigs.supervisor, supervisorSignedName: sigs.supervisor?.name || "", witnessSignatures: sigs.witnesses.length } : {}),
       ...(report.anonymous ? {} : { createdBy: me.employeeNumber, createdByName: me.name }),
       createdAt: FieldValue.serverTimestamp(), createdAtMs: Date.now(), month: report.occurredAt.slice(0, 7), ...(test ? { test: true } : {}),
     });
     if (hurt) tx.create(ref.collection("private").doc("osha"), { injuredName: hurt.name, bodyPart: hurt.bodyPart });
+    if (needsSigs) {
+      const stamp = (x) => ({ ...x, atMs: Date.now(), device, collectedBy: me.employeeNumber });
+      tx.create(ref.collection("private").doc("signatures"), { supervisor: sigs.supervisor ? stamp(sigs.supervisor) : null, witnesses: sigs.witnesses.map(stamp) });
+    }
     auditRecord(tx, "reported", "incident", ref.id, report.anonymous ? "anonymous" : me.employeeNumber, { type: report.type, test });
   });
   const t = incidentsLib.TYPES[report.type];
@@ -3168,7 +3181,10 @@ exports.myIncidents = onCall(async (req) => {
   const mine = (await list.where("createdBy", "==", me.employeeNumber).get()).docs;
   const ids = (Array.isArray(req.data?.ids) ? req.data.ids : []).slice(0, 30).map(String).filter((x) => /^[A-Za-z0-9]{10,40}$/.test(x));
   const anon = ids.length ? (await db.getAll(...ids.map((id) => list.doc(id)))).filter((s) => s.exists && s.get("anonymous") === true) : [];
-  const show = (d) => ({ id: d.id, type: d.get("type"), occurredAt: d.get("occurredAt"), placeName: d.get("placeName") || "", status: d.get("status"), anonymous: d.get("anonymous") === true, createdAtMs: d.get("createdAtMs") || 0 });
+  const show = (d) => ({
+    id: d.id, type: d.get("type"), occurredAt: d.get("occurredAt"), placeName: d.get("placeName") || "", status: d.get("status"), anonymous: d.get("anonymous") === true, createdAtMs: d.get("createdAtMs") || 0,
+    needsSupervisorSig: incidentsLib.SIG_TYPES.includes(d.get("type")) && d.get("supervisorSigned") !== true, witnessSignatures: d.get("witnessSignatures") || 0,
+  });
   return { reports: [...mine, ...anon].map(show).sort((a, b) => b.createdAtMs - a.createdAtMs) };
 });
 
@@ -3256,6 +3272,7 @@ exports.closeIncident = onCall(async (req) => {
     if (snap.get("status") === "closed") throw new HttpsError("failed-precondition", "Already closed.");
     const { openActions } = await refreshIncident(tx, test, ref, snap.get("status"), true);
     if (openActions) throw new HttpsError("failed-precondition", `Finish the ${openActions} open action${openActions === 1 ? "" : "s"} first.`);
+    if (incidentsLib.SIG_TYPES.includes(snap.get("type")) && snap.get("supervisorSigned") !== true) throw new HttpsError("failed-precondition", "The Supervisor hasn't signed this report yet.");
     tx.update(ref, { status: "closed", openActions: 0, closed: { by: signer.employeeNumber, byName: signer.name, at: FieldValue.serverTimestamp(), device } });
     logSignoff(tx, test, { kind: "incident-closed", refId: ref.id, version: 1, emp: signer.employeeNumber, name: signer.name, method: "pin", device });
     auditRecord(tx, "closed", "incident", ref.id, signer.employeeNumber, { test });
@@ -3271,6 +3288,39 @@ exports.incidentPeople = onCall(async (req) => {
     owners: people.map((p) => ({ id: p.id, name: p.name })).sort((a, b) => a.name.localeCompare(b.name)),
     closers: people.filter((p) => p.loginEnabled && p.id !== me.employeeNumber && incidentsLib.canFollow(p.roles)).map((p) => ({ emp: p.id, name: p.name })),
   };
+});
+
+// Injury / first aid, signed later on the reporter's device (or by follow-up): { id, role: "supervisor" | "witness",
+// name, png, device }. The Supervisor signs once; witnesses are added (up to 6).
+exports.signIncident = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const role = req.data?.role === "supervisor" ? "supervisor" : "witness";
+  const { sig, error } = incidentsLib.cleanSignature(req.data, role === "supervisor" ? "Supervisor" : "Witness");
+  if (error) throw new HttpsError("invalid-argument", error);
+  const device = annLib.cleanDevice(req.data?.device);
+  return db.runTransaction(async (tx) => {
+    const ref = col("incidents", test).doc(String(req.data?.id || ""));
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "That report no longer exists.");
+    if (snap.get("createdBy") !== me.employeeNumber && !incidentsLib.canFollow(me.roles)) throw new HttpsError("permission-denied", "Signatures are collected on the reporter's device or by Training & Safety.");
+    if (!incidentsLib.SIG_TYPES.includes(snap.get("type"))) throw new HttpsError("failed-precondition", "Only injury and first-aid reports are signed.");
+    if (snap.get("status") === "closed") throw new HttpsError("failed-precondition", "That report is closed.");
+    const sigRef = ref.collection("private").doc("signatures");
+    const cur = (await tx.get(sigRef)).data() || { supervisor: null, witnesses: [] };
+    const stamped = { ...sig, atMs: Date.now(), device, collectedBy: me.employeeNumber };
+    if (role === "supervisor") {
+      if (cur.supervisor) throw new HttpsError("failed-precondition", `Already signed by ${cur.supervisor.name}.`);
+      cur.supervisor = stamped;
+    } else {
+      if ((cur.witnesses || []).length >= incidentsLib.MAX_WITNESSES) throw new HttpsError("failed-precondition", `Up to ${incidentsLib.MAX_WITNESSES} witnesses.`);
+      cur.witnesses = [...(cur.witnesses || []), stamped];
+    }
+    tx.set(sigRef, cur);
+    tx.update(ref, { supervisorSigned: !!cur.supervisor, supervisorSignedName: cur.supervisor?.name || "", witnessSignatures: (cur.witnesses || []).length });
+    auditRecord(tx, `signed (${role})`, "incident", ref.id, me.employeeNumber, { name: sig.name, test });
+    return { ok: true, role, name: sig.name };
+  });
 });
 
 // After posting a lessons-learned announcement from a near miss: { id, annId }.

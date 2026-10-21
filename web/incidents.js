@@ -6,10 +6,11 @@
 
 import { el, breakable, friendlyError, spinner, emptyState, banner, toast, picker, confirmSheet } from "./ui.js";
 import { data, onDataChange } from "./data.js";
-import { db, storage, TEST_MODE, callReportIncident, callMyIncidents, callSaveIncidentFollowUp, callAddIncidentAction, callCompleteIncidentAction, callCloseIncident, callMarkIncidentShared, callIncidentPeople, callAdminSaveRotation } from "./firebase.js";
+import { db, storage, TEST_MODE, callReportIncident, callMyIncidents, callSaveIncidentFollowUp, callAddIncidentAction, callCompleteIncidentAction, callCloseIncident, callMarkIncidentShared, callIncidentPeople, callAdminSaveRotation, callSignIncident } from "./firebase.js";
 import { collection, doc, getDoc, getDocs, query, where } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 import { ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-storage.js";
-import { signOff } from "./signoff.js";
+import { signOff, deviceInfo } from "./signoff.js";
+import { sigPad } from "./sigpad.js";
 
 export const FOLLOW_ROLES = ["training-safety", "plant-manager", "admin"];
 export const canFollowIncidents = (roles) => roles.some((r) => FOLLOW_ROLES.includes(r));
@@ -19,6 +20,7 @@ const STATUS = { reported: "🆕 Reported", investigating: "🔍 Investigating",
 const TREATMENTS = [["", "—"], ["first-aid-only", "First aid only"], ["medical-treatment", "Medical treatment beyond first aid"], ["emergency-room", "Emergency room"], ["hospitalized-overnight", "Hospitalized overnight"]];
 const OUTCOMES = [["", "—"], ["not-recordable", "Not recordable"], ["other-recordable", "Other recordable case"], ["restricted", "Job transfer or restriction"], ["days-away", "Days away from work"], ["death", "Death"]];
 const ANON_KEY = "cdg.anonIncidents";
+const SIG_TYPES = ["injury", "first-aid"]; // Supervisor + witnesses sign with a finger (Chris, 10-21-2026)
 const WHY_PROMPTS = ["Why did it happen?", "Why was that?", "Why was that?", "Why was that?", "Why was that? (often the root cause)"];
 
 const stored = (k) => { try { return JSON.parse(localStorage.getItem(k) || "[]"); } catch { return []; } };
@@ -109,7 +111,10 @@ export function openIncidents(container, { me, start = "home", startId = null, o
     getDocs(collection(db, "floorStations")).then((s) => { ui.stations = s.docs.map((d) => ({ id: d.id, ...d.data() })).filter((x) => x.active !== false && x.label).sort((a, b) => a.label.localeCompare(b.label)); render(); }, () => { ui.stations = []; render(); });
   }
 
-  const newForm = () => ({ type: "", occurredAt: plantNow(), lineId: "", stationId: "", label: "", what: "", immediate: "", photos: [], witnesses: "", anonymous: false, hurtName: "", bodyPart: "" });
+  const newForm = () => ({ type: "", occurredAt: plantNow(), lineId: "", stationId: "", label: "", what: "", immediate: "", photos: [], witnesses: "", anonymous: false, hurtName: "", bodyPart: "", supName: "", witnessRows: [] });
+  // Signature boxes live outside the form state (a redraw would wipe what was drawn), keyed by row.
+  const pads = new Map();
+  const pad = (key, label) => { if (!pads.has(key)) pads.set(key, sigPad({ label })); return pads.get(key); };
 
   async function addPhoto(file) {
     if (!file.type.startsWith("image/")) return say("A photo only.");
@@ -123,12 +128,24 @@ export function openIncidents(container, { me, start = "home", startId = null, o
     } catch (err) { say(friendlyError(err)); }
   }
 
+  function signaturesFrom(f) {
+    if (!SIG_TYPES.includes(f.type)) return null;
+    const sup = pads.get("sup");
+    const supervisor = f.supName.trim() || (sup && !sup.isEmpty()) ? { name: f.supName, png: sup?.png() || "" } : null;
+    const witnesses = f.witnessRows.map((w) => ({ name: w.name, png: pads.get(w.key)?.png() || "" }));
+    return { supervisor, witnesses };
+  }
+
   async function submit() {
     const f = ui.form;
+    const signatures = signaturesFrom(f);
+    if (signatures && !signatures.supervisor && !(await confirmSheet({ title: "Send without the Supervisor's signature?", text: "The report is sent now and waits for the Supervisor to sign it from My reports on this device. It can't be closed until they sign.", confirmLabel: "Send now, sign later" }))) return;
     const out = await act(() => callReportIncident({
       type: f.type, occurredAt: f.occurredAt, place: { lineId: f.lineId, stationId: f.stationId, label: f.label }, what: f.what, immediate: f.immediate,
-      photos: f.photos, witnesses: f.witnesses, anonymous: f.anonymous, hurt: { name: f.hurtName, bodyPart: f.bodyPart },
+      photos: f.photos, witnesses: signatures ? f.witnessRows.map((w) => w.name).filter(Boolean).join(", ") : f.witnesses, anonymous: f.anonymous, hurt: { name: f.hurtName, bodyPart: f.bodyPart },
+      ...(signatures ? { signatures, device: deviceInfo() } : {}),
     }), submit);
+    if (out) pads.clear();
     if (!out) return;
     if (out.anonymous) store(ANON_KEY, [out.id, ...stored(ANON_KEY)].slice(0, 30));
     Object.assign(ui, { form: null, mine: null });
@@ -164,12 +181,24 @@ export function openIncidents(container, { me, start = "home", startId = null, o
           el("p", { class: "card-note" }, "Only Training & Safety, the Plant Manager, and Admins see this report. Leave out medical details — they're added at follow-up only if needed.")] : null,
         label("What happened?"), el("textarea", { class: "field", rows: "3", maxlength: "2000", oninput: (e) => { f.what = e.target.value; } }, f.what),
         label("What was done right away?"), el("textarea", { class: "field", rows: "2", maxlength: "1000", placeholder: "e.g. stopped the line, cleaned up the spill", oninput: (e) => { f.immediate = e.target.value; } }, f.immediate),
-        label("Witnesses (optional)"), el("input", { class: "field", value: f.witnesses, maxlength: "300", oninput: (e) => { f.witnesses = e.target.value; } }),
+        hurt ? null : [label("Witnesses (optional)"), el("input", { class: "field", value: f.witnesses, maxlength: "300", oninput: (e) => { f.witnesses = e.target.value; } })],
         label("Photos (optional)"),
         f.photos.length ? el("div", { class: "inc-photos" }, f.photos.map((u) => el("img", { src: u, alt: "Photo" }))) : null,
         fileInput,
         el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => fileInput.click() }, "📷 Add photo"),
         ui.upload ? el("p", { class: "card-note", role: "status" }, ui.upload) : null,
+        hurt ? el("section", { class: "inc-sigs" },
+          el("strong", {}, "✍ Signatures"),
+          el("p", { class: "card-note" }, "The Supervisor signs every injury and first-aid report, and so does each witness — with a finger, here on this screen."),
+          label("Supervisor — printed name"), el("input", { class: "field", value: f.supName, maxlength: "80", oninput: (e) => { f.supName = e.target.value; } }),
+          pad("sup", "Supervisor signature").el,
+          el("p", { class: "card-note" }, "Supervisor not here? Send it now — they sign later from My reports on this device."),
+          f.witnessRows.map((w, n) => el("div", { class: "inc-witness" },
+            label(`Witness ${n + 1} — printed name`), el("input", { class: "field", value: w.name, maxlength: "80", oninput: (e) => { w.name = e.target.value; } }),
+            pad(w.key, `Witness ${n + 1} signature`).el,
+            el("button", { class: "link-btn danger-link", type: "button", onclick: () => { f.witnessRows.splice(n, 1); pads.delete(w.key); render(); } }, "✕ Remove this witness"))),
+          f.witnessRows.length < 6 ? el("button", { class: "btn secondary", type: "button", onclick: () => { f.witnessRows.push({ key: `w${Date.now()}`, name: "" }); render(); } }, "+ Add a witness") : null,
+          el("p", { class: "card-note" }, "📝 Also fill out the full incident report form. This report keeps the log.")) : null,
         f.type === "near-miss" ? el("label", { class: "check-row" }, el("input", { type: "checkbox", checked: f.anonymous, onchange: (e) => { f.anonymous = e.target.checked; } }), el("span", {}, "Send anonymously (your name isn't saved)")) : null,
         el("button", { class: "btn big", type: "submit", disabled: ui.busy || !f.type }, ui.busy ? "Sending…" : "Send report")),
     ];
@@ -189,9 +218,12 @@ export function openIncidents(container, { me, start = "home", startId = null, o
     if (ui.mine === "loading" || ui.mine === null) return spinner("Loading your reports…");
     if (ui.mine.error) return banner({ message: ui.mine.error, messageKind: "error", retry: loadMine });
     if (!ui.mine.length) return el("p", { class: "card-note" }, "You haven't sent any reports from this account or device.");
-    return el("div", { class: "person-list" }, ui.mine.map((r) => el("div", { class: "person-row static" },
+    return el("div", { class: "person-list" }, ui.mine.map((r) => el("div", { class: r.needsSupervisorSig && r.status !== "closed" ? "person-row static urgent" : "person-row static" },
       el("span", { class: "person-name" }, `${TYPE_LABEL[r.type]} · ${STATUS[r.status]}`),
-      el("span", { class: "person-meta" }, [fmtWhen(r.occurredAt), r.placeName, r.anonymous ? "sent anonymously" : null].filter(Boolean).join(" · ")))));
+      el("span", { class: "person-meta" }, [fmtWhen(r.occurredAt), r.placeName, r.anonymous ? "sent anonymously" : null, SIG_TYPES.includes(r.type) ? `${r.witnessSignatures} witness signature${r.witnessSignatures === 1 ? "" : "s"}` : null].filter(Boolean).join(" · ")),
+      SIG_TYPES.includes(r.type) && r.status !== "closed" ? el("div", { class: "btn-row" },
+        r.needsSupervisorSig ? el("button", { class: "btn", type: "button", onclick: () => show("sign", { signFor: { id: r.id, role: "supervisor", back: "home" } }) }, "✍ Supervisor signs") : null,
+        el("button", { class: "btn secondary", type: "button", onclick: () => show("sign", { signFor: { id: r.id, role: "witness", back: "home" } }) }, "✍ Add a witness signature")) : null)));
   }
 
   // ---- home of the screen ----
@@ -233,7 +265,8 @@ export function openIncidents(container, { me, start = "home", startId = null, o
       const base = inc.test ? "test_incidents" : "incidents";
       const osha = ["injury", "first-aid"].includes(inc.type) ? ((await getDoc(doc(db, base, inc.id, "private", "osha"))).data() || {}) : null;
       const acts = await getDocs(query(collection(db, inc.test ? "test_incidentActions" : "incidentActions"), where("incidentId", "==", inc.id)));
-      ui.one = { inc, osha, actions: acts.docs.map((d) => ({ id: d.id, ...d.data() })), whys: [...(inc.whys || []), "", "", "", "", ""].slice(0, 5), rootCause: inc.rootCause || "", newAction: { text: "", ownerEmp: "", due: "" } };
+      const sigs = SIG_TYPES.includes(inc.type) ? ((await getDoc(doc(db, base, inc.id, "private", "signatures"))).data() || { supervisor: null, witnesses: [] }) : null;
+      ui.one = { inc, osha, sigs, actions: acts.docs.map((d) => ({ id: d.id, ...d.data() })), whys: [...(inc.whys || []), "", "", "", "", ""].slice(0, 5), rootCause: inc.rootCause || "", newAction: { text: "", ownerEmp: "", due: "" } };
       if (!ui.people) callIncidentPeople().then((r) => { ui.people = r.data; render(); }, () => { ui.people = { owners: [], closers: [] }; render(); });
     } catch (err) { ui.one = { error: friendlyError(err) }; }
     render();
@@ -298,6 +331,13 @@ export function openIncidents(container, { me, start = "home", startId = null, o
             i.immediate ? [el("strong", {}, "Done right away"), el("p", { class: "inc-text" }, breakable(i.immediate))] : null,
             el("p", { class: "card-note" }, [i.anonymous ? "Sent anonymously" : `Reported by ${i.createdByName || ""}`, i.witnesses ? `Witnesses: ${i.witnesses}` : null].filter(Boolean).join(" · ")),
             i.photos?.length ? el("div", { class: "inc-photos" }, i.photos.map((u) => el("a", { href: u, target: "_blank", rel: "noopener" }, el("img", { src: u, alt: "Photo" })))) : null),
+          o.sigs ? el("section", { class: o.sigs.supervisor ? "card" : "card inc-sig-missing" },
+            el("strong", {}, "✍ Signatures"),
+            o.sigs.supervisor ? sigView("Supervisor", o.sigs.supervisor) : el("p", {}, "⚠ The Supervisor hasn't signed yet — the report can't be closed until they do."),
+            (o.sigs.witnesses || []).map((w, n) => sigView(`Witness ${n + 1}`, w)),
+            closed ? null : el("div", { class: "btn-row" },
+              o.sigs.supervisor ? null : el("button", { class: "btn", type: "button", onclick: () => show("sign", { signFor: { id: i.id, role: "supervisor", back: "one" } }) }, "✍ Supervisor signs"),
+              el("button", { class: "btn secondary", type: "button", onclick: () => show("sign", { signFor: { id: i.id, role: "witness", back: "one" } }) }, "✍ Add a witness signature"))) : null,
           el("section", { class: "card" },
             el("strong", {}, "Root cause — 5 Whys"),
             el("p", { class: "card-note" }, "Ask “why?” until you reach something you can fix."),
@@ -339,12 +379,44 @@ export function openIncidents(container, { me, start = "home", startId = null, o
           el("section", { class: "card" },
             el("strong", {}, "Close"),
             closed ? el("p", {}, `✓ Closed by ${i.closed?.byName || ""}`) : [
-              el("p", { class: "card-note" }, openActs ? `Finish the ${openActs} open action${openActs === 1 ? "" : "s"} first.` : "Training & Safety or the Plant Manager signs with their PIN."),
-              el("button", { class: "btn", type: "button", disabled: ui.busy || openActs > 0, onclick: close }, "✓ Close with PIN"),
+              el("p", { class: "card-note" }, openActs ? `Finish the ${openActs} open action${openActs === 1 ? "" : "s"} first.` : o.sigs && !o.sigs.supervisor ? "The Supervisor signs first." : "Training & Safety or the Plant Manager signs with their PIN."),
+              el("button", { class: "btn", type: "button", disabled: ui.busy || openActs > 0 || (o.sigs && !o.sigs.supervisor), onclick: close }, "✓ Close with PIN"),
             ]),
           i.type === "near-miss" && onAnnounce ? el("section", { class: "card" },
             el("strong", {}, "Lessons learned"),
             i.sharedAnnId ? el("p", {}, "📣 Shared as an announcement.") : [el("p", { class: "card-note" }, "Share what happened (no names) so everyone learns from it."), el("button", { class: "btn secondary", type: "button", onclick: share }, "📣 Share as lessons learned")]) : null)),
+    ];
+  }
+
+  function sigView(who, s) {
+    return el("figure", { class: "inc-sig" },
+      el("img", { src: s.png, alt: `${who} signature: ${s.name}` }),
+      el("figcaption", {}, `${who}: ${s.name}${s.atMs ? ` · ${new Date(s.atMs).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : ""}`));
+  }
+
+  // ---- sign later (Supervisor or a witness) ----
+
+  let signPad = null;
+  function signView() {
+    const s = ui.signFor;
+    const who = s.role === "supervisor" ? "Supervisor" : "Witness";
+    if (!signPad) signPad = sigPad({ label: `${who} signature` });
+    const goBack = () => { signPad = null; show(s.back, s.back === "one" ? { one: null } : { mine: null }); };
+    async function save() {
+      const name = (ui.signName || "").trim();
+      const out = await act(() => callSignIncident({ id: s.id, role: s.role, name, png: signPad.png(), device: deviceInfo() }), save, `Signed by ${name}`);
+      if (out) { ui.signName = ""; ui.id = s.id; goBack(); }
+    }
+    return [
+      back("Back", goBack),
+      el("h1", {}, `✍ ${who} signature`),
+      el("p", { class: "hint" }, "Print your name, then sign in the box with your finger."),
+      banner(ui),
+      el("section", { class: "card" },
+        el("span", { class: "field-label strong" }, "Printed name"),
+        el("input", { class: "field", value: ui.signName || "", maxlength: "80", oninput: (e) => { ui.signName = e.target.value; } }),
+        signPad.el,
+        el("button", { class: "btn big", type: "button", disabled: ui.busy, onclick: save }, ui.busy ? "Saving…" : "Save signature")),
     ];
   }
 
@@ -388,7 +460,7 @@ export function openIncidents(container, { me, start = "home", startId = null, o
   }
 
   function render() {
-    const views = { report: reportForm, thanks: thanksView, one: oneView, actions: actionsView, trends: trendsView };
+    const views = { report: reportForm, thanks: thanksView, one: oneView, actions: actionsView, trends: trendsView, sign: signView };
     container.replaceChildren(...[(views[ui.view] || homeView)()].flat(4).filter(Boolean));
   }
   function thanksView() {

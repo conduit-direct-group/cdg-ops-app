@@ -1446,3 +1446,14 @@ a.btn { text-decoration: none; }
 .inc-osha-note { margin: 0 0 var(--s3); padding: var(--s2) var(--s3); border-left: 5px solid var(--red); background: var(--red-tint); border-radius: var(--radius); }
 .inc-follow { margin-top: var(--s4); }
 .rot-row { display: flex; flex-direction: column; gap: var(--s1); padding: var(--s2) 0; border-bottom: 1px solid var(--line); }
+
+/* ---- Finger signatures (injury / first aid) -------------------------------------------------------------------- */
+.sigpad { display: flex; flex-direction: column; gap: var(--s1); margin: var(--s2) 0; }
+.sigpad-canvas { width: 100%; max-width: 600px; aspect-ratio: 600 / 180; height: auto; border: var(--border-width) solid var(--line); border-radius: var(--radius); background: var(--white); touch-action: none; cursor: crosshair; }
+.sigpad .link-btn { align-self: flex-start; }
+.inc-sigs { display: flex; flex-direction: column; gap: var(--s1); margin: var(--s3) 0; padding: var(--s3); border-radius: var(--radius); background: var(--surface-2); }
+.inc-witness { display: flex; flex-direction: column; gap: var(--s1); padding-top: var(--s2); border-top: 1px solid var(--line); }
+.inc-sig { margin: var(--s2) 0; }
+.inc-sig img { display: block; width: 100%; max-width: 360px; border-radius: var(--radius); background: var(--white); }
+.inc-sig figcaption { color: var(--muted); font-size: var(--text-small); margin-top: var(--s1); }
+.inc-sig-missing { border-left-color: var(--red); }
