@@ -73,7 +73,7 @@ export function reelItems(roles, onOpen) {
   return items;
 }
 
-// Home → At a glance cards (Quality: product on hold, scrap reasons this shift; Plant Manager: scrap this week).
+// Home → At a glance cards (Quality: product on hold, scrap reasons this shift; Production Manager: scrap this week).
 export function reelCard(id, onOpen) {
   const open = data.openReels;
   const recent = data.recentReels;

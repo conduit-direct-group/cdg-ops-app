@@ -5,17 +5,17 @@
 //   incidents/{auto}            type, occurredAt ("YYYY-MM-DDTHH:MM", plant time), place { lineId, stationId, label },
 //                               what, immediate, photoPaths, witnesses, anonymous, createdBy (none when anonymous),
 //                               status, whys [5], rootCause, actionCount/openActions, closed {…}, sharedAnnId
-//   incidents/{id}/private/osha the injured person and OSHA 300/301 details (Training & Safety, Plant Manager, Admin)
+//   incidents/{id}/private/osha the injured person and OSHA 300/301 details (Training & Safety, Production Manager, Admin)
 //   incidents/{id}/private/signatures  names + times; the drawn signatures themselves are files (below)
 //
 // Files (photos and signatures) live in the PRIVATE storage folder safety/{incidentId}/… — readable only by Training &
-// Safety, Plant Manager, Admin (storage rules), served through the server, never as shareable links. The phone uploads
+// Safety, Production Manager, Admin (storage rules), served through the server, never as shareable links. The phone uploads
 // a photo to safety/incoming/{random id} (no employee number anywhere — anonymous stays anonymous); the server moves it.
 //   incidentActions/{auto}      incidentId, text, ownerEmp, ownerName, due ("YYYY-MM-DD"), done {…} — the owner sees
 //                               their own (no names or medical details in the text)
 //   Test site: test_ copies.
 //
-// Who sees reports: Training & Safety, Plant Manager, Admin (database rules); the reporter sees their own status.
+// Who sees reports: Training & Safety, Production Manager, Admin (database rules); the reporter sees their own status.
 
 const TYPES = {
   "near-miss": { label: "Near miss", icon: "⚠" },
@@ -114,7 +114,7 @@ function cleanAction(raw, owners) {
 
 // The injury record (follow-up, injury and first aid) — ONLY these, in plain words (Chris, 10-21-2026). No medical
 // documents in the app: doctor's notes, diagnoses, and claim forms go to HR. Any other field sent is dropped.
-// Stored apart from the report, readable only by Training & Safety, Plant Manager, Admin.
+// Stored apart from the report, readable only by Training & Safety, Production Manager, Admin.
 const INJURY_FIELDS = ["injuredName", "injuryType", "bodyPart", "firstAidGiven", "wentToDoctor"];
 function cleanOsha(raw) {
   const doc = raw?.wentToDoctor;

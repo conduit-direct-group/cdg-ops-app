@@ -58,9 +58,9 @@ function nextEmployeeNumber(numbers) {
 }
 
 // A starting role from a Gusto job title — only a suggestion; Chris confirms every one.
-// Role ids: plant-manager = Plant Manager, lead = Line Lead, shipping = Logistics & Distribution (renamed), training-safety = Training & Safety.
+// Role ids: plant-manager = Production Manager, lead = Line Lead, shipping = Logistics & Distribution (renamed), training-safety = Training & Safety.
 const POSITION_RULES = [
-  [/plant manager/i, "plant-manager"],
+  [/production manager/i, "plant-manager"],
   [/supervisor|superintendent|production manager|operations manager|director of operations/i, "supervisor"],
   [/line lead|lead operator|team lead|\blead\b/i, "lead"],
   [/maintenance|mechanic|technician|electrician|millwright/i, "maintenance"],

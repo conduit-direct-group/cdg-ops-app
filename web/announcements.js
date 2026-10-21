@@ -1,10 +1,10 @@
 // Announcements with "Read & understood" sign-off (Decision 58).
 //
-// Posting: roles allowed in Admin → Roles (starting: Admin, Plant Manager, Supervisor, Training & Safety, Office).
+// Posting: roles allowed in Admin → Roles (starting: Admin, Production Manager, Supervisor, Training & Safety, Office).
 // Signing: the "Read & understood" button wakes up only after the whole message has been seen (scrolled to the
 // end, attachment opened); then the shared sign-off (tap your name, then your PIN — signoff.js).
 // Until signed it stays in "Needs you" on Home (red after the acknowledge-by date; Safety at the very top).
-// Tracking (poster, Plant Manager, Office, Admin; Supervisors for their crew) comes from the server, because the
+// Tracking (poster, Production Manager, Office, Admin; Supervisors for their crew) comes from the server, because the
 // app can't read other people's records: "18 of 24 signed", who hasn't, Remind, Reviewed in person, Print.
 
 import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, picker, collapsible } from "./ui.js";

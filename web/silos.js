@@ -1,6 +1,6 @@
 // Low silo alert (Chris, 10-21-2026). Silo levels come from the Shift Handoff and from "Update silo levels"
 // (Line Operator / material system, mid-shift). Admin → Silo alerts sets each silo's low line; no alerts until set.
-// Logistics, Supervisors, and the Plant Manager get a push and a red Home item while a silo is below its line.
+// Logistics, Supervisors, and the Production Manager get a push and a red Home item while a silo is below its line.
 // Rules match functions/silos.js.
 
 import { el, friendlyError, spinner, banner, toast } from "./ui.js";
@@ -37,7 +37,7 @@ export function lowSilos() {
   }).map((s) => ({ ...s, level: levelOf(s.id).level, low: setting(s.id).low }));
 }
 
-// Home → Needs you (Logistics, Supervisors, Plant Manager): one red item while any silo is low.
+// Home → Needs you (Logistics, Supervisors, Production Manager): one red item while any silo is low.
 export function siloItems(roles, onOpen) {
   if (!roles.some((r) => ALERT_ROLES.includes(r)) || !data.siloLevels || !data.siloSettings) return [];
   const low = lowSilos();
@@ -136,7 +136,7 @@ export function openSiloAdmin(container, { onExit }) {
     container.replaceChildren(...[
       el("button", { class: "link-btn", type: "button", onclick: onExit }, "← Admin"),
       el("h1", {}, "🛢 Silo alerts"),
-      el("p", { class: "hint" }, "Logistics, Supervisors, and the Plant Manager get one alert when a silo drops below its low line — again only after it's refilled above the line and drops again. Leave the low line blank for no alerts."),
+      el("p", { class: "hint" }, "Logistics, Supervisors, and the Production Manager get one alert when a silo drops below its low line — again only after it's refilled above the line and drops again. Leave the low line blank for no alerts."),
       banner(ui),
       el("form", { class: "card", onsubmit: (e) => { e.preventDefault(); save(); } },
         SILOS.map((s) => el("div", { class: "silo-set" },

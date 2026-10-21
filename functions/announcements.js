@@ -6,7 +6,7 @@
 // (new hire, new role, new team) is added to the list too.
 //
 // Editing the words, attachment, or priority makes a new version: everyone signs again (old signatures stay).
-// Who tracks it: the poster, Plant Manager, Office, Admin (everyone in the audience); Supervisors (their crew).
+// Who tracks it: the poster, Production Manager, Office, Admin (everyone in the audience); Supervisors (their crew).
 
 const PRIORITIES = ["normal", "important", "safety"];
 
@@ -92,7 +92,7 @@ function crewOf(supervisor, employees) {
 
 const has = (roles, list) => (roles || []).some((r) => list.includes(r));
 
-// Who may open the tracking list: the poster and Plant Manager/Office/Admin see everyone; supervisors their crew.
+// Who may open the tracking list: the poster and Production Manager/Office/Admin see everyone; supervisors their crew.
 // Returns "all", "crew", or null.
 function trackScope(me, announcement) {
   if (announcement.createdBy === me.id || has(me.roles, SEE_ALL_ROLES)) return "all";

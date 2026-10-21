@@ -37,6 +37,7 @@ const reelsLib = require("./reels");
 const callLib = require("./callsheet");
 const incidentsLib = require("./incidents");
 const rotationLib = require("./rotation");
+const hrLib = require("./hraccess");
 const crypto = require("node:crypto");
 const { getMessaging } = require("firebase-admin/messaging");
 const { defineSecret } = require("firebase-functions/params");
@@ -668,7 +669,14 @@ async function requireMember(req) {
   const snap = await employees.doc(employeeNumber).get();
   if (!snap.exists || snap.get("active") === false) throw new HttpsError("permission-denied", "Your account is turned off.");
   const roles = snap.get("roles") || [];
-  return { employeeNumber, roles, approver: fixesLib.isApprover(roles), name: snap.get("name") || `Employee ${employeeNumber}` };
+  return { employeeNumber, roles, approver: fixesLib.isApprover(roles), name: snap.get("name") || `Employee ${employeeNumber}`, hr: hrLib.hasHr(snap.data()) };
+}
+
+// HR access (hraccess.js): injury report details, write-ups and reviews. A per-person switch, not a role.
+async function requireHr(req) {
+  const me = await requireMember(req);
+  if (!me.hr) throw new HttpsError("permission-denied", "This needs HR access. Ask the person who has HR access.");
+  return me;
 }
 
 async function requireApprover(req, what) {
@@ -1167,7 +1175,7 @@ exports.adminBulkAddFixes = onCall(async (req) => {
 const FIXER_ROLES = ["maintenance", "admin"];
 
 // Plant status bar (Home, everyone): which lines have an open line-down Maintenance Request, since when.
-// A small summary everyone can read (the issues themselves stay Maintenance/Admin/Plant Manager only).
+// A small summary everyone can read (the issues themselves stay Maintenance/Admin/Production Manager only).
 //   meta/plantStatus  { down: { [lineId]: { since: ms, machineIds: [] } }, updatedAt }   (test site: test_meta)
 async function writePlantStatus(test) {
   try {
@@ -2134,14 +2142,14 @@ exports.signAnnouncement = onCall(async (req) => {
   return { ok: true, already, name: signer.name, version, test };
 });
 
-// Supervisor, Plant Manager, Admin — for someone with no login yet: { id, emp, note, signer: { emp, pin }, device }.
+// Supervisor, Production Manager, Admin — for someone with no login yet: { id, emp, note, signer: { emp, pin }, device }.
 // Signed with the recorder's own PIN; the note says how it was reviewed.
 exports.recordReviewedInPerson = onCall(async (req) => {
   const me = await requireMember(req);
   const test = isTest(req);
   const signer = await requireSignature(req.data);
   if (signer.employeeNumber !== me.employeeNumber) throw new HttpsError("permission-denied", "Use your own PIN.");
-  if (!hasRole(signer.roles, annLib.IN_PERSON_ROLES)) throw new HttpsError("permission-denied", "Only Supervisors, the Plant Manager, and Admins can record this.");
+  if (!hasRole(signer.roles, annLib.IN_PERSON_ROLES)) throw new HttpsError("permission-denied", "Only Supervisors, the Production Manager, and Admins can record this.");
   const note = typeof req.data?.note === "string" ? req.data.note.trim().slice(0, 500) : "";
   if (note.length < 3) throw new HttpsError("invalid-argument", "Add a short note (for example: “Read it together at the start of shift”).");
   const emp = pin.normalizeEmployeeNumber(req.data?.emp);
@@ -2170,13 +2178,13 @@ exports.recordReviewedInPerson = onCall(async (req) => {
   return { ok: true, name: person.name, test };
 });
 
-// Who has and hasn't signed one announcement (current version). Poster, Plant Manager, Office, Admin: everyone;
+// Who has and hasn't signed one announcement (current version). Poster, Production Manager, Office, Admin: everyone;
 // Supervisors: their crew.
 async function trackingFor(me, test, id) {
   const { snap, readOnly } = await findAnnouncement(test, id);
   const a = snap.data();
   const scope = annLib.trackScope({ id: me.employeeNumber, roles: me.roles }, a);
-  if (!scope) throw new HttpsError("permission-denied", "Only the poster, Plant Manager, Office, Admins, and Supervisors (for their crew) can see this.");
+  if (!scope) throw new HttpsError("permission-denied", "Only the poster, Production Manager, Office, Admins, and Supervisors (for their crew) can see this.");
   const people = await peopleList();
   const byId = new Map(people.map((p) => [p.id, p]));
   let ids = a.audienceEmps || [];
@@ -2230,12 +2238,12 @@ exports.remindAnnouncement = onCall(async (req) => {
 });
 
 // Dashboard cards: { scope: "all" | "crew" } — for each announcement still up, how many in scope have signed.
-// "all": Plant Manager, Office, Admin. "crew": Supervisors.
+// "all": Production Manager, Office, Admin. "crew": Supervisors.
 exports.announcementSummary = onCall(async (req) => {
   const me = await requireMember(req);
   const test = isTest(req);
   const scope = req.data?.scope === "crew" ? "crew" : "all";
-  if (scope === "all" && !hasRole(me.roles, annLib.SEE_ALL_ROLES)) throw new HttpsError("permission-denied", "Plant Manager, Office, and Admins only.");
+  if (scope === "all" && !hasRole(me.roles, annLib.SEE_ALL_ROLES)) throw new HttpsError("permission-denied", "Production Manager, Office, and Admins only.");
   if (scope === "crew" && !hasRole(me.roles, [...annLib.CREW_ROLES, "admin"])) throw new HttpsError("permission-denied", "Supervisors only.");
   const today = plantToday();
   const docs = [...(await annCol(false).where("ended", "==", false).get()).docs];
@@ -2357,7 +2365,7 @@ const handoffCol = (test) => col("handoffs", test);
 
 async function requireHandoffRole(req) {
   const me = await requireMember(req);
-  if (!me.roles.some((r) => formsLib.HANDOFF_ROLES.includes(r))) throw new HttpsError("permission-denied", "Handoffs are for Line Leads, Supervisors, the Plant Manager, and Admins.");
+  if (!me.roles.some((r) => formsLib.HANDOFF_ROLES.includes(r))) throw new HttpsError("permission-denied", "Handoffs are for Line Leads, Supervisors, the Production Manager, and Admins.");
   return me;
 }
 
@@ -2544,7 +2552,7 @@ const SHOP_FORM = "clean-shop";
 
 async function requireTaskListRole(req) {
   const me = await requireMember(req);
-  if (!me.roles.some((r) => formsLib.TASKLIST_ROLES.includes(r))) throw new HttpsError("permission-denied", "Line Leads, Supervisors, the Plant Manager, and Admins run the shop task list.");
+  if (!me.roles.some((r) => formsLib.TASKLIST_ROLES.includes(r))) throw new HttpsError("permission-denied", "Line Leads, Supervisors, the Production Manager, and Admins run the shop task list.");
   return me;
 }
 
@@ -2628,12 +2636,12 @@ exports.markShopTaskDone = onCall(async (req) => {
   return { ok: true, name: signer.name, task: label, test };
 });
 
-// Supervisor check, once every task is done: { id, signer: { emp, pin }, device }. Supervisor, Plant Manager, Admin.
+// Supervisor check, once every task is done: { id, signer: { emp, pin }, device }. Supervisor, Production Manager, Admin.
 exports.checkShopTasks = onCall(async (req) => {
   const me = await requireMember(req);
   const test = isTest(req);
   const signer = await requireSignature(req.data);
-  if (!signer.roles.some((r) => formsLib.CHECK_ROLES.includes(r))) throw new HttpsError("permission-denied", "The supervisor check is for Supervisors, the Plant Manager, and Admins.");
+  if (!signer.roles.some((r) => formsLib.CHECK_ROLES.includes(r))) throw new HttpsError("permission-denied", "The supervisor check is for Supervisors, the Production Manager, and Admins.");
   const device = annLib.cleanDevice(req.data?.device);
   const ref = shopCol(test).doc(String(req.data?.id || ""));
   await db.runTransaction(async (tx) => {
@@ -2650,7 +2658,7 @@ exports.checkShopTasks = onCall(async (req) => {
 });
 
 // Who can sign on this device's sheet (line tablets): { id, taskId } -> the person it's assigned to; { id } (check) ->
-// Supervisors, Plant Manager, Admins with a login.
+// Supervisors, Production Manager, Admins with a login.
 exports.shopTaskSigners = onCall(async (req) => {
   const me = await requireMember(req);
   const snap = await shopCol(isTest(req)).doc(String(req.data?.id || "")).get();
@@ -2870,12 +2878,12 @@ exports.signLineLog = onCall(async (req) => {
   return { ok: true, name: signer.name, test };
 });
 
-// Supervisor review (after the operator signed): { id, signer: { emp, pin }, device }. Supervisor, Plant Manager, Admin.
+// Supervisor review (after the operator signed): { id, signer: { emp, pin }, device }. Supervisor, Production Manager, Admin.
 exports.reviewLineLog = onCall(async (req) => {
   const me = await requireMember(req);
   const test = isTest(req);
   const signer = await requireSignature(req.data);
-  if (!signer.roles.some((r) => formsLib.CHECK_ROLES.includes(r))) throw new HttpsError("permission-denied", "The review is for Supervisors, the Plant Manager, and Admins.");
+  if (!signer.roles.some((r) => formsLib.CHECK_ROLES.includes(r))) throw new HttpsError("permission-denied", "The review is for Supervisors, the Production Manager, and Admins.");
   const device = annLib.cleanDevice(req.data?.device);
   const ref = lineLogCol(test).doc(String(req.data?.id || ""));
   await db.runTransaction(async (tx) => {
@@ -2943,7 +2951,7 @@ exports.saveRefDoc = onCall(async (req) => {
 //   machineSpecs/{id}/versions/{auto} the record before each change (restore)
 //   machineSpecs/{id}/removed/{auto}  rows and files taken off (put back within 30 days, then cleared at night)
 //   meta/machineAccess                { roles } — who may read these (the database rules use it)
-// Maintenance and Admin add and edit (Admin → Roles: "Can edit machines"); the Plant Manager views.
+// Maintenance and Admin add and edit (Admin → Roles: "Can edit machines"); the Production Manager views.
 // ---------------------------------------------------------------------------
 
 const machineSpecs = db.collection("machineSpecs");
@@ -3114,13 +3122,13 @@ async function supervisorsOnShift() {
 
 // ---------------------------------------------------------------------------
 // Near-Miss & Incident Reports (Chris, 10-21-2026). Rules in incidents.js. Reports are readable only by Training &
-// Safety, Plant Manager, Admin (database rules); the injured person's details are kept apart (private/osha).
+// Safety, Production Manager, Admin (database rules); the injured person's details are kept apart (private/osha).
 // The reporter follows their own report through myIncidents. Test site: test_incidents / test_incidentActions.
 // ---------------------------------------------------------------------------
 
 async function requireIncidentFollower(req) {
   const me = await requireMember(req);
-  if (!incidentsLib.canFollow(me.roles)) throw new HttpsError("permission-denied", "Only Training & Safety, the Plant Manager, and Admins follow up on reports.");
+  if (!incidentsLib.canFollow(me.roles)) throw new HttpsError("permission-denied", "Only Training & Safety, the Production Manager, and Admins follow up on reports.");
   return me;
 }
 
@@ -3130,7 +3138,7 @@ async function refreshIncident(tx, test, incRef, curStatus, started) {
 }
 
 // Safety-report files (photos, drawn signatures): the PRIVATE storage folder — safety/{incidentId}/… (test site:
-// safety/test/{incidentId}/…). Storage rules let only Training & Safety, Plant Manager, Admin read it; the app shows the
+// safety/test/{incidentId}/…). Storage rules let only Training & Safety, Production Manager, Admin read it; the app shows the
 // files through incidentFiles (never a shareable link). Phones upload photos to safety/incoming/{random id}.jpg.
 const safetyFolder = (test, incidentId) => `safety/${test ? "test/" : ""}${incidentId}`;
 const bucketRef = () => getStorage().bucket();
@@ -3253,6 +3261,7 @@ exports.saveIncidentFollowUp = onCall(async (req) => {
     const started = req.data?.start === true || whys.some(Boolean) || !!rootCause;
     const { status } = await refreshIncident(tx, test, ref, snap.get("status"), started);
     tx.update(ref, { whys, rootCause, status, updatedAt: FieldValue.serverTimestamp(), updatedBy: me.employeeNumber, updatedByName: me.name });
+    if (osha && !me.hr) throw new HttpsError("permission-denied", "The injury record needs HR access.");
     if (osha && ["injury", "first-aid"].includes(snap.get("type"))) tx.set(ref.collection("private").doc("osha"), { ...osha, updatedAt: FieldValue.serverTimestamp(), updatedBy: me.employeeNumber });
     auditRecord(tx, "followed-up", "incident", ref.id, me.employeeNumber, { status, test });
     return { status };
@@ -3304,12 +3313,12 @@ exports.completeIncidentAction = onCall(async (req) => {
   });
 });
 
-// Training & Safety or Plant Manager, with PIN: { id, signer, device } — close (every action done first).
+// Training & Safety or Production Manager, with PIN: { id, signer, device } — close (every action done first).
 exports.closeIncident = onCall(async (req) => {
   await requireMember(req);
   const test = isTest(req);
   const signer = await requireSignature(req.data);
-  if (!incidentsLib.canFollow(signer.roles)) throw new HttpsError("permission-denied", `${signer.name} can't close reports — Training & Safety or the Plant Manager signs.`);
+  if (!incidentsLib.canFollow(signer.roles)) throw new HttpsError("permission-denied", `${signer.name} can't close reports — Training & Safety or the Production Manager signs.`);
   const device = annLib.cleanDevice(req.data?.device);
   return db.runTransaction(async (tx) => {
     const ref = col("incidents", test).doc(String(req.data?.id || ""));
@@ -3375,10 +3384,15 @@ exports.signIncident = onCall(async (req) => {
 
 // Follow-up: { id } — the report's photos and signatures as pictures (read here on the server from the private folder).
 exports.incidentFiles = onCall(async (req) => {
-  await requireIncidentFollower(req);
+  const me = await requireIncidentFollower(req);
   const test = isTest(req);
   const snap = await col("incidents", test).doc(String(req.data?.id || "")).get();
   if (!snap.exists) throw new HttpsError("not-found", "That report no longer exists.");
+  // Without HR access: near-miss / property / spill photos only — no injury photos, no signatures.
+  if (!me.hr) {
+    if (hrLib.photosNeedHr(snap.get("type"))) return { photos: [], signatures: null, hrOnly: true };
+    return { photos: await Promise.all((snap.get("photoPaths") || []).map((p) => fileDataUrl(p, "image/jpeg"))), signatures: null };
+  }
   const sigs = (await snap.ref.collection("private").doc("signatures").get()).data() || null;
   const sigOut = async (s) => (s ? { name: s.name, atMs: s.atMs || null, image: s.path ? await fileDataUrl(s.path, "image/png") : null } : null);
   return {
@@ -3390,7 +3404,7 @@ exports.incidentFiles = onCall(async (req) => {
 // Admins: { year } — that year's injury and first-aid reports with the injury record and signatures, for the locked HR
 // folder (the screen turns it into a PDF). Every export is in the activity log.
 exports.exportInjuryReports = onCall({ timeoutSeconds: 120, memory: "512MiB" }, async (req) => {
-  const adminNumber = await requireAdmin(req);
+  const { employeeNumber: adminNumber } = await requireHr(req);
   const test = isTest(req);
   const year = String(req.data?.year || "");
   if (!/^20\d\d$/.test(year)) throw new HttpsError("invalid-argument", "Pick a year.");
@@ -3459,6 +3473,34 @@ exports.adminMoveSafetyFiles = onCall({ timeoutSeconds: 300, memory: "512MiB" },
   }
   await auditLog.add({ type: "moved", kind: "safety files", recordId: "safety", by: adminNumber, at: FieldValue.serverTimestamp(), photos, signatures, reports });
   return { photos, signatures, reports };
+});
+
+// HR access: { employeeNumber, on } — only someone with HR access can change it (first setup: an Admin, for himself,
+// when nobody has it yet). Every change is in the activity log.
+exports.setHrAccess = onCall(async (req) => {
+  const me = await requireMember(req);
+  const target = pin.normalizeEmployeeNumber(req.data?.employeeNumber);
+  if (!target) throw new HttpsError("invalid-argument", "Pick a person.");
+  const on = req.data?.on === true;
+  const holders = (await employees.where("hrAccess", "==", true).get()).docs.filter((d) => d.get("active") !== false).map((d) => d.id);
+  const check = hrLib.canSetHr(me, target, holders.length > 0);
+  if (!check.ok) throw new HttpsError("permission-denied", check.error);
+  if (hrLib.wouldLeaveNobody(holders, target, on)) throw new HttpsError("failed-precondition", "Someone has to keep HR access — give it to another person first.");
+  await db.runTransaction(async (tx) => {
+    const ref = employees.doc(target);
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "That person isn't in People.");
+    tx.update(ref, { hrAccess: on, updatedAt: FieldValue.serverTimestamp() });
+    tx.create(auditLog.doc(), { type: on ? "hr-access-on" : "hr-access-off", kind: "employee", recordId: target, by: me.employeeNumber, at: FieldValue.serverTimestamp(), firstSetup: !!check.firstSetup });
+  });
+  return { ok: true, employeeNumber: target, on };
+});
+
+// HR access holders: who has it (names only).
+exports.hrAccessList = onCall(async (req) => {
+  await requireHr(req);
+  const snaps = await employees.where("hrAccess", "==", true).get();
+  return { people: snaps.docs.filter((d) => d.get("active") !== false).map((d) => ({ id: d.id, name: d.get("name") || d.id })) };
 });
 
 // After posting a lessons-learned announcement from a near miss: { id, annId }.
@@ -3631,7 +3673,7 @@ exports.adminSaveReelSettings = onCall(async (req) => {
 
 const siloSettingsDoc = db.collection("meta").doc("siloSettings");
 
-// Saves each reading, decides alerts (one per drop), and tells Logistics, Supervisors, and the Plant Manager.
+// Saves each reading, decides alerts (one per drop), and tells Logistics, Supervisors, and the Production Manager.
 async function recordSiloLevels(test, levels, me, source) {
   const ids = Object.keys(levels);
   if (!ids.length) return { saved: 0, alerts: [] };

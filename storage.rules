@@ -25,8 +25,7 @@ service firebase.storage {
         && request.resource.contentType.matches('image/.*|video/.*|application/pdf');
     }
 
-    // Safety reports (near misses, injuries, first aid): the PRIVATE folder. Photos and drawn signatures are readable
-    // only by Training & Safety, Plant Manager, and Admin (checked against the live employee record). Only the server
+    // Safety reports (near misses, injuries, first aid): the PRIVATE folder (checked against the live employee record). Only the server
     // writes here, except the phone's photo upload into safety/incoming/ — a random file name (no employee number, so
     // anonymous near misses stay anonymous), JPEG, under 5 MB. Nobody else can read incoming photos.
     function safetyFollower() {
@@ -40,8 +39,23 @@ service firebase.storage {
         && request.resource.size < 5 * 1024 * 1024
         && request.resource.contentType == 'image/jpeg';
     }
-    match /safety/{allPaths=**} {
-      allow read: if safetyFollower();
+    // HR access (a per-person switch): injury / first-aid photos and every drawn signature. Near-miss, property, and
+    // spill photos stay readable by the people who follow up.
+    function hrAccess() {
+      return signedIn()
+        && firestore.get(/databases/(default)/documents/employees/$(request.auth.token.emp)).data.get('hrAccess', false) == true
+        && firestore.get(/databases/(default)/documents/employees/$(request.auth.token.emp)).data.active != false;
+    }
+    function followUpPhoto(collectionName, incidentId, fileName) {
+      return safetyFollower()
+        && fileName.matches('^photo-[0-9]+[.]jpg$')
+        && !(firestore.get(/databases/(default)/documents/$(collectionName)/$(incidentId)).data.type in ['injury', 'first-aid']);
+    }
+    match /safety/test/{incidentId}/{fileName} {
+      allow read: if hrAccess() || followUpPhoto('test_incidents', incidentId, fileName);
+    }
+    match /safety/{incidentId}/{fileName} {
+      allow read: if incidentId != 'incoming' && incidentId != 'test' && (hrAccess() || followUpPhoto('incidents', incidentId, fileName));
     }
 
     // Everything else stays locked.

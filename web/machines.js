@@ -1,5 +1,5 @@
 // Machines — parts & specs for each machine (Decision 51, updated 10-21-2026). Maintenance and Admin add and edit
-// (Admin → Roles: "Can edit machines"); the Plant Manager views. Kept in the app only for now — nothing goes to Odoo yet,
+// (Admin → Roles: "Can edit machines"); the Production Manager views. Kept in the app only for now — nothing goes to Odoo yet,
 // but the fields match the Decision 51 mapping so sending them later is an add-on.
 // Every change saves the old version first (History → Restore); removed rows and files wait 30 days in Removed.
 

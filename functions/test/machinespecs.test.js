@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert");
 const m = require("../machinespecs");
 
-test("edit rights: Maintenance and Admin until the Roles screen says otherwise; Plant Manager views", () => {
+test("edit rights: Maintenance and Admin until the Roles screen says otherwise; Production Manager views", () => {
   const roles = [{ id: "maintenance" }, { id: "admin" }, { id: "plant-manager" }, { id: "lead", editMachines: true }, { id: "operator" }];
   assert.strictEqual(m.canEditMachines(roles, ["maintenance"]), true);
   assert.strictEqual(m.canEditMachines(roles, ["plant-manager"]), false);

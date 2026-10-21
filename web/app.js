@@ -37,7 +37,7 @@ import { openTestReset } from "./testdata.js";
 import { openTrucks, canViewTrucks, canCheckTrucks } from "./trucks.js";
 import { openReels, openReelAdmin } from "./reels.js";
 import { openWhoToCall, openCallAdmin, lineDownReminder } from "./whotocall.js";
-import { openIncidents, openRotationAdmin, openInjuryExport } from "./incidents.js";
+import { openIncidents, openRotationAdmin, openInjuryExport, openHrAccess } from "./incidents.js";
 import { openSilos, openSiloAdmin, UPDATE_ROLES as SILO_UPDATE_ROLES, ALERT_ROLES as SILO_ALERT_ROLES } from "./silos.js";
 
 const screen = document.getElementById("screen");
@@ -299,7 +299,7 @@ function renderHome() {
 
 // ---------------------------------------------------------------------------
 // Navigation bar (Decision 66): always visible once signed in — a bottom bar on phones and tablets, a side bar on
-// desktops. Home · Map · Checklists (people who work with the machines) · Machines (Maintenance, Plant Manager, Admin)
+// desktops. Home · Map · Checklists (people who work with the machines) · Machines (Maintenance, Production Manager, Admin)
 // · Trucks (Logistics & Distribution; view-only roles find it in More) · Announcements · More.
 // ---------------------------------------------------------------------------
 
@@ -433,7 +433,7 @@ function openMap(station = null) {
     startStation: station,
     onExit: () => go("home"),
     // Office, Sales, Quality, Logistics: the map without machine buttons (Decision 53).
-    // Maintenance, Plant Manager, Admin: the machine's page (parts, specs, service, fixes); others: its Fix Library page.
+    // Maintenance, Production Manager, Admin: the machine's page (parts, specs, service, fixes); others: its Fix Library page.
     onFixes: usesMachines(me().roles) && !canViewMachines(me().roles) ? (machineId) => openFixes(null, machineId) : null,
     onMachine: canViewMachines(me().roles) ? (machineId) => openMachineScreen(machineId, () => openMap(station), "Shop Map") : null,
     onReport: usesMachines(me().roles) ? (machineId) => openReport(null, () => openMap(station), machineId) : null,
@@ -658,6 +658,7 @@ function me() {
     name: data.myself?.name || state.user?.displayName || `Employee ${state.claims.emp}`,
     admin: roles.includes("admin"),
     approver: roles.some((r) => APPROVER_ROLES.includes(r)),
+    hr: data.myself?.hrAccess === true, // HR access: injury details, write-ups, reviews (a per-person switch, not a role)
     fixer: roles.some((r) => FIXER_ROLES.includes(r)),
     issueViewer: roles.includes("plant-manager"), // sees the Open issues board; can't mark fixed
     safetyWatcher: roles.some((r) => ["supervisor", "training-safety", "plant-manager", "admin"].includes(r)),
@@ -691,7 +692,7 @@ function openChecklistScreen(unitId, back) {
 
 // Open issues board (from Odoo).
 function openIssues() {
-  if (!me().fixer && !me().issueViewer) return go("home"); // the board is for Maintenance, Admin, Plant Manager (the database refuses others too)
+  if (!me().fixer && !me().issueViewer) return go("home"); // the board is for Maintenance, Admin, Production Manager (the database refuses others too)
   if (closeModule) closeModule();
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openIssueBoard(screen, { me: me(), onExit: () => go("home"), onReport: () => openReport() });
@@ -725,7 +726,8 @@ function renderAdminMenu() {
     el("button", { class: "btn", type: "button", onclick: () => openModule(openReelAdmin) }, "🏷 QC hold lists"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openCallAdmin) }, "📞 Who to Call"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openRotationAdmin) }, "🗓 Shift rotation"),
-    el("button", { class: "btn", type: "button", onclick: () => openModule(openInjuryExport) }, "🗂 Export injury reports (PDF)"),
+    me().hr ? el("button", { class: "btn", type: "button", onclick: () => openModule(openInjuryExport) }, "🗂 Export injury reports (PDF)") : null,
+    me().hr ? el("button", { class: "btn", type: "button", onclick: () => openModule(openHrAccess) }, "🔒 HR access") : null,
     el("button", { class: "btn", type: "button", onclick: () => openModule(openTrainingAdmin) }, "🎓 Training setup"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openActivity) }, "📜 Admin activity"),
     TEST_MODE ? el("button", { class: "btn secondary", type: "button", onclick: () => openModule((c, o) => openTestReset(c, { ...o, onIssues: () => openIssues() })) }, "🧹 Reset test data") : null,

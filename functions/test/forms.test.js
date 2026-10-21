@@ -76,7 +76,7 @@ test("handoff header: own team, a different incoming team, a date", () => {
   assert.match(f.cleanHandoffHeader({ team: "team-a", toTeam: "team-b", date: "today" }, teams).error, /date/);
 });
 
-test("received: a Line Lead on the incoming team, or a Supervisor / Plant Manager / Admin as backup", () => {
+test("received: a Line Lead on the incoming team, or a Supervisor / Production Manager / Admin as backup", () => {
   const h = { toTeam: "team-b" };
   assert.strictEqual(f.canReceive({ roles: ["lead"], team: "team-b" }, h), true);
   assert.strictEqual(f.canReceive({ roles: ["lead"], team: "team-a" }, h), false);

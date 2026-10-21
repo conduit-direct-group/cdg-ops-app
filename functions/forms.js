@@ -17,7 +17,7 @@ const TASKLIST_ROLES = ["lead", "supervisor", "plant-manager", "admin"];
 const CHECK_ROLES = ["supervisor", "plant-manager", "admin"];
 const PLANT_TZ = "America/Chicago";
 
-// Who writes and reads handoffs (Chris, 10-20-2026: Line Leads, Supervisors, Plant Manager, Admin).
+// Who writes and reads handoffs (Chris, 10-20-2026: Line Leads, Supervisors, Production Manager, Admin).
 const HANDOFF_ROLES = ["lead", "supervisor", "plant-manager", "admin"];
 // Who may sign "received" besides a Line Lead on the incoming team (a backup when no lead is on that team).
 const HANDOFF_BACKUP_ROLES = ["supervisor", "plant-manager", "admin"];
@@ -196,7 +196,7 @@ function cleanHandoffHeader(data, teamIds) {
   return { header: { team, toTeam, date } };
 }
 
-// Who may sign "received": a Line Lead on the incoming team, or (backup) a Supervisor, Plant Manager, or Admin.
+// Who may sign "received": a Line Lead on the incoming team, or (backup) a Supervisor, Production Manager, or Admin.
 function canReceive(person, handoff) {
   const roles = person?.roles || [];
   if (roles.includes("lead") && person.team === handoff.toTeam) return true;

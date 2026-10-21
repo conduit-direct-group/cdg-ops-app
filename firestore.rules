@@ -46,6 +46,11 @@ service cloud.firestore {
       return request.auth.token.emp;
     }
 
+    // HR access (a per-person switch, not a role): injury report details, write-ups, reviews.
+    function hrAccess() {
+      return member() && employee().get('hrAccess', false) == true;
+    }
+
     // Your own employee record (name, roles, on/off) — so the app shows the right buttons the moment an
     // admin changes your roles. Never anyone else's, and never PIN records.
     match /employees/{employeeNumber} {
@@ -298,16 +303,18 @@ service cloud.firestore {
     function incidentFollower() {
       return member() && employee().roles.hasAny(['training-safety', 'plant-manager', 'admin']);
     }
+    // Injury details (the injury record and signatures, in private/) need HR access; everyone who follows up still sees
+    // that a report exists, its status, what happened, root cause, and actions.
     match /incidents/{id} {
       allow read: if incidentFollower();
       match /private/{doc} {
-        allow read: if incidentFollower();
+        allow read: if hrAccess();
       }
     }
     match /test_incidents/{id} {
       allow read: if incidentFollower();
       match /private/{doc} {
-        allow read: if incidentFollower();
+        allow read: if hrAccess();
       }
     }
     match /incidentActions/{id} {

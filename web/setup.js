@@ -15,7 +15,7 @@ const STARTING_ROLES = [
   ["operator", "Operator"],
   ["lead", "Line Lead"],
   ["supervisor", "Supervisor"],
-  ["plant-manager", "Plant Manager"],
+  ["plant-manager", "Production Manager"],
   ["maintenance", "Maintenance"],
   ["quality", "Quality"],
   ["shipping", "Logistics & Distribution"],
@@ -604,7 +604,7 @@ export function openRoles(container, { onExit }) {
       hint: "A person's roles decide what shows on their home screen and what they can do.",
       items: () => data.roles, save: callAdminSaveRole, rename: true,
       meta: (r) => [rolePosts(r) ? "📣 Can post announcements" : null, roleEditsMachines(r) ? "⚙ Can edit machines" : null, rolePostsTrucks(r) ? "🚚 Can post trucks" : null].filter(Boolean).join(" · ") || null,
-      // Who may post announcements (Decision 58). Starts on for Admin, Plant Manager, Supervisor, Training & Safety, Office.
+      // Who may post announcements (Decision 58). Starts on for Admin, Production Manager, Supervisor, Training & Safety, Office.
       members: (r, { kit, show }) => {
         const on = rolePosts(r);
         const flip = async () => {
@@ -638,7 +638,7 @@ export function openRoles(container, { onExit }) {
             el("button", { class: on ? "btn secondary" : "btn", type: "button", disabled: kit.busy, onclick: flip }, on ? "Turn off posting" : "✔ Allow posting")),
           el("div", { class: "card" },
             el("strong", {}, "⚙ Machines"),
-            el("p", { class: "card-note" }, edits ? "People with this role can add and edit machine parts, specs, photos, and notes." : "People with this role can't edit machines. (Maintenance, Plant Manager, and Admin can always view them.)"),
+            el("p", { class: "card-note" }, edits ? "People with this role can add and edit machine parts, specs, photos, and notes." : "People with this role can't edit machines. (Maintenance, Production Manager, and Admin can always view them.)"),
             el("button", { class: edits ? "btn secondary" : "btn", type: "button", disabled: kit.busy, onclick: flipMachines }, edits ? "Turn off editing" : "✔ Allow editing")),
           el("div", { class: "card" },
             el("strong", {}, "🚚 Trucks"),

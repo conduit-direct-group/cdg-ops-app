@@ -26,7 +26,7 @@ import { collection, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/
 // requests, safety concerns) are gone — Needs you covers them.
 export const ROLE_CARDS = [
   ["admin", "Admin", ["system-alerts", "waiting-login"]],
-  ["plant-manager", "Plant Manager", ["pm-people", "ack-gaps", "silos", "reels-week", "incidents-open"]],
+  ["plant-manager", "Production Manager", ["pm-people", "ack-gaps", "silos", "reels-week", "incidents-open"]],
   ["supervisor", "Supervisor", ["crew-gaps", "silos"]],
   ["lead", "Line Lead", []],
   ["operator", "Operator", []],
@@ -216,7 +216,7 @@ function card(c, id) {
     : el("div", { class: c.alert ? "dash-card alert" : "dash-card", "data-card": id }, body);
 }
 
-// Card ids for these roles, in role order, duplicates merged. Plant Manager may have 5; others 4.
+// Card ids for these roles, in role order, duplicates merged. Production Manager may have 5; others 4.
 export function cardsFor(roles) {
   const out = [];
   for (const [role, , ids] of ROLE_CARDS) {
@@ -256,7 +256,7 @@ function needsItems(ctx, roles) {
   const items = [];
   items.push(...announcementItems(ctx.emp, go.announcement));
 
-  // Open safety concerns (urgent requests) — Supervisor, Training & Safety, Plant Manager, Admin.
+  // Open safety concerns (urgent requests) — Supervisor, Training & Safety, Production Manager, Admin.
   const watcher = roles.some((r) => SAFETY_WATCHERS.includes(r));
   if (watcher && data.urgentRequests) {
     const open = data.urgentRequests.filter((r) => r.status !== "done");
@@ -264,7 +264,7 @@ function needsItems(ctx, roles) {
       detail: open[0].lineName || "act now", state: "late", onOpen: pickThen("Safety concerns", open.map((r) => ({ value: r.id, label: `${r.description?.slice(0, 70) || r.typeName}${r.lineName ? ` · ${r.lineName}` : ""}` })), go.request) });
   }
 
-  // Open maintenance requests — Maintenance, Admin, Plant Manager (red when a line is down or it's unsafe).
+  // Open maintenance requests — Maintenance, Admin, Production Manager (red when a line is down or it's unsafe).
   // "Down" comes from the same summary as the line status at the top, so the two always agree. Requests still
   // flagged line-down whose line is running are named as such, so someone marks them back up in Open issues.
   if (machines && roles.some((r) => ISSUE_ROLES.includes(r)) && data.openIssues) {

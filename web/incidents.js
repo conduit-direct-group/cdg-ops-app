@@ -1,12 +1,12 @@
 // Near-Miss & Incident Reports (Chris, 10-21-2026). Anyone reports in under 2 minutes (near misses can be anonymous);
-// Training & Safety, the Plant Manager, and Admins follow up: 5 Whys, corrective actions with owners and due dates,
+// Training & Safety, the Production Manager, and Admins follow up: 5 Whys, corrective actions with owners and due dates,
 // 🆕 Reported → 🔍 Investigating → 🛠 Actions open → ✓ Closed (PIN). Reports are visible only to them (database
 // rules); the reporter sees their own report's status. The app keeps the fields OSHA Forms 300/301 ask for so they
 // can be exported later — it doesn't by itself make the company OSHA-compliant. Rules: functions/incidents.js.
 
 import { el, breakable, friendlyError, spinner, emptyState, banner, toast, picker, confirmSheet } from "./ui.js";
 import { data, onDataChange } from "./data.js";
-import { db, storage, TEST_MODE, callReportIncident, callMyIncidents, callSaveIncidentFollowUp, callAddIncidentAction, callCompleteIncidentAction, callCloseIncident, callMarkIncidentShared, callIncidentPeople, callAdminSaveRotation, callSignIncident, callIncidentFiles, callExportInjuryReports } from "./firebase.js";
+import { db, storage, TEST_MODE, callReportIncident, callMyIncidents, callSaveIncidentFollowUp, callAddIncidentAction, callCompleteIncidentAction, callCloseIncident, callMarkIncidentShared, callIncidentPeople, callAdminSaveRotation, callSignIncident, callIncidentFiles, callExportInjuryReports, callSetHrAccess, callHrAccessList, callAdminListEmployees } from "./firebase.js";
 import { collection, doc, getDoc, getDocs, query, where } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 import { ref, uploadBytesResumable } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-storage.js";
 import { signOff, deviceInfo } from "./signoff.js";
@@ -55,7 +55,7 @@ async function uploadSafetyPhoto(file, onProgress) {
 
 // ---- Home ----------------------------------------------------------------------------------------------------------
 
-// Follow-up (Training & Safety, Plant Manager, Admin): new reports. Owners: their corrective actions (gray with the
+// Follow-up (Training & Safety, Production Manager, Admin): new reports. Owners: their corrective actions (gray with the
 // due date, red on or after it).
 export function incidentItems(roles, me, go) {
   const items = [];
@@ -74,7 +74,7 @@ export function incidentItems(roles, me, go) {
   return items;
 }
 
-// Home → At a glance (Training & Safety, Plant Manager).
+// Home → At a glance (Training & Safety, Production Manager).
 export function incidentCard(id, onOpen) {
   if (id === "incidents-open") {
     if (!data.openIncidents) return null;
@@ -177,7 +177,7 @@ export function openIncidents(container, { me, start = "home", startId = null, o
       f.type === "injury" ? el("section", { class: "inc-911", role: "alert" },
         el("strong", {}, "Emergency? Call 911 first."),
         el("a", { class: "btn big danger", href: "tel:911" }, "🚑 Call 911"),
-        el("p", {}, "Serious injuries have short OSHA reporting deadlines — notify the Plant Manager immediately.")) : null,
+        el("p", {}, "Serious injuries have short OSHA reporting deadlines — notify the Production Manager immediately.")) : null,
       banner(ui),
       el("form", { class: "card inc-form", onsubmit: (e) => { e.preventDefault(); submit(); } },
         label("What kind?"),
@@ -190,13 +190,13 @@ export function openIncidents(container, { me, start = "home", startId = null, o
         hurt ? [label("Who was hurt?"), el("input", { class: "field", value: f.hurtName, maxlength: "80", oninput: (e) => { f.hurtName = e.target.value; } }),
           label("Body part (optional)"), el("input", { class: "field", value: f.bodyPart, maxlength: "80", placeholder: "e.g. left hand", oninput: (e) => { f.bodyPart = e.target.value; } }),
           el("p", { class: "inc-hr-note" }, "📄 Medical paperwork goes to HR, not here."),
-          el("p", { class: "card-note" }, "Only Training & Safety, the Plant Manager, and Admins see this report.")] : null,
+          el("p", { class: "card-note" }, "Only Training & Safety, the Production Manager, and Admins see this report.")] : null,
         label("What happened?"), el("textarea", { class: "field", rows: "3", maxlength: "2000", oninput: (e) => { f.what = e.target.value; } }, f.what),
         label("What was done right away?"), el("textarea", { class: "field", rows: "2", maxlength: "1000", placeholder: "e.g. stopped the line, cleaned up the spill", oninput: (e) => { f.immediate = e.target.value; } }, f.immediate),
         hurt ? null : [label("Witnesses (optional)"), el("input", { class: "field", value: f.witnesses, maxlength: "300", oninput: (e) => { f.witnesses = e.target.value; } })],
         label("Photos (optional)"),
         f.photos.length ? el("div", { class: "inc-photos" }, f.photos.map((p) => el("img", { src: p.preview, alt: "Photo" }))) : null,
-        el("p", { class: "card-note" }, "Photos of the area or the damage. Only Training & Safety, the Plant Manager, and Admins can see them."),
+        el("p", { class: "card-note" }, "Photos of the area or the damage. Only Training & Safety, the Production Manager, and Admins can see them."),
         fileInput,
         el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => fileInput.click() }, "📷 Add photo"),
         ui.upload ? el("p", { class: "card-note", role: "status" }, ui.upload) : null,
@@ -276,9 +276,11 @@ export function openIncidents(container, { me, start = "home", startId = null, o
       const inc = (await pick("incidents")) || (TEST_MODE ? await pick("test_incidents") : null);
       if (!inc) { ui.one = { missing: true }; return render(); }
       const base = inc.test ? "test_incidents" : "incidents";
-      const osha = ["injury", "first-aid"].includes(inc.type) ? ((await getDoc(doc(db, base, inc.id, "private", "osha"))).data() || {}) : null;
+      const hurtType = ["injury", "first-aid"].includes(inc.type);
+      // Injury details (record, signatures, injury photos) need HR access — without it, only that they exist.
+      const osha = hurtType && me.hr ? ((await getDoc(doc(db, base, inc.id, "private", "osha"))).data() || {}) : null;
       const acts = await getDocs(query(collection(db, inc.test ? "test_incidentActions" : "incidentActions"), where("incidentId", "==", inc.id)));
-      const sigs = SIG_TYPES.includes(inc.type) ? ((await getDoc(doc(db, base, inc.id, "private", "signatures"))).data() || { supervisor: null, witnesses: [] }) : null;
+      const sigs = SIG_TYPES.includes(inc.type) && me.hr ? ((await getDoc(doc(db, base, inc.id, "private", "signatures"))).data() || { supervisor: null, witnesses: [] }) : null;
       ui.files = null;
       callIncidentFiles({ id: inc.id }).then((r) => { ui.files = r.data; render(); }, () => { ui.files = { error: true }; render(); });
       ui.one = { inc, osha, sigs, actions: acts.docs.map((d) => ({ id: d.id, ...d.data() })), whys: [...(inc.whys || []), "", "", "", "", ""].slice(0, 5), rootCause: inc.rootCause || "", newAction: { text: "", ownerEmp: "", due: "" } };
@@ -337,7 +339,7 @@ export function openIncidents(container, { me, start = "home", startId = null, o
       ...head,
       el("h1", {}, `${TYPE_LABEL[i.type]}`),
       el("p", { class: "hint" }, `${STATUS[i.status]} · ${fmtWhen(i.occurredAt)} · ${i.placeName || ""}${i.test ? " · TEST" : ""}`),
-      i.type === "injury" ? el("p", { class: "inc-osha-note" }, "Serious injuries have short OSHA reporting deadlines — notify the Plant Manager immediately.") : null,
+      i.type === "injury" ? el("p", { class: "inc-osha-note" }, "Serious injuries have short OSHA reporting deadlines — notify the Production Manager immediately.") : null,
       banner(ui),
       el("div", { class: "mach-cols" },
         el("div", { class: "mach-col" },
@@ -345,7 +347,14 @@ export function openIncidents(container, { me, start = "home", startId = null, o
             el("strong", {}, "What happened"), el("p", { class: "inc-text" }, breakable(i.what)),
             i.immediate ? [el("strong", {}, "Done right away"), el("p", { class: "inc-text" }, breakable(i.immediate))] : null,
             el("p", { class: "card-note" }, [i.anonymous ? "Sent anonymously" : `Reported by ${i.createdByName || ""}`, i.witnesses ? `Witnesses: ${i.witnesses}` : null].filter(Boolean).join(" · ")),
-            i.photoPaths?.length ? (ui.files === null ? spinner("Loading photos…") : ui.files.error ? el("p", { class: "card-note" }, "Photos couldn't load — reopen the report.") : el("div", { class: "inc-photos" }, ui.files.photos.filter(Boolean).map((u) => el("img", { src: u, alt: "Photo", class: "inc-photo-big" })))) : null),
+            i.photoPaths?.length ? (ui.files === null ? spinner("Loading photos…") : ui.files.error ? el("p", { class: "card-note" }, "Photos couldn't load — reopen the report.") : ui.files.hrOnly ? el("p", { class: "card-note" }, `🔒 ${i.photoPaths.length} photo${i.photoPaths.length === 1 ? "" : "s"} on file — HR access needed to see injury photos.`) : el("div", { class: "inc-photos" }, ui.files.photos.filter(Boolean).map((u) => el("img", { src: u, alt: "Photo", class: "inc-photo-big" })))) : null),
+          SIG_TYPES.includes(i.type) && !me.hr ? el("section", { class: i.supervisorSigned ? "card" : "card inc-sig-missing" },
+            el("strong", {}, "🔒 Injury details"),
+            el("p", {}, i.supervisorSigned ? `✍ Signed by the Supervisor (${i.supervisorSignedName}) · ${i.witnessSignatures || 0} witness signature${i.witnessSignatures === 1 ? "" : "s"}` : "⚠ The Supervisor hasn't signed yet — the report can't be closed until they do."),
+            el("p", { class: "card-note" }, "The injury record, signatures, and photos need HR access."),
+            closed ? null : el("div", { class: "btn-row" },
+              i.supervisorSigned ? null : el("button", { class: "btn", type: "button", onclick: () => show("sign", { signFor: { id: i.id, role: "supervisor", back: "one" } }) }, "✍ Supervisor signs"),
+              el("button", { class: "btn secondary", type: "button", onclick: () => show("sign", { signFor: { id: i.id, role: "witness", back: "one" } }) }, "✍ Add a witness signature"))) : null,
           o.sigs ? el("section", { class: o.sigs.supervisor ? "card" : "card inc-sig-missing" },
             el("strong", {}, "✍ Signatures"),
             o.sigs.supervisor ? sigView("Supervisor", o.sigs.supervisor) : el("p", {}, "⚠ The Supervisor hasn't signed yet — the report can't be closed until they do."),
@@ -388,8 +397,8 @@ export function openIncidents(container, { me, start = "home", startId = null, o
           el("section", { class: "card" },
             el("strong", {}, "Close"),
             closed ? el("p", {}, `✓ Closed by ${i.closed?.byName || ""}`) : [
-              el("p", { class: "card-note" }, openActs ? `Finish the ${openActs} open action${openActs === 1 ? "" : "s"} first.` : o.sigs && !o.sigs.supervisor ? "The Supervisor signs first." : "Training & Safety or the Plant Manager signs with their PIN."),
-              el("button", { class: "btn", type: "button", disabled: ui.busy || openActs > 0 || (o.sigs && !o.sigs.supervisor), onclick: close }, "✓ Close with PIN"),
+              el("p", { class: "card-note" }, openActs ? `Finish the ${openActs} open action${openActs === 1 ? "" : "s"} first.` : SIG_TYPES.includes(i.type) && !i.supervisorSigned ? "The Supervisor signs first." : "Training & Safety or the Production Manager signs with their PIN."),
+              el("button", { class: "btn", type: "button", disabled: ui.busy || openActs > 0 || (SIG_TYPES.includes(i.type) && !i.supervisorSigned), onclick: close }, "✓ Close with PIN"),
             ]),
           i.type === "near-miss" && onAnnounce ? el("section", { class: "card" },
             el("strong", {}, "Lessons learned"),
@@ -477,7 +486,7 @@ export function openIncidents(container, { me, start = "home", startId = null, o
   function thanksView() {
     return [
       el("h1", {}, "✓ Thank you"),
-      el("p", {}, ui.sentAnon ? "Your near miss was sent anonymously. You can follow its status from this device under My reports." : "Training & Safety and the Plant Manager have it. You can follow its status under My reports."),
+      el("p", {}, ui.sentAnon ? "Your near miss was sent anonymously. You can follow its status from this device under My reports." : "Training & Safety and the Production Manager have it. You can follow its status under My reports."),
       el("button", { class: "btn", type: "button", onclick: () => show("home") }, "Done"),
     ];
   }
@@ -598,5 +607,60 @@ export function openInjuryExport(container, { onExit }) {
   }
 
   render();
+  return () => {};
+}
+
+// ---- Admin → HR access (only people who have it see this) ------------------------------------------------------
+// HR access covers injury report details (record, signatures, injury photos, the yearly export) and, when built,
+// write-ups and reviews. Only someone with HR access can give it or take it away; the server and rules enforce it.
+
+export function openHrAccess(container, { onExit }) {
+  const ui = { holders: null, people: null, pick: "", busy: false, message: "", messageKind: "", retry: null };
+
+  async function load() {
+    try {
+      const [h, p] = await Promise.all([callHrAccessList(), callAdminListEmployees()]);
+      Object.assign(ui, { holders: h.data.people, people: p.data.employees.filter((e) => e.active) });
+    } catch (err) { Object.assign(ui, { message: friendlyError(err), messageKind: "error", retry: load }); }
+    render();
+  }
+
+  async function set(emp, on) {
+    const who = (ui.people || []).find((p) => p.employeeNumber === emp)?.name || emp;
+    if (!(await confirmSheet({ title: on ? `Give ${who} HR access?` : `Take HR access away from ${who}?`, text: on ? "They'll see injury details (record, signatures, injury photos), the yearly export, and write-ups and reviews when those are built." : "They'll still see that injury reports exist and their status, but not the details.", confirmLabel: on ? "Give HR access" : "Take it away", danger: !on }))) return;
+    Object.assign(ui, { busy: true, message: "", retry: null });
+    render();
+    try {
+      await callSetHrAccess({ employeeNumber: emp, on });
+      toast(on ? `${who} has HR access` : `HR access removed from ${who}`);
+      Object.assign(ui, { busy: false, pick: "" });
+      await load();
+    } catch (err) { Object.assign(ui, { busy: false, message: friendlyError(err), messageKind: "error", retry: () => set(emp, on) }); render(); }
+  }
+
+  function render() {
+    const holders = ui.holders || [];
+    const others = (ui.people || []).filter((p) => !holders.some((h) => h.id === p.employeeNumber));
+    container.replaceChildren(...[
+      el("button", { class: "link-btn", type: "button", onclick: onExit }, "← Admin"),
+      el("h1", {}, "🔒 HR access"),
+      el("p", { class: "hint" }, "Separate from Admin. Covers injury report details, the yearly injury export, and write-ups and reviews when built. Only people with HR access can change this list."),
+      banner(ui),
+      ui.holders === null ? spinner() : [
+        el("section", { class: "card" },
+          el("strong", {}, `Has HR access · ${holders.length}`),
+          el("div", { class: "person-list" }, holders.map((h) => el("div", { class: "person-row static" },
+            el("span", { class: "person-name" }, h.name),
+            holders.length > 1 ? el("button", { class: "link-btn danger-link", type: "button", disabled: ui.busy, onclick: () => set(h.id, false) }, "Take it away") : el("span", { class: "person-meta" }, "The only one — give it to someone else before removing"))))),
+        el("section", { class: "card" },
+          el("strong", {}, "Give HR access"),
+          picker({ title: "Person", value: ui.pick, placeholder: "Pick a person…", options: others.map((p) => ({ value: p.employeeNumber, label: `${p.name} (${p.employeeNumber})` })), onChange: (v) => { ui.pick = v; render(); } }),
+          el("button", { class: "btn", type: "button", disabled: ui.busy || !ui.pick, onclick: () => set(ui.pick, true) }, "Give HR access")),
+      ],
+    ].flat(3).filter(Boolean));
+  }
+
+  render();
+  load();
   return () => {};
 }

@@ -17,8 +17,8 @@ const LISTS = ["roles", "lines", "machines", "fixCategories", "checklistTemplate
 // their status). requestsForMe = "Need something?" requests sent to me (admins: every open one);
 // requestsSent = the ones I sent. plantStatus = { down: { lineId: { since, machineIds } } } (lines with an open
 // line-down report; test site: real + practice). urgentRequests = open urgent requests (safety concerns) —
-// Supervisor, Training & Safety, Plant Manager, Admin only (others: []).
-// announcements = the ones meant for me, plus the ones I track (poster, supervisors); Plant Manager, Office, Admin:
+// Supervisor, Training & Safety, Production Manager, Admin only (others: []).
+// announcements = the ones meant for me, plus the ones I track (poster, supervisors); Production Manager, Office, Admin:
 // all of them (newest first; test site: practice ones too, marked TEST). mySigs = { [annId]: { [version]: sig } }
 // — my own "Read & understood" signatures.
 export const data = {
@@ -120,7 +120,7 @@ export function startData(me) {
   } else {
     data.openIssues = []; // the board is for Maintenance and Admin (the database refuses others too)
   }
-  data.myIssues = []; // Open issues are for Maintenance, Admin, Plant Manager only (Decision 54)
+  data.myIssues = []; // Open issues are for Maintenance, Admin, Production Manager only (Decision 54)
   const forMe = (name) =>
     me.admin ? query(collection(db, name), where("status", "in", ["open", "in-progress"])) : query(collection(db, name), where("recipients", "array-contains", me.emp));
   stopFns.push(watchMerged("requestsForMe", forMe("requests"), forMe("test_requests"), requestOrder));
@@ -130,7 +130,7 @@ export function startData(me) {
   // Silo levels (test site: practice levels laid over the real ones) and their low lines (Admin → Silo alerts).
   stopFns.push(watchMerged("siloLevels", collection(db, "siloLevels"), collection(db, "test_siloLevels"), byId));
   stopFns.push(onSnapshot(doc(db, "meta", "siloSettings"), (snap) => { data.siloSettings = snap.exists() ? snap.data() : {}; changed(); }, () => { data.siloSettings = {}; changed(); }));
-  // Safety reports: open ones and the last 12 months (Training & Safety, Plant Manager, Admin — the database refuses
+  // Safety reports: open ones and the last 12 months (Training & Safety, Production Manager, Admin — the database refuses
   // everyone else), and my corrective actions (everyone). Shift rotation (which team works when).
   if ((me.roles || []).some((r) => ["training-safety", "plant-manager", "admin"].includes(r))) {
     const openInc = (name) => query(collection(db, name), where("status", "in", ["reported", "investigating", "actions"]));
@@ -151,7 +151,7 @@ export function startData(me) {
   const taps = (name) => query(collection(db, name), where("atMs", ">=", Date.now() - 86400000));
   stopFns.push(watchMerged("callTaps", taps("callTaps"), taps("test_callTaps"), (a, b) => (b.atMs || 0) - (a.atMs || 0)));
   // Flagged reels / QC hold: reels not done yet (everyone — the floor works the list), the last 15 days (Quality,
-  // Plant Manager, Supervisor, Admin — for their cards), and the reason / size / SDR lists.
+  // Production Manager, Supervisor, Admin — for their cards), and the reason / size / SDR lists.
   const openReels = (name) => query(collection(db, name), where("status", "in", ["flagged", "staged", "reclaim"]));
   stopFns.push(watchMerged("openReels", openReels("reels"), openReels("test_reels"), (a, b) => (a.dueMs || 0) - (b.dueMs || 0)));
   if ((me.roles || []).some((r) => ["quality", "plant-manager", "supervisor", "admin"].includes(r))) {
@@ -162,12 +162,12 @@ export function startData(me) {
     data.recentReels = [];
   }
   stopFns.push(onSnapshot(doc(db, "meta", "reelSettings"), (snap) => { data.reelSettings = snap.exists() ? snap.data() : {}; changed(); }, () => { data.reelSettings = {}; changed(); }));
-  // Machines — parts & specs: Maintenance, Plant Manager, Admin (and roles allowed in Admin → Roles). Others: refused → [].
+  // Machines — parts & specs: Maintenance, Production Manager, Admin (and roles allowed in Admin → Roles). Others: refused → [].
   stopFns.push(onSnapshot(collection(db, "machineSpecs"),
     (snap) => { data.machineSpecs = snap.docs.map((d) => ({ id: d.id, ...d.data() })); data.machineSpecsError = false; changed(); },
     (err) => { data.machineSpecs = data.machineSpecs || []; data.machineSpecsError = err.code !== "permission-denied"; changed(); }));
   stopFns.push(watchAnnouncements(me));
-  // Shift handoffs not yet received (drafts and sent ones) — Line Leads, Supervisors, Plant Manager, Admin.
+  // Shift handoffs not yet received (drafts and sent ones) — Line Leads, Supervisors, Production Manager, Admin.
   if ((me.roles || []).some((r) => ["lead", "supervisor", "plant-manager", "admin"].includes(r))) {
     const open = (name) => query(collection(db, name), where("status", "in", ["draft", "sent"]));
     stopFns.push(watchMerged("handoffsOpen", open("handoffs"), open("test_handoffs"), (a, b) => String(b.date).localeCompare(String(a.date))));

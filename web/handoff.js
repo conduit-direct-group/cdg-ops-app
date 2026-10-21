@@ -2,7 +2,7 @@
 // (Admin → Forms); each handoff keeps the revision it was started on. What the app already knows (lines down,
 // open maintenance issues, overdue checklists) is shown read-only and captured when it's sent.
 // The outgoing lead signs with PIN; a Line Lead on the incoming team signs received (it's on their Home until then).
-// Readers: Line Leads, Supervisors, Plant Manager, Admin.
+// Readers: Line Leads, Supervisors, Production Manager, Admin.
 
 import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, picker, collapsible } from "./ui.js";
 import { dueByShiftEnd } from "./shift.js";
@@ -26,7 +26,7 @@ const fmtDay = (day) => (day ? new Date(`${day}T12:00:00`).toLocaleDateString("e
 const teamName = (id) => (data.teams || []).find((t) => t.id === id)?.name || id || "?";
 const myTeam = () => data.myself?.team || null;
 
-// Handoffs waiting for me to sign received: sent to my team (Line Leads). Backups (Supervisor, Plant Manager, Admin)
+// Handoffs waiting for me to sign received: sent to my team (Line Leads). Backups (Supervisor, Production Manager, Admin)
 // can sign too, from the Handoff screen, but it isn't put on their Home.
 export function toReceive(me) {
   if (!(me.roles || []).includes("lead")) return [];
@@ -334,7 +334,7 @@ export function openHandoff(container, { me, startId = null, onExit }) {
     if (list.length) return el("p", { class: "message" }, `Waiting for ${team}'s Line Lead to sign received. It's on the Home screen of: ${list.map((p) => p.name).join(", ")}.${mine}`);
     return el("div", { class: "message error", role: "alert" },
       el("strong", {}, `Nobody on ${team} can see this on Home yet.`),
-      el("p", {}, `No one on ${team} has the Line Lead role with a login. Set one in Admin → People (role Line Lead, team ${teamName(h.toTeam)}). Until then a Supervisor, the Plant Manager, or an Admin can open it here and sign received.${mine}`));
+      el("p", {}, `No one on ${team} has the Line Lead role with a login. Set one in Admin → People (role Line Lead, team ${teamName(h.toTeam)}). Until then a Supervisor, the Production Manager, or an Admin can open it here and sign received.${mine}`));
   }
 
   function renderView(h) {

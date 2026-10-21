@@ -7,7 +7,7 @@
 //
 // Posting (add, edit, copy from yesterday, remove): roles with "Can post trucks" on the Roles screen (role.postTrucks);
 // until set, Logistics & Distribution. Checking off ("Arrived" / "Out the door", one tap, no PIN): Logistics &
-// Distribution and anyone who can post. Viewing: those, plus Plant Manager, Sales, Admin.
+// Distribution and anyone who can post. Viewing: those, plus Production Manager, Sales, Admin.
 
 const POST_DEFAULT = ["shipping"];
 const CHECK_ROLES = ["shipping"];

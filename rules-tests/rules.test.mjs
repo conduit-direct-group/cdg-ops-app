@@ -1,6 +1,6 @@
 // Security rules tests (Chris, 10-21-2026): proves on the Firebase emulator — a pretend copy, never the real project —
 // that the database and storage rules block what they should. Run from C:\CDG\rules-tests:  npm test
-// Made-up people only: 9001 operator, 9002 Training & Safety, 9003 Plant Manager, 9004 Admin, 9005 Maintenance,
+// Made-up people only: 9001 operator, 9002 Training & Safety, 9003 Production Manager, 9004 Admin, 9005 Maintenance,
 // 9006 Supervisor, 9007 turned-off Admin.
 
 import { test, before, after, beforeEach } from "node:test";
@@ -33,12 +33,18 @@ beforeEach(async () => {
     const d = ctx.firestore();
     for (const [emp, roles] of Object.entries(PEOPLE)) await setDoc(doc(d, "employees", emp), { name: `Person ${emp}`, roles, active: true });
     await setDoc(doc(d, "employees", "9007"), { name: "Off", roles: ["admin"], active: false });
+    // 9009 = an Admin WITH HR access (like Chris); 9010 = HR access but turned off. 9004 is an Admin without HR access.
+    await setDoc(doc(d, "employees", "9009"), { name: "HR Admin", roles: ["admin"], active: true, hrAccess: true });
+    await setDoc(doc(d, "employees", "9010"), { name: "HR off", roles: ["admin"], active: false, hrAccess: true });
     await setDoc(doc(d, "pinSecrets", "9001"), { hash: "x", salt: "y" });
     for (const c of ["incidents", "test_incidents"]) {
       await setDoc(doc(d, c, "inc1"), { type: "injury", what: "Cut hand", createdBy: "9001", status: "reported" });
       await setDoc(doc(d, c, "inc1", "private", "osha"), { injuredName: "Person 9001", bodyPart: "Left hand" });
       await setDoc(doc(d, c, "inc1", "private", "signatures"), { supervisor: { name: "Person 9006", path: "safety/inc1/sig-supervisor.png" } });
+      await setDoc(doc(d, c, "inc2"), { type: "near-miss", what: "Pallet too high", status: "reported", anonymous: true });
     }
+    await uploadBytes(ref(ctx.storage(), "safety/inc2/photo-1.jpg"), jpg, { contentType: "image/jpeg" });
+    await uploadBytes(ref(ctx.storage(), "safety/test/inc2/photo-1.jpg"), jpg, { contentType: "image/jpeg" });
     await setDoc(doc(d, "incidentActions", "a1"), { incidentId: "inc1", ownerEmp: "9001", text: "Add a guard", due: "2026-10-30" });
     await setDoc(doc(d, "incidentActions", "a2"), { incidentId: "inc1", ownerEmp: "9005", text: "Fix the light", due: "2026-10-30" });
     await setDoc(doc(d, "issues", "i1"), { open: true, title: "Puller down", lineDown: true });
@@ -50,21 +56,25 @@ beforeEach(async () => {
 
 // ---- incidents (database) -----------------------------------------------------------------------------------------
 
-test("incident reports: only Training & Safety, Plant Manager, Admin can read — not the reporter, operators, supervisors", async () => {
+test("incident reports: Training & Safety, Production Manager, Admin can see a report exists and its status — not the reporter, operators, supervisors", async () => {
   for (const c of ["incidents", "test_incidents"]) {
-    for (const emp of [9002, 9003, 9004]) await assertSucceeds(getDoc(doc(db(emp), c, "inc1")));
+    for (const emp of [9002, 9003, 9004, 9009]) await assertSucceeds(getDoc(doc(db(emp), c, "inc1")));
     for (const emp of [9001, 9005, 9006, 9007]) await assertFails(getDoc(doc(db(emp), c, "inc1")));
     await assertFails(getDoc(doc(env.unauthenticatedContext().firestore(), c, "inc1")));
   }
 });
 
-test("injury details and signatures (private) follow the same rule", async () => {
+test("injury details and signatures (private) need HR access — an Admin without it can't read them", async () => {
   for (const c of ["incidents", "test_incidents"]) {
     for (const part of ["osha", "signatures"]) {
-      for (const emp of [9002, 9003, 9004]) await assertSucceeds(getDoc(doc(db(emp), c, "inc1", "private", part)));
-      for (const emp of [9001, 9005, 9006]) await assertFails(getDoc(doc(db(emp), c, "inc1", "private", part)));
+      await assertSucceeds(getDoc(doc(db(9009), c, "inc1", "private", part)));
+      for (const emp of [9001, 9002, 9003, 9004, 9005, 9006, 9007, 9010]) await assertFails(getDoc(doc(db(emp), c, "inc1", "private", part)));
     }
   }
+});
+
+test("nobody can give themselves HR access from a phone", async () => {
+  await assertFails(setDoc(doc(db(9004), "employees", "9004"), { name: "x", roles: ["admin"], active: true, hrAccess: true }));
 });
 
 test("nobody can write incidents from a phone (only the server writes)", async () => {
@@ -82,11 +92,18 @@ test("corrective actions: the owner sees their own, not other people's; follow-u
 
 // ---- safety photos and signatures (storage) ---------------------------------------------------------------------
 
-test("safety photos and signatures: only Training & Safety, Plant Manager, Admin can open them", async () => {
+test("injury photos and every signature: HR access only — not Training & Safety, Production Manager, or an Admin without it", async () => {
   for (const path of ["safety/inc1/photo-1.jpg", "safety/inc1/sig-supervisor.png", "safety/test/inc1/photo-1.jpg"]) {
-    for (const emp of [9002, 9003, 9004]) await assertSucceeds(getBytes(ref(st(emp), path)));
-    for (const emp of [9001, 9005, 9006, 9007]) await assertFails(getBytes(ref(st(emp), path)));
+    await assertSucceeds(getBytes(ref(st(9009), path)));
+    for (const emp of [9001, 9002, 9003, 9004, 9005, 9006, 9007, 9010]) await assertFails(getBytes(ref(st(emp), path)));
     await assertFails(getBytes(ref(env.unauthenticatedContext().storage(), path)));
+  }
+});
+
+test("near-miss photos: the people who follow up (Training & Safety, Production Manager, Admin) — not operators or supervisors", async () => {
+  for (const path of ["safety/inc2/photo-1.jpg", "safety/test/inc2/photo-1.jpg"]) {
+    for (const emp of [9002, 9003, 9004, 9009]) await assertSucceeds(getBytes(ref(st(emp), path)));
+    for (const emp of [9001, 9005, 9006, 9007]) await assertFails(getBytes(ref(st(emp), path)));
   }
 });
 
@@ -97,8 +114,9 @@ test("phones can only drop a photo into safety/incoming with a random name — n
   await assertFails(uploadBytes(ref(st(9001), "safety/incoming/Ab3dE5gH7jK9mN1pQ3sTuV.jpg"), jpg, { contentType: "application/pdf" }));
   await assertFails(uploadBytes(ref(st(9001), "safety/inc1/photo-9.jpg"), jpg, { contentType: "image/jpeg" }));
   await assertFails(uploadBytes(ref(st(9004), "safety/inc1/photo-9.jpg"), jpg, { contentType: "image/jpeg" }));
-  // The uploader (and other operators) can't read incoming photos back.
+  // Nobody can read incoming photos back — not the uploader, not even HR.
   await assertFails(getBytes(ref(st(9001), "safety/incoming/Ab3dE5gH7jK9mN1pQ3sTuV.jpg")));
+  await assertFails(getBytes(ref(st(9009), "safety/incoming/Ab3dE5gH7jK9mN1pQ3sTuV.jpg")));
 });
 
 // ---- PINs and people ---------------------------------------------------------------------------------------------
@@ -123,7 +141,7 @@ test("employee records: you see only your own", async () => {
 
 // ---- open issues -------------------------------------------------------------------------------------------------
 
-test("open issues board: Maintenance, Plant Manager, Admin only", async () => {
+test("open issues board: Maintenance, Production Manager, Admin only", async () => {
   for (const emp of [9005, 9003, 9004]) await assertSucceeds(getDoc(doc(db(emp), "issues", "i1")));
   for (const emp of [9001, 9002, 9006, 9007]) await assertFails(getDoc(doc(db(emp), "issues", "i1")));
 });
