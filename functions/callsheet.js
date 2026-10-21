@@ -22,7 +22,7 @@ function phoneOk(v) {
   return d.length === 10 || (d.length === 11 && d[0] === "1");
 }
 
-// tel: link that dials the number, waits, then the extension: tel:+13197747562,4
+// tel: link that dials the number, waits, then the extension: tel:+13195550100,4 (555 = made-up example)
 function telLink(number, ext = "") {
   let d = digits(number);
   if (d.length === 10) d = `1${d}`;
