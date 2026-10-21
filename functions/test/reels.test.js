@@ -49,3 +49,13 @@ test("reason, size, and SDR lists", () => {
   assert.deepStrictEqual(r.STARTING_SDRS, ["SDR 11", "SDR 13.5"]);
   assert.match(r.cleanChoices(["SDR 11", "sdr 11"], "walls").error, /twice/);
 });
+
+test("color comes from the list once it exists; typed only until then", () => {
+  const base = { lineId: "line-1", tag: "1", reasonId: "ovality" };
+  assert.strictEqual(r.cleanFlag({ ...base, product: { size: "1\"", sdr: "SDR 11", color: "Orange" } }, ctx).reel.product.color, "Orange");
+  const withList = { ...ctx, colors: ["Orange", "Black"] };
+  assert.strictEqual(r.cleanFlag({ ...base, product: { size: "1\"", sdr: "SDR 11", color: "Black" } }, withList).reel.product.color, "Black");
+  assert.match(r.cleanFlag({ ...base, product: { size: "1\"", sdr: "SDR 11", color: "Purple" } }, withList).error, /color/);
+  assert.deepStrictEqual(r.cleanChoices([], "colors", { optional: true }), { list: [] });
+  assert.match(r.cleanChoices([], "sizes").error, /Add 1/);
+});

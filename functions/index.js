@@ -3552,6 +3552,7 @@ async function reelSettings() {
     reasons: d.reasons || reelsLib.STARTING_REASONS.map((name) => ({ id: reelsLib.slug(name), name, active: true })),
     sizes: d.sizes || reelsLib.STARTING_SIZES,
     sdrs: d.sdrs || reelsLib.STARTING_SDRS,
+    colors: d.colors || [], // empty until Chris's product list arrives
   };
 }
 
@@ -3567,7 +3568,7 @@ exports.flagReel = onCall(async (req) => {
   const test = isTest(req);
   const [settings, lineSnaps, shiftForm] = await Promise.all([reelSettings(), lines.get(), formTemplates.doc(formsLib.SHIFT_FORM).get()]);
   const activeLines = lineSnaps.docs.filter((l) => l.get("active") !== false);
-  const { reel, error } = reelsLib.cleanFlag(req.data, { reasons: settings.reasons, lineIds: activeLines.map((l) => l.id), isOurFile: isOurUpload });
+  const { reel, error } = reelsLib.cleanFlag(req.data, { reasons: settings.reasons, colors: settings.colors, lineIds: activeLines.map((l) => l.id), isOurFile: isOurUpload });
   if (error) throw new HttpsError("invalid-argument", error);
   const now = Date.now();
   const shift = formsLib.currentShift(shiftForm.get("shifts") || [], now);
@@ -3644,7 +3645,7 @@ exports.reelDeciders = onCall(async (req) => {
   return { people: people.map((p) => ({ emp: p.id, name: p.name })) };
 });
 
-// Admins: { reasons?, sizes?, sdrs? } — the lists on the flag screen.
+// Admins: { reasons?, sizes?, sdrs?, colors? } — the lists on the flag screen (colors may be empty for now).
 exports.adminSaveReelSettings = onCall(async (req) => {
   const adminNumber = await requireAdmin(req);
   const cur = await reelSettings();
@@ -3654,9 +3655,9 @@ exports.adminSaveReelSettings = onCall(async (req) => {
     if (error) throw new HttpsError("invalid-argument", error);
     next.reasons = reasons;
   }
-  for (const [k, what] of [["sizes", "sizes"], ["sdrs", "walls (SDR)"]]) {
+  for (const [k, what, optional] of [["sizes", "sizes"], ["sdrs", "walls (SDR)"], ["colors", "colors", true]]) {
     if (req.data?.[k] === undefined) continue;
-    const { list, error } = reelsLib.cleanChoices(req.data[k], what);
+    const { list, error } = reelsLib.cleanChoices(req.data[k], what, { optional: !!optional });
     if (error) throw new HttpsError("invalid-argument", error);
     next[k] = list;
   }

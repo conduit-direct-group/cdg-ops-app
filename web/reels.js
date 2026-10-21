@@ -26,6 +26,7 @@ export function reelSettings() {
     reasons: d.reasons || STARTING_REASONS.map((name) => ({ id: slug(name), name, active: true })),
     sizes: d.sizes || STARTING_SIZES,
     sdrs: d.sdrs || STARTING_SDRS,
+    colors: d.colors || [], // empty until Chris's product list arrives
   };
 }
 
@@ -191,7 +192,11 @@ export function openReels(container, { me, onExit, backLabel = "Home", start = "
         label("Size"), chips([...s.sizes, "other"], f.size, (v) => { f.size = v; }, (x) => (x === "other" ? "Other size…" : x)),
         f.size === "other" ? el("input", { class: "field", value: f.otherSize, maxlength: "30", placeholder: "Specialty size, e.g. 3\"", oninput: (e) => { f.otherSize = e.target.value; } }) : null,
         label("Wall"), chips(s.sdrs, f.sdr, (v) => { f.sdr = v; }),
-        label("Color"), el("input", { class: "field", value: f.color, maxlength: "30", placeholder: "e.g. Orange", oninput: (e) => { f.color = e.target.value; } }),
+        label("Color"),
+        s.colors.length
+          ? chips(s.colors, f.color, (v) => { f.color = v; })
+          : [el("input", { class: "field", value: f.color, maxlength: "30", placeholder: "e.g. Orange", oninput: (e) => { f.color = e.target.value; } }),
+             el("p", { class: "card-note" }, "Type the color for now — a pick list is coming with the product list.")],
         label("Photo (optional)"),
         f.photo ? el("img", { class: "reel-photo", src: f.photo, alt: "Reel photo" }) : null,
         fileInput,
@@ -360,7 +365,7 @@ export function openReels(container, { me, onExit, backLabel = "Home", start = "
 
 export function openReelAdmin(container, { onExit }) {
   const ui = { draft: null, busy: false, message: "", messageKind: "", retry: null };
-  const draft = () => ui.draft || (ui.draft = (() => { const s = reelSettings(); return { reasons: s.reasons.map((r) => ({ ...r })), sizes: s.sizes.join("\n"), sdrs: s.sdrs.join("\n") }; })());
+  const draft = () => ui.draft || (ui.draft = (() => { const s = reelSettings(); return { reasons: s.reasons.map((r) => ({ ...r })), sizes: s.sizes.join("\n"), sdrs: s.sdrs.join("\n"), colors: s.colors.join("\n") }; })());
 
   async function save() {
     const d = draft();
@@ -369,7 +374,7 @@ export function openReelAdmin(container, { onExit }) {
     render();
     try {
       const lines = (t) => t.split("\n").map((x) => x.trim()).filter(Boolean);
-      await callAdminSaveReelSettings({ reasons: d.reasons.filter((r) => r.name.trim()), sizes: lines(d.sizes), sdrs: lines(d.sdrs) });
+      await callAdminSaveReelSettings({ reasons: d.reasons.filter((r) => r.name.trim()), sizes: lines(d.sizes), sdrs: lines(d.sdrs), colors: lines(d.colors) });
       Object.assign(ui, { busy: false, draft: null });
       toast("QC hold lists saved");
       render();
@@ -394,7 +399,8 @@ export function openReelAdmin(container, { onExit }) {
         el("button", { class: "btn secondary", type: "button", onclick: () => { d.reasons.push({ name: "", active: true }); render(); } }, "+ Add reason"),
         el("div", { class: "spec-fields" },
           el("label", { class: "spec-field" }, el("span", { class: "field-label strong" }, "Sizes (one per line)"), el("textarea", { class: "field", rows: "6", oninput: (e) => { d.sizes = e.target.value; } }, d.sizes)),
-          el("label", { class: "spec-field" }, el("span", { class: "field-label strong" }, "Walls / SDR (one per line)"), el("textarea", { class: "field", rows: "6", oninput: (e) => { d.sdrs = e.target.value; } }, d.sdrs))),
+          el("label", { class: "spec-field" }, el("span", { class: "field-label strong" }, "Walls / SDR (one per line)"), el("textarea", { class: "field", rows: "6", oninput: (e) => { d.sdrs = e.target.value; } }, d.sdrs)),
+          el("label", { class: "spec-field" }, el("span", { class: "field-label strong" }, "Colors (one per line)"), el("textarea", { class: "field", rows: "6", placeholder: "Waiting on the product list — leave empty and operators type the color", oninput: (e) => { d.colors = e.target.value; } }, d.colors))),
         el("p", { class: "card-note" }, "Specialty sizes don't need to be listed — people can type them on the flag screen."),
         el("button", { class: "btn", type: "submit", disabled: ui.busy }, ui.busy ? "Saving…" : "Save")),
     ].filter(Boolean));

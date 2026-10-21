@@ -31,9 +31,10 @@ const clean = (v, max) => (typeof v === "string" ? v.replace(/\s+/g, " ").trim()
 const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
 const canDecide = (roles) => (roles || []).some((r) => DECIDE_ROLES.includes(r));
 
-// A new flagged reel. reasons: the active list from meta/reelSettings. isOurFile(url) for the photo.
-// Product: size and SDR from the lists or typed (specialty sizes), color typed (until the scheduling program fills it).
-function cleanFlag(raw, { reasons = [], lineIds = [], isOurFile = () => false } = {}) {
+// A new flagged reel. reasons / colors: the lists from meta/reelSettings. isOurFile(url) for the photo.
+// Product (Chris, 10-21-2026): the operator picks size, SDR, and color from lists (specialty sizes typed). Until the
+// color list is entered (waiting on Chris's product list), color is typed; once it exists, color must come from it.
+function cleanFlag(raw, { reasons = [], lineIds = [], colors = [], isOurFile = () => false } = {}) {
   if (!lineIds.includes(raw?.lineId)) return { error: "Pick the line." };
   const winder = WINDERS.includes(raw?.winder) ? raw.winder : "";
   const noTag = raw?.noTag === true;
@@ -46,6 +47,7 @@ function cleanFlag(raw, { reasons = [], lineIds = [], isOurFile = () => false } 
   const product = { size: clean(raw?.product?.size, 30), sdr: clean(raw?.product?.sdr, 20), color: clean(raw?.product?.color, 30) };
   if (!product.size) return { error: "Pick the size (or type a specialty size)." };
   if (!product.sdr) return { error: "Pick the wall (SDR)." };
+  if (colors.length && !colors.includes(product.color)) return { error: "Pick the color from the list." };
   const photo = raw?.photo ? String(raw.photo) : null;
   if (photo && !isOurFile(photo)) return { error: "The photo didn't upload. Add it again." };
   const note = typeof raw?.note === "string" ? raw.note.trim().slice(0, 500) : "";
@@ -92,7 +94,9 @@ function cleanReasons(raw) {
 }
 
 // Size or SDR list from Admin: 1–40 short names, no repeats.
-function cleanChoices(raw, what) {
+// optional: true allows an empty list (colors, until Chris's product list arrives).
+function cleanChoices(raw, what, { optional = false } = {}) {
+  if (optional && Array.isArray(raw) && !raw.some((v) => clean(v, 30))) return { list: [] };
   if (!Array.isArray(raw) || !raw.length || raw.length > 40) return { error: `Add 1 to 40 ${what}.` };
   const out = [];
   for (const v of raw) {
