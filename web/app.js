@@ -30,6 +30,7 @@ import { openHandoff, usesHandoffs } from "./handoff.js";
 import { openFormsAdmin, editableForms } from "./forms.js";
 import { openShopTasks, runsShopList } from "./shoptasks.js";
 import { openStations, stationForms } from "./stations.js";
+import { openLineCheck } from "./linecheck.js";
 
 const screen = document.getElementById("screen");
 const deviceBadge = document.getElementById("device-badge");
@@ -255,6 +256,7 @@ function renderHome() {
       handoff: (id) => openHandoffScreen(id),
       shop: (id) => openShopScreen(id),
       station: (formId) => openStationScreen(formId),
+      lineCheck: (lineId, logId) => openLineCheckScreen(lineId, logId),
     },
   });
   // What this screen shows follows the roles (or the role an admin is viewing as) — Decision 53.
@@ -271,6 +273,9 @@ function renderHome() {
     runsShopList(shown) ? el("button", { class: "btn big secondary", type: "button", onclick: () => openShopScreen() }, "🧹 Keep the Shop Clean") : null,
     // Station checklists (Reel Building, Reclamation): people who work on the floor.
     usesMachines(shown) && stationForms().length ? el("button", { class: "btn big secondary", type: "button", onclick: () => openStationScreen() }, "📋 Station checklists") : null,
+    // Line Check Log (every 30 minutes per line, on the line tablet): people who work with the machines.
+    usesMachines(shown) && (data.formTemplates || []).some((t) => t.id === "line-check" && t.active !== false)
+      ? el("button", { class: "btn big secondary", type: "button", onclick: () => openLineCheckScreen() }, "📈 Line Check Log") : null,
     // People whose role may edit a form (Admin → Roles) but who aren't admins.
     !m.admin && editableForms(m.roles).length ? el("button", { class: "btn secondary", type: "button", onclick: () => openFormsScreen() }, "📝 Edit forms") : null,
     // Open issues: Maintenance, Admin, Plant Manager only.
@@ -335,6 +340,13 @@ function openStationScreen(formId = null) {
   if (closeModule) closeModule();
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openStations(screen, { me: me(), startForm: formId, onExit: () => go("home") });
+}
+
+// Line Check Log: pick a line, or open one line's log (from Home or a notification).
+function openLineCheckScreen(lineId = null, logId = null) {
+  if (closeModule) closeModule();
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  closeModule = openLineCheck(screen, { me: me(), startLine: lineId, startLogId: logId, onExit: () => go("home") });
 }
 
 // Forms editor for non-admins allowed on the Roles screen (admins use Admin → Forms).
@@ -718,10 +730,12 @@ onAuthStateChanged(auth, async (user) => {
     const ann = params.get("ann"); // an announcement notification
     const handoff = params.get("handoff"); // a shift handoff notification
     const shop = params.get("shop"); // a shop task notification
-    if (cat || machine || req || issuesLink || ann || handoff || shop) history.replaceState(null, "", location.pathname);
+    const lineLog = params.get("linelog"); // an out-of-spec line check alert
+    if (cat || machine || req || issuesLink || ann || handoff || shop || lineLog) history.replaceState(null, "", location.pathname);
     if (ann) openAnn(ann);
     else if (handoff) openHandoffScreen(handoff);
     else if (shop) openShopScreen(shop);
+    else if (lineLog) openLineCheckScreen(lineLog.split("__")[2] || null, lineLog);
     else if (req) openRequestScreen(req);
     else if (issuesLink) openIssues();
     else if (cat || machine) openFixes(cat, machine);

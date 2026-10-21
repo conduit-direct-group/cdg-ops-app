@@ -2701,6 +2701,165 @@ exports.signStationList = onCall(async (req) => {
 });
 
 // ---------------------------------------------------------------------------
+// Line Check Log (Decision 64) — from the Line Daily Checklist. The readings, checks, limits, how often, and the
+// page-2 plant-wide items come from the "line-check" form (Admin → Forms); shift times from Keep the Shop Clean.
+//   lineLogs/{date__shift__lineId}   formRev, formName, sections (page-1 copy), lineId, lineName, shift, date, startMs,
+//                                    endMs, everyMinutes, rounds [{at, emp, name, device, values, flags, notes}],
+//                                    notes, operatorSign {emp,name,at,device}, review {emp,name,at,device}
+//   plantLogs/{date__shift}          formRev, sections (page-2 copy), shift, date, taps { fieldId: [{at, emp, name}] }
+// A round is recorded as the person signed in (the paper's initials). Out-of-range readings and "Not OK" checks need a
+// note and alert the Line Lead. The operator signs at end of shift (PIN); a Supervisor reviews (PIN).
+// Test site: test_lineLogs / test_plantLogs; alerts go only to the person testing.
+// ---------------------------------------------------------------------------
+
+const lineLogCol = (test) => col("lineLogs", test);
+const plantLogCol = (test) => col("plantLogs", test);
+const LINE_FORM = "line-check";
+
+async function lineCheckSetup() {
+  const [form, shiftForm] = await Promise.all([formTemplates.doc(LINE_FORM).get(), formTemplates.doc(formsLib.SHIFT_FORM).get()]);
+  if (!form.exists || form.get("active") === false) throw new HttpsError("failed-precondition", "The Line Check Log isn't set up yet. An admin loads it in Admin → Forms.");
+  if (!shiftForm.exists) throw new HttpsError("failed-precondition", "Shift times aren't set up yet (they're on the Keep the Shop Clean form in Admin → Forms).");
+  const now = formsLib.currentShift(shiftForm.get("shifts"), Date.now());
+  if (!now) throw new HttpsError("failed-precondition", "No shift is running right now (check the shift times in Admin → Forms).");
+  return { form, now };
+}
+
+// Open this shift's log for a line (made the first time), and the plant-wide page 2: { lineId }.
+exports.startLineLog = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const lineId = String(req.data?.lineId || "");
+  const line = await lines.doc(lineId).get();
+  if (!line.exists || line.get("active") === false) throw new HttpsError("invalid-argument", "Pick a line.");
+  const { form, now } = await lineCheckSetup();
+  const sections = form.get("sections") || [];
+  const lineSections = sections.filter((s) => s.scope !== "plant")
+    .map((s) => ({ ...s, fields: s.fields.filter((f) => formsLib.appliesTo(f, lineId)) })).filter((s) => s.fields.length);
+  const ref = lineLogCol(test).doc(`${now.date}__${now.shift.id}__${lineId}`);
+  const plantRef = plantLogCol(test).doc(`${now.date}__${now.shift.id}`);
+  await db.runTransaction(async (tx) => {
+    const [a, b] = await tx.getAll(ref, plantRef);
+    const base = { formRev: form.get("rev"), formName: form.get("name"), shift: now.shift, date: now.date, startMs: now.startMs, endMs: now.endMs, createdAt: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}) };
+    if (!a.exists) {
+      tx.create(ref, { ...base, intro: form.get("intro") || "", sections: lineSections, lineId, lineName: line.get("name"), everyMinutes: form.get("everyMinutes") || 30, rounds: [], notes: "", operatorSign: null, review: null, createdBy: me.employeeNumber });
+    }
+    if (!b.exists) tx.create(plantRef, { ...base, sections: sections.filter((s) => s.scope === "plant"), taps: {}, createdBy: me.employeeNumber });
+  });
+  return { id: ref.id, plantId: plantRef.id };
+});
+
+// Record one round: { id, values, notes, device }. Flags (out of range / Not OK) need notes and alert the Line Lead.
+exports.addLineRound = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const device = annLib.cleanDevice(req.data?.device);
+  const ref = lineLogCol(test).doc(String(req.data?.id || ""));
+  const r = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "That line log no longer exists.");
+    const l = snap.data();
+    if (l.operatorSign) throw new HttpsError("failed-precondition", "This log was already signed at end of shift.");
+    const fields = (l.sections || []).flatMap((s) => s.fields);
+    const { round, error } = formsLib.cleanRound(fields, l.lineId, req.data?.values, req.data?.notes);
+    if (error) throw new HttpsError("invalid-argument", error);
+    const entry = { ...round, at: new Date(), emp: me.employeeNumber, name: me.name, device };
+    tx.update(ref, { rounds: [...(l.rounds || []), entry], updatedAt: FieldValue.serverTimestamp() });
+    return { l, round, fields };
+  });
+  let alerted = 0;
+  if (r.round.flags.length) {
+    const people = await peopleList();
+    const leads = people.filter((p) => p.active && p.roles.includes("lead"));
+    const onLine = leads.filter((p) => p.homeLineId === r.l.lineId).map((p) => p.id);
+    const to = test ? [me.employeeNumber] : onLine.length ? onLine : leads.map((p) => p.id);
+    const what = r.round.flags.map((id) => r.fields.find((f) => f.id === id)?.label).filter(Boolean).join(", ");
+    alerted = await pushTo(to, { title: `${test ? "[TEST] " : ""}⚠ ${r.l.lineName}: check out of spec`, body: `${me.name}: ${what}`, url: `/?linelog=${ref.id}`, urgent: true });
+  }
+  return { ok: true, flags: r.round.flags.length, alerted, test };
+});
+
+// Notes / issues for the line this shift: { id, notes }.
+exports.saveLineNotes = onCall(async (req) => {
+  await requireMember(req);
+  const test = isTest(req);
+  const notes = typeof req.data?.notes === "string" ? req.data.notes.trim().slice(0, 4000) : "";
+  const ref = lineLogCol(test).doc(String(req.data?.id || ""));
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "That line log no longer exists.");
+    if (snap.get("operatorSign")) throw new HttpsError("failed-precondition", "This log was already signed at end of shift.");
+    tx.update(ref, { notes, updatedAt: FieldValue.serverTimestamp() });
+  });
+  return { ok: true };
+});
+
+// Page 2: one tap stamps the time and name: { id (plant log), fieldId }.
+exports.tapPlantItem = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const ref = plantLogCol(test).doc(String(req.data?.id || ""));
+  const count = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "That plant log no longer exists.");
+    const p = snap.data();
+    const field = (p.sections || []).flatMap((s) => s.fields).find((f) => f.id === req.data?.fieldId);
+    if (!field) throw new HttpsError("invalid-argument", "That item isn't on this log.");
+    const list = [...(p.taps?.[field.id] || []), { at: new Date(), emp: me.employeeNumber, name: me.name }];
+    if (list.length > 100) throw new HttpsError("failed-precondition", "That's more than 100 times this shift.");
+    tx.update(ref, { taps: { ...(p.taps || {}), [field.id]: list }, updatedAt: FieldValue.serverTimestamp() });
+    return list.length;
+  });
+  return { ok: true, count, test };
+});
+
+// End of shift — operator signs: { id, signer: { emp, pin }, device }. At least one round recorded.
+exports.signLineLog = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const signer = await requireSignature(req.data);
+  const device = annLib.cleanDevice(req.data?.device);
+  const ref = lineLogCol(test).doc(String(req.data?.id || ""));
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "That line log no longer exists.");
+    const l = snap.data();
+    if (l.operatorSign) throw new HttpsError("failed-precondition", `Already signed by ${l.operatorSign.name}.`);
+    if (!(l.rounds || []).length) throw new HttpsError("failed-precondition", "Record at least one check before signing.");
+    tx.update(ref, { operatorSign: { emp: signer.employeeNumber, name: signer.name, at: new Date(), device }, updatedAt: FieldValue.serverTimestamp() });
+    logSignoff(tx, test, { kind: "line-log", refId: ref.id, version: l.formRev, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber });
+  });
+  return { ok: true, name: signer.name, test };
+});
+
+// Supervisor review (after the operator signed): { id, signer: { emp, pin }, device }. Supervisor, Plant Manager, Admin.
+exports.reviewLineLog = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const signer = await requireSignature(req.data);
+  if (!signer.roles.some((r) => formsLib.CHECK_ROLES.includes(r))) throw new HttpsError("permission-denied", "The review is for Supervisors, the Plant Manager, and Admins.");
+  const device = annLib.cleanDevice(req.data?.device);
+  const ref = lineLogCol(test).doc(String(req.data?.id || ""));
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "That line log no longer exists.");
+    const l = snap.data();
+    if (!l.operatorSign) throw new HttpsError("failed-precondition", "The operator signs first, at end of shift.");
+    if (l.review) throw new HttpsError("failed-precondition", `Already reviewed by ${l.review.name}.`);
+    tx.update(ref, { review: { emp: signer.employeeNumber, name: signer.name, at: new Date(), device }, updatedAt: FieldValue.serverTimestamp() });
+    logSignoff(tx, test, { kind: "line-log-review", refId: ref.id, version: l.formRev, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber });
+  });
+  return { ok: true, name: signer.name, test };
+});
+
+// Supervisors who can review on this device (line tablets).
+exports.lineLogReviewers = onCall(async (req) => {
+  const me = await requireMember(req);
+  const people = (await peopleList()).filter((p) => p.active && p.loginEnabled && p.id !== me.employeeNumber && p.roles.some((r) => formsLib.CHECK_ROLES.includes(r)));
+  return { people: people.map((p) => ({ emp: p.id, name: p.name })) };
+});
+
+// ---------------------------------------------------------------------------
 // Shop map (plant floor map). Company content — kept in the database only, read by signed-in people:
 //   floorMap/layout          size, building outline, zones, icons
 //   floorStations/{id}       position, shape, label, description, linked documents, machineId (M-number or null)

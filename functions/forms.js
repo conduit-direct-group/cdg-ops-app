@@ -6,8 +6,10 @@
 // Records (a handoff, a checklist) copy the fields of the revision they were started on, so a later edit never
 // changes what someone already filled in or signed. A change applies to the next record started.
 
-const FIELD_TYPES = ["number", "percent", "yesno", "text", "longtext", "datetime", "time", "task"];
-const FORM_KINDS = ["handoff", "tasklist", "station"];
+const FIELD_TYPES = ["number", "percent", "yesno", "text", "longtext", "datetime", "time", "task", "check", "tally"];
+const FORM_KINDS = ["handoff", "tasklist", "station", "linecheck"];
+// Line Check Log: readings (numbers) and checks (OK / Not OK) every N minutes per line; page 2 = plant-wide tallies.
+const LINECHECK_TYPES = ["number", "check", "tally", "text"];
 // Station checklists (Reel Building, Reclamation): one per station per shift; anyone on the floor fills it in.
 const SHIFT_FORM = "clean-shop"; // the shift times (and "turns red") live on this form and are shared by all shift lists
 // Shift task lists (Keep the Shop Clean): who starts them, assigns tasks, and does the supervisor check.
@@ -59,9 +61,24 @@ function cleanTemplate(data) {
       if (!FIELD_TYPES.includes(f?.type)) return { error: `Pick a type for “${label}”.` };
       if (kind === "tasklist" && f.type !== "task") return { error: `“${label}” must be a task.` };
       if (kind === "handoff" && f.type === "task") return { error: `“${label}”: tasks go on task lists and station checklists.` };
-      fields.push({ id: fid, label, type: f.type, perLine: f.perLine === true, unit: clean(f?.unit, 12), help: clean(f?.help, 400) });
+      if (kind !== "linecheck" && ["check", "tally"].includes(f.type)) return { error: `“${label}”: checks and tallies go on the Line Check Log.` };
+      const field = { id: fid, label, type: f.type, perLine: f.perLine === true, unit: clean(f?.unit, 12), help: clean(f?.help, 400) };
+      if (kind === "linecheck") {
+        const extra = cleanLineCheckField(f, label, raw?.scope === "plant");
+        if (extra.error) return { error: extra.error };
+        Object.assign(field, extra.field);
+      }
+      fields.push(field);
     }
-    sections.push({ id, title, help: clean(raw?.help, 400), fields });
+    const section = { id, title, help: clean(raw?.help, 400), fields };
+    if (kind === "linecheck") section.scope = raw?.scope === "plant" ? "plant" : "line";
+    sections.push(section);
+  }
+  if (kind === "linecheck") {
+    const everyMinutes = Number(data?.everyMinutes ?? 30);
+    if (!Number.isInteger(everyMinutes) || everyMinutes < 5 || everyMinutes > 240) return { error: "A check is due every 5 to 240 minutes." };
+    if (!sections.some((s) => s.scope === "line")) return { error: "Add at least one section of line readings." };
+    return { template: { name, kind, intro, sections, everyMinutes } };
   }
   if (kind !== "tasklist") return { template: { name, kind, intro, sections } };
   // Task lists: the shifts (name, start, end — plant time) and when unfinished tasks turn red.
@@ -243,6 +260,88 @@ function taskListState(list, nowMs) {
   return { state: !allDone && red ? "late" : "open", done, total: tasks.length, allDone };
 }
 
+// ---- Line Check Log ------------------------------------------------------------------------------------------
+
+const numOrNull = (v) => (v === null || v === undefined || v === "" ? null : Number.isFinite(Number(v)) ? Number(v) : NaN);
+
+// The Line Check extras on a field: allowed range (min/max for all lines, optionally different per line), which lines
+// it's on (empty = all), and for page-2 tallies the expected count per shift. No limits = never red (Chris, 10-20-2026:
+// limits come later with the new equipment).
+function cleanLineCheckField(f, label, plant) {
+  if (!LINECHECK_TYPES.includes(f.type)) return { error: `“${label}”: the Line Check Log takes numbers, checks, tallies, or short text.` };
+  if (plant !== (f.type === "tally")) return { error: plant ? `“${label}”: plant-wide items are tallies (one tap per time it's done).` : `“${label}”: tallies go in a plant-wide section.` };
+  const out = { lines: Array.isArray(f.lines) ? [...new Set(f.lines.map(String))].filter((x) => /^[a-z][a-z0-9-]{0,40}$/.test(x)) : [] };
+  if (f.type === "number") {
+    const min = numOrNull(f.min), max = numOrNull(f.max);
+    if (Number.isNaN(min) || Number.isNaN(max) || (min !== null && max !== null && min > max)) return { error: `“${label}”: the allowed range doesn't make sense.` };
+    out.min = min;
+    out.max = max;
+    out.lineLimits = {};
+    for (const [lineId, r] of Object.entries(f.lineLimits || {})) {
+      if (!/^[a-z][a-z0-9-]{0,40}$/.test(lineId)) continue;
+      const a = numOrNull(r?.min), b = numOrNull(r?.max);
+      if (Number.isNaN(a) || Number.isNaN(b) || (a !== null && b !== null && a > b)) return { error: `“${label}”: the range for one line doesn't make sense.` };
+      if (a !== null || b !== null) out.lineLimits[lineId] = { min: a, max: b };
+    }
+  }
+  if (f.type === "tally") {
+    const a = numOrNull(f.expectMin), b = numOrNull(f.expectMax);
+    if (Number.isNaN(a) || Number.isNaN(b) || (a !== null && (a < 0 || a > 100)) || (b !== null && (b < 0 || b > 100)) || (a !== null && b !== null && a > b)) return { error: `“${label}”: expected times per shift should be like 4 to 6.` };
+    out.expectMin = a;
+    out.expectMax = b;
+  }
+  return { field: out };
+}
+
+const appliesTo = (field, lineId) => !field.lines?.length || field.lines.includes(lineId);
+
+// The allowed range for a reading on a line: that line's own range if set, else the all-lines range. null = none.
+function limitsFor(field, lineId) {
+  const own = field.lineLimits?.[lineId];
+  const min = own && (own.min !== null || own.max !== null) ? own.min : field.min ?? null;
+  const max = own && (own.min !== null || own.max !== null) ? own.max : field.max ?? null;
+  return min === null && max === null ? null : { min, max };
+}
+
+// One round (one check) on one line: readings and checks, checked against the revision the log started on.
+// Out-of-range readings and "Not OK" checks are flagged and each needs a note. Returns { round } or { error }.
+// fields = the line-reading fields (page 1); values { fieldId: number | true | false | text }; notes { fieldId: text }.
+function cleanRound(fields, lineId, values, notes) {
+  const out = { values: {}, flags: [], notes: {} };
+  for (const f of fields || []) {
+    if (!appliesTo(f, lineId) || f.type === "tally") continue;
+    const raw = values?.[f.id];
+    if (raw === null || raw === undefined || raw === "") continue;
+    if (f.type === "number") {
+      const n = Number(String(raw).replace(/,/g, ""));
+      if (!Number.isFinite(n) || Math.abs(n) > 1e7) return { error: `“${f.label}” must be a number.` };
+      out.values[f.id] = n;
+      const lim = limitsFor(f, lineId);
+      if (lim && ((lim.min !== null && n < lim.min) || (lim.max !== null && n > lim.max))) out.flags.push(f.id);
+    } else if (f.type === "check") {
+      if (raw !== true && raw !== false) return { error: `Mark “${f.label}” OK or Not OK.` };
+      out.values[f.id] = raw;
+      if (raw === false) out.flags.push(f.id);
+    } else {
+      out.values[f.id] = clean(String(raw), 200);
+    }
+  }
+  if (!Object.keys(out.values).length) return { error: "Record at least one reading or check." };
+  for (const id of out.flags) {
+    const note = clean(notes?.[id], 500);
+    const f = fields.find((x) => x.id === id);
+    if (note.length < 3) return { error: `“${f.label}” is ${f.type === "check" ? "Not OK" : "out of range"} — add a note saying what you did.` };
+    out.notes[id] = note;
+  }
+  return { round: out };
+}
+
+// When the next check is due: everyMinutes after the last round (or after the shift started). { dueAt, overdue }.
+function dueState(lastAt, startMs, everyMinutes, nowMs) {
+  const dueAt = (lastAt || startMs) + everyMinutes * 60000;
+  return { dueAt, overdue: nowMs > dueAt, minutes: Math.round(Math.abs(dueAt - nowMs) / 60000) };
+}
+
 // What still stops a station checklist from being signed: unticked tasks and empty number fields.
 function stationMissing(sections, values) {
   const out = [];
@@ -256,5 +355,6 @@ function stationMissing(sections, values) {
 module.exports = {
   FIELD_TYPES, FORM_KINDS, HANDOFF_ROLES, HANDOFF_BACKUP_ROLES, TASKLIST_ROLES, CHECK_ROLES,
   SHIFT_FORM, cleanShifts, plantClock, plantTimeToMs, currentShift, taskListState, stationMissing,
+  LINECHECK_TYPES, appliesTo, limitsFor, cleanRound, dueState,
   canEditForm, cleanTemplate, describeChange, cleanValue, cleanValues, cleanHandoffHeader, canReceive, incomingLeads,
 };

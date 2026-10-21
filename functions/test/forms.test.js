@@ -139,3 +139,53 @@ test("station checklists: tasks and numbers together; signing needs every task t
   assert.deepStrictEqual(f.stationMissing(template.sections, values), []);
   assert.match(f.cleanTemplate({ name: "H", kind: "handoff", sections: [{ title: "A", fields: [{ label: "X", type: "task" }] }] }).error, /task lists and station/);
 });
+
+// ---- Line Check Log ----
+const lineForm = {
+  name: "Practice line check", kind: "linecheck", everyMinutes: 30,
+  sections: [
+    { title: "Readings", fields: [
+      { label: "Vac", type: "number", min: 1, max: 2, lineLimits: { "line-3": { min: 5, max: 6 } } },
+      { label: "Temp", type: "number" },
+      { label: "Looks good", type: "check" },
+      { label: "Steam", type: "check", lines: ["line-3"] },
+    ] },
+    { title: "Plant", scope: "plant", fields: [{ label: "Bins", type: "tally", expectMin: 4, expectMax: 6 }] },
+  ],
+};
+
+test("line check form: numbers/checks per line, tallies only plant-wide, every 5–240 min, ranges must make sense", () => {
+  const { template } = f.cleanTemplate(lineForm);
+  assert.strictEqual(template.everyMinutes, 30);
+  assert.deepStrictEqual(template.sections.map((s) => s.scope), ["line", "plant"]);
+  assert.deepStrictEqual(template.sections[0].fields[0].lineLimits, { "line-3": { min: 5, max: 6 } });
+  assert.strictEqual(template.sections[0].fields[1].min, null);
+  assert.deepStrictEqual(template.sections[0].fields[3].lines, ["line-3"]);
+  assert.match(f.cleanTemplate({ ...lineForm, everyMinutes: 1 }).error, /5 to 240/);
+  assert.match(f.cleanTemplate({ ...lineForm, sections: [lineForm.sections[0], { title: "P", scope: "plant", fields: [{ label: "X", type: "number" }] }] }).error, /tallies/);
+  assert.match(f.cleanTemplate({ ...lineForm, sections: [{ title: "R", fields: [{ label: "X", type: "number", min: 5, max: 1 }] }] }).error, /range/);
+  assert.match(f.cleanTemplate({ name: "S", kind: "station", sections: [{ title: "A", fields: [{ label: "X", type: "check" }] }] }).error, /Line Check/);
+});
+
+test("limits: a line's own range wins; no range = never red", () => {
+  const fields = f.cleanTemplate(lineForm).template.sections[0].fields;
+  assert.deepStrictEqual(f.limitsFor(fields[0], "line-1"), { min: 1, max: 2 });
+  assert.deepStrictEqual(f.limitsFor(fields[0], "line-3"), { min: 5, max: 6 });
+  assert.strictEqual(f.limitsFor(fields[1], "line-1"), null);
+});
+
+test("a round: out-of-range and Not OK are flagged and need a note; L3-only checks skipped elsewhere", () => {
+  const fields = f.cleanTemplate(lineForm).template.sections[0].fields;
+  const ok = f.cleanRound(fields, "line-1", { vac: "1.5", temp: "400", "looks-good": true, steam: false }, {});
+  assert.deepStrictEqual(ok.round, { values: { vac: 1.5, temp: 400, "looks-good": true }, flags: [], notes: {} });
+  assert.match(f.cleanRound(fields, "line-1", { vac: 3 }, {}).error, /out of range — add a note/);
+  const flagged = f.cleanRound(fields, "line-3", { vac: 3, steam: false }, { vac: "Adjusted the valve", steam: "Bled the line" });
+  assert.deepStrictEqual(flagged.round.flags, ["vac", "steam"]);
+  assert.match(f.cleanRound(fields, "line-1", {}, {}).error, /at least one/);
+  assert.match(f.cleanRound(fields, "line-1", { temp: "hot" }, {}).error, /number/);
+});
+
+test("next check: every N minutes from the last round, or from shift start", () => {
+  assert.deepStrictEqual(f.dueState(0, 1000 * 60000, 30, 1010 * 60000), { dueAt: 1030 * 60000, overdue: false, minutes: 20 });
+  assert.strictEqual(f.dueState(1000 * 60000, 0, 30, 1045 * 60000).overdue, true);
+});

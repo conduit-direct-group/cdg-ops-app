@@ -10,9 +10,9 @@ import { collection, onSnapshot } from "https://www.gstatic.com/firebasejs/12.18
 
 export const FIELD_TYPES = [
   ["number", "Number"], ["percent", "Percent (0–100)"], ["yesno", "Yes / No"], ["text", "Short text"],
-  ["longtext", "Notes (long text)"], ["datetime", "Date and time"], ["time", "Time of day"], ["task", "Task (tick when done)"],
+  ["longtext", "Notes (long text)"], ["datetime", "Date and time"], ["time", "Time of day"], ["task", "Task (tick when done)"], ["check", "Check (OK / Not OK)"], ["tally", "Tally (one tap each time it's done)"],
 ];
-const KIND_NAMES = { handoff: "Shift handoff", tasklist: "Shift task list", station: "Station checklist" };
+const KIND_NAMES = { handoff: "Shift handoff", tasklist: "Shift task list", station: "Station checklist", linecheck: "Line check log" };
 
 // Same rule as the server (functions/forms.js).
 export function canEditForm(myRoles, formId) {
@@ -83,7 +83,7 @@ export function openFormsAdmin(container, { me, onExit, backLabel = "Admin" }) {
       ui.revs = s.docs.map((d) => d.data()).sort((a, b) => b.rev - a.rev);
       if (ui.view === "edit" && !ui.busy) redrawRevs();
     }, () => { ui.revs = []; });
-    show("edit", { id: t.id, draft: copy({ name: t.name, kind: t.kind, intro: t.intro || "", sections: t.sections, ...(t.kind === "tasklist" ? { shifts: t.shifts || [], redMinutes: t.redMinutes ?? 60 } : {}) }), note: "" });
+    show("edit", { id: t.id, draft: copy({ name: t.name, kind: t.kind, intro: t.intro || "", sections: t.sections, ...(t.kind === "tasklist" ? { shifts: t.shifts || [], redMinutes: t.redMinutes ?? 60 } : {}), ...(t.kind === "linecheck" ? { everyMinutes: t.everyMinutes ?? 30 } : {}) }), note: "" });
   }
 
   function move(list, i, d) {
@@ -97,8 +97,50 @@ export function openFormsAdmin(container, { me, onExit, backLabel = "Admin" }) {
     el("button", { class: "icon-btn", type: "button", "aria-label": `Move ${what} down`, disabled: i === list.length - 1, onclick: () => move(list, i, 1) }, "↓"),
   ];
 
+  // Answer types each kind of form takes (same as the server).
+  function typeOptions(kind, section) {
+    if (kind === "linecheck") return section?.scope === "plant" ? ["tally"] : ["number", "check", "text"];
+    if (kind === "tasklist") return ["task"];
+    if (kind === "station") return ["number", "percent", "yesno", "text", "longtext", "task"];
+    return ["number", "percent", "yesno", "text", "longtext", "datetime", "time"];
+  }
+  const numIn = (label, value, set) => el("label", { class: "shift-time" }, label,
+    el("input", { class: "field", type: "text", inputmode: "decimal", value: value ?? "", oninput: (e) => { const t = e.target.value.trim(); set(t === "" ? null : Number(t)); } }));
+
+  // Line Check extras: allowed range (all lines, or a different one per line), which lines it shows on, expected count.
+  function lineCheckExtras(s, f) {
+    const lines = (data.lines || []).filter((l) => l.active !== false);
+    f.lines ||= [];
+    f.lineLimits ||= {};
+    if (f.type === "tally") {
+      return el("div", { class: "limit-box" },
+        el("p", { class: "field-label" }, "Expected times per shift (shown as a progress count)"),
+        el("div", { class: "shift-row" }, numIn("At least", f.expectMin, (v) => { f.expectMin = v; }), numIn("Up to", f.expectMax, (v) => { f.expectMax = v; })));
+    }
+    return el("div", { class: "limit-box" },
+      f.type === "number" ? [
+        el("p", { class: "field-label" }, "Allowed range — outside it turns red, needs a note, and alerts the Line Lead (leave empty for no limit)"),
+        el("div", { class: "shift-row" }, numIn("Lowest OK (all lines)", f.min, (v) => { f.min = v; }), numIn("Highest OK (all lines)", f.max, (v) => { f.max = v; })),
+        collapsible(`lim-${f.id || f.label}`, "Different range on one line",
+          lines.map((l) => el("div", { class: "shift-row" }, el("strong", {}, l.name),
+            numIn("Lowest OK", f.lineLimits[l.id]?.min, (v) => { f.lineLimits[l.id] = { ...(f.lineLimits[l.id] || { min: null, max: null }), min: v }; }),
+            numIn("Highest OK", f.lineLimits[l.id]?.max, (v) => { f.lineLimits[l.id] = { ...(f.lineLimits[l.id] || { min: null, max: null }), max: v }; })))),
+      ] : null,
+      el("p", { class: "field-label" }, "Shows on"),
+      el("div", { class: "chips" },
+        el("button", { class: !f.lines.length ? "chip on" : "chip", type: "button", onclick: () => { f.lines = []; render(); } }, "All lines"),
+        lines.map((l) => el("button", { class: f.lines.includes(l.id) ? "chip on" : "chip", type: "button", onclick: () => { f.lines = f.lines.includes(l.id) ? f.lines.filter((x) => x !== l.id) : [...f.lines, l.id]; render(); } }, `Only ${l.name}`))));
+  }
+
   function fieldEditor(s, f, i) {
-    const task = ui.draft.kind === "tasklist"; // task lists: every field is a task (no answer type, per-line, or unit)
+    const kind = ui.draft.kind;
+    const types = typeOptions(kind, s);
+    const fixed = types.length === 1; // task lists (tasks) and plant-wide sections (tallies): no type to pick
+    if (fixed) f.type = types[0];
+    const task = kind === "tasklist";
+    const lineUnit = kind === "linecheck" && f.type === "number"
+      ? el("div", { class: "form-field-row" }, el("input", { class: "field unit-field", "aria-label": "Unit", maxlength: "12", value: f.unit || "", placeholder: "Unit (PSI, °F…)", oninput: (e) => { f.unit = e.target.value; } }))
+      : null;
     return el("div", { class: "form-field-edit" },
       el("div", { class: "row-between" },
         el("span", { class: "field-label" }, `Field ${i + 1}`),
@@ -107,14 +149,17 @@ export function openFormsAdmin(container, { me, onExit, backLabel = "Admin" }) {
             if (await confirmSheet({ title: `Remove “${f.label || "this field"}”?`, text: "Earlier records keep it — they were filled on an older revision.", confirmLabel: "Remove", danger: true })) { s.fields.splice(i, 1); render(); }
           } }, "✕"))),
       el("input", { class: "field", "aria-label": task ? "Task" : "Field label", maxlength: "120", value: f.label, placeholder: task ? "Task (e.g. Tools put away)" : "Label", oninput: (e) => { f.label = e.target.value; } }),
-      task ? null : picker({ title: "Type of answer", value: f.type, options: FIELD_TYPES.filter(([v]) => v !== "task" || ui.draft.kind !== "handoff").map(([value, label]) => ({ value, label })), onChange: (v) => { f.type = v; render(); } }),
-      task ? null : el("div", { class: "form-field-row" },
-        el("label", { class: "check-row" }, el("input", { type: "checkbox", checked: f.perLine === true, onchange: (e) => { f.perLine = e.target.checked; } }), el("span", {}, "One per line (L1, L2, L3…)")),
-        ["number", "percent"].includes(f.type) || f.unit
-          ? el("input", { class: "field unit-field", "aria-label": "Unit", maxlength: "12", value: f.unit || "", placeholder: "Unit (ft, °F…)", oninput: (e) => { f.unit = e.target.value; } })
-          : null),
+      fixed ? null : picker({ title: "Type of answer", value: f.type, options: FIELD_TYPES.filter(([v]) => types.includes(v)).map(([value, label]) => ({ value, label })), onChange: (v) => { f.type = v; render(); } }),
+      fixed || kind === "linecheck" ? lineUnit
+        : el("div", { class: "form-field-row" },
+            el("label", { class: "check-row" }, el("input", { type: "checkbox", checked: f.perLine === true, onchange: (e) => { f.perLine = e.target.checked; } }), el("span", {}, "One per line (L1, L2, L3…)")),
+            ["number", "percent"].includes(f.type) || f.unit
+              ? el("input", { class: "field unit-field", "aria-label": "Unit", maxlength: "12", value: f.unit || "", placeholder: "Unit (ft, °F…)", oninput: (e) => { f.unit = e.target.value; } })
+              : null),
+      kind === "linecheck" ? lineCheckExtras(s, f) : null,
       el("input", { class: "field", "aria-label": "Help text", maxlength: "400", value: f.help || "", placeholder: "Help text shown under it (optional)", oninput: (e) => { f.help = e.target.value; } }));
   }
+
 
   function redrawRevs() {
     const box = container.querySelector("#form-revs");
@@ -125,7 +170,7 @@ export function openFormsAdmin(container, { me, onExit, backLabel = "Admin" }) {
     return ui.revs.map((r) => el("div", { class: "import-row" }, el("span", { class: "import-line" }, `Rev ${r.rev}`), el("span", { class: "gap-term" }, `${fmtWhen(r.revAt)} · ${r.revByName || ""} — ${r.revNote || r.revChanges || ""}`)));
   }
 
-  const blankField = () => ({ label: "", type: ["tasklist", "station"].includes(ui.draft.kind) ? "task" : "text", perLine: false, unit: "", help: "" });
+  const blankField = (section) => ({ label: "", type: ui.draft.kind === "linecheck" ? (section?.scope === "plant" ? "tally" : "number") : ["tasklist", "station"].includes(ui.draft.kind) ? "task" : "text", perLine: false, unit: "", help: "" });
 
   // Task lists: the shifts (plant time; an end before the start runs past midnight) and when unfinished tasks turn red.
   function shiftsEditor(d) {
@@ -172,10 +217,16 @@ export function openFormsAdmin(container, { me, onExit, backLabel = "Admin" }) {
                 } }, "✕"))),
             el("input", { class: "field", "aria-label": "Section title", maxlength: "80", value: s.title, placeholder: "Section title", oninput: (e) => { s.title = e.target.value; } }),
             el("input", { class: "field", "aria-label": "Section help", maxlength: "400", value: s.help || "", placeholder: "Help text for the section (optional)", oninput: (e) => { s.help = e.target.value; } }),
+            d.kind === "linecheck" ? el("div", { class: "choices two" },
+              el("button", { class: s.scope !== "plant" ? "choice on" : "choice", type: "button", onclick: () => { s.scope = "line"; s.fields.forEach((x) => { if (x.type === "tally") x.type = "number"; }); render(); } }, "Page 1 — each line, every check"),
+              el("button", { class: s.scope === "plant" ? "choice on" : "choice", type: "button", onclick: () => { s.scope = "plant"; s.fields.forEach((x) => { x.type = "tally"; }); render(); } }, "Page 2 — plant-wide tallies")) : null,
             s.fields.map((f, fi) => fieldEditor(s, f, fi)),
-            el("button", { class: "btn secondary", type: "button", onclick: () => { s.fields.push(blankField()); render(); } }, d.kind === "tasklist" ? "+ Add a task" : "+ Add a field"))),
+            el("button", { class: "btn secondary", type: "button", onclick: () => { s.fields.push(blankField(s)); render(); } }, d.kind === "tasklist" ? "+ Add a task" : "+ Add a field"))),
         el("button", { class: "btn secondary", type: "button", onclick: () => { d.sections.push({ title: "", help: "", fields: [blankField()] }); render(); } }, "+ Add a section"),
         d.kind === "tasklist" ? shiftsEditor(d) : null,
+        d.kind === "linecheck" ? el("section", { class: "card form-section-edit" },
+          el("label", { class: "field-label strong", for: "fm-every" }, "A check is due every (minutes)"),
+          el("input", { class: "field num-field", id: "fm-every", type: "text", inputmode: "numeric", value: String(d.everyMinutes ?? 30), oninput: (e) => { d.everyMinutes = Number(e.target.value || 0); } })) : null,
         el("label", { class: "field-label", for: "fm-note" }, "What changed (short note — optional; the app also lists the changes)"),
         el("input", { class: "field", id: "fm-note", maxlength: "300", value: ui.note, placeholder: "e.g. Added Silo 5", oninput: (e) => { ui.note = e.target.value; } }),
         el("button", { class: "btn big", type: "submit", disabled: ui.busy }, ui.busy ? "Saving…" : `✔ Save as revision ${t.rev + 1}`)),

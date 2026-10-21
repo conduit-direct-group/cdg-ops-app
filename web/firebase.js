@@ -130,6 +130,14 @@ export const callShopTaskSigners = call("shopTaskSigners");
 export const callStartStationList = call("startStationList");
 export const callSaveStationList = call("saveStationList");
 export const callSignStationList = call("signStationList");
+// Line Check Log
+export const callStartLineLog = call("startLineLog");
+export const callAddLineRound = call("addLineRound");
+export const callSaveLineNotes = call("saveLineNotes");
+export const callTapPlantItem = call("tapPlantItem");
+export const callSignLineLog = call("signLineLog");
+export const callReviewLineLog = call("reviewLineLog");
+export const callLineLogReviewers = call("lineLogReviewers");
 export const callAdminSyncOdoo = call("adminSyncOdoo", { timeout: 120000 });
 // Copying files from the old library can take a few minutes.
 export const callAdminImportOldLibrary = call("adminImportOldLibrary", { timeout: 540000 });

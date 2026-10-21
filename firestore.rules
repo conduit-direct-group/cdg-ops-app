@@ -260,6 +260,20 @@ service cloud.firestore {
       allow read: if member();
     }
 
+    // Line Check Log (per line) and its plant-wide page 2: everyone signed in reads them. Test site: test_ copies.
+    match /lineLogs/{id} {
+      allow read: if member();
+    }
+    match /test_lineLogs/{id} {
+      allow read: if member();
+    }
+    match /plantLogs/{id} {
+      allow read: if member();
+    }
+    match /test_plantLogs/{id} {
+      allow read: if member();
+    }
+
     // Admin-only lists: who did what (every admin action), Odoo sync status, searches with no results.
     match /auditLog/{id} {
       allow read: if admin();
