@@ -16,6 +16,7 @@ import { shopItems } from "./shoptasks.js";
 import { stationItems } from "./stations.js";
 import { lineCheckItems } from "./linecheck.js";
 import { db, TEST_MODE, callAdminListEmployees, callAnnouncementSummary } from "./firebase.js";
+import { siloItems, siloCard } from "./silos.js";
 import { collection, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 
 // Role order on a combined screen, and each role's "At a glance" cards (ids are shared, so duplicates merge).
@@ -23,13 +24,13 @@ import { collection, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/
 // requests, safety concerns) are gone — Needs you covers them.
 export const ROLE_CARDS = [
   ["admin", "Admin", ["system-alerts", "waiting-login"]],
-  ["plant-manager", "Plant Manager", ["pm-people", "ack-gaps"]],
-  ["supervisor", "Supervisor", ["crew-gaps"]],
+  ["plant-manager", "Plant Manager", ["pm-people", "ack-gaps", "silos"]],
+  ["supervisor", "Supervisor", ["crew-gaps", "silos"]],
   ["lead", "Line Lead", []],
   ["operator", "Operator", []],
   ["maintenance", "Maintenance", []],
   ["quality", "Quality", []],
-  ["shipping", "Logistics & Distribution", []],
+  ["shipping", "Logistics & Distribution", ["silos"]],
   ["sales", "Sales", []],
   ["office", "Office", ["ack-gaps"]],
   ["training-safety", "Training & Safety", ["trainees", "expiring"]],
@@ -279,6 +280,7 @@ function needsItems(ctx, roles) {
       : { key: "maint", icon: "🚨", title: "Maintenance requests", detail: "none open", state: "done", onOpen: go.issues });
   }
 
+  items.push(...siloItems(roles, go.silos));
   items.push(...handoffItems(me, go.handoff));
   items.push(...shopItems(me, roles, go.shop));
   if (machines) items.push(...stationItems(roles, go.station));
@@ -373,7 +375,7 @@ export function dashboard(ctx) {
 
   const ids = cardsFor(roles);
   const cards = ids.length
-    ? el("section", { class: "glance", "aria-label": "At a glance" }, el("h2", { class: "home-h2" }, "At a glance"), el("div", { class: "dash-cards" }, ids.map((id) => card(cardData(id, ctx), id))))
+    ? el("section", { class: "glance", "aria-label": "At a glance" }, el("h2", { class: "home-h2" }, "At a glance"), el("div", { class: "dash-cards" }, ids.map((id) => (id === "silos" ? siloCard(ctx.go.silos) : card(cardData(id, ctx), id)))))
     : null;
 
   return { status, viewAs, needs, quick, cards };

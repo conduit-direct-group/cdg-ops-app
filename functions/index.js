@@ -32,6 +32,7 @@ const formsLib = require("./forms");
 const specsLib = require("./machinespecs");
 const testData = require("./testdata");
 const trucksLib = require("./trucks");
+const silosLib = require("./silos");
 const crypto = require("node:crypto");
 const { getMessaging } = require("firebase-admin/messaging");
 const { defineSecret } = require("firebase-functions/params");
@@ -2464,8 +2465,10 @@ exports.sendHandoff = onCall(async (req) => {
     const sentBy = { emp: me.employeeNumber, name: me.name, device, at: new Date() };
     tx.update(snap.ref, { ...header, values: v.values, auto, status: "sent", sentBy, sentAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
     logSignoff(tx, test, { kind: "handoff-sent", refId: snap.id, version: h.formRev, emp: me.employeeNumber, name: me.name, method: "pin", device, signedOn: me.employeeNumber });
-    return { ...h, ...header };
+    return { ...h, ...header, values: v.values };
   });
+  // Silo levels on the handoff feed the silo levels card and the low silo alert (never fails the handoff).
+  await recordSiloLevels(test, silosLib.levelsFrom(sent.values), me, "handoff").catch((err) => console.error("silo levels not saved", err));
   const people = await peopleList();
   const leads = formsLib.incomingLeads(sent, people);
   const teamName = async (id) => (await teams.doc(id).get()).get("name") || id;
@@ -3077,6 +3080,61 @@ exports.restoreMachineSpecItem = onCall(async (req) => {
     tx.delete(rRef);
     return out;
   });
+});
+
+// ---------------------------------------------------------------------------
+// Low silo alert (Chris, 10-21-2026). Rules in silos.js. Levels from the Shift Handoff and "Update silo levels";
+// low lines per silo in Admin → Silo alerts (meta/siloSettings). Test site: test_siloLevels / test_siloReadings
+// (the low lines are shared), and the alert goes only to the person testing.
+// ---------------------------------------------------------------------------
+
+const siloSettingsDoc = db.collection("meta").doc("siloSettings");
+
+// Saves each reading, decides alerts (one per drop), and tells Logistics, Supervisors, and the Plant Manager.
+async function recordSiloLevels(test, levels, me, source) {
+  const ids = Object.keys(levels);
+  if (!ids.length) return { saved: 0, alerts: [] };
+  const settings = (await siloSettingsDoc.get()).get("silos") || {};
+  const alerts = await db.runTransaction(async (tx) => {
+    const refs = ids.map((id) => col("siloLevels", test).doc(id));
+    const snaps = await Promise.all(refs.map((r) => tx.get(r)));
+    const out = [];
+    ids.forEach((id, i) => {
+      const level = levels[id];
+      const { alert, alerted } = silosLib.judge(settings[id], snaps[i].get("alerted") === true, level);
+      tx.set(refs[i], { level, at: FieldValue.serverTimestamp(), by: me.employeeNumber, byName: me.name, source, alerted, ...(alert ? { alertedAt: FieldValue.serverTimestamp() } : {}) });
+      tx.create(col("siloReadings", test).doc(), { siloId: id, level, at: FieldValue.serverTimestamp(), by: me.employeeNumber, byName: me.name, source, alert });
+      if (alert) out.push({ id, level, low: settings[id].low });
+    });
+    return out;
+  });
+  if (alerts.length) {
+    const list = alerts.map((a) => `${silosLib.siloName(a.id)} at ${a.level}% (low line ${a.low}%)`).join(", ");
+    const to = test ? [me.employeeNumber] : (await activeEmployees()).filter((e) => e.active !== false && e.roles.some((r) => silosLib.ALERT_ROLES.includes(r))).map((e) => e.id);
+    await pushTo(to, { title: `${test ? "[TEST] " : ""}🛢 Low silo: ${alerts.map((a) => silosLib.siloName(a.id)).join(", ")}`, body: `${list} — entered by ${me.name}`, url: "/?silos=1", urgent: true });
+    await auditLog.add({ type: "low-silo", kind: "silo", recordId: alerts.map((a) => a.id).join(","), by: me.employeeNumber, at: FieldValue.serverTimestamp(), alerts, test });
+  }
+  return { saved: ids.length, alerts: alerts.map((a) => a.id) };
+}
+
+// Line Operator (material system) and up, mid-shift: { levels: { "silo-1": 40, … } }.
+exports.updateSiloLevels = onCall(async (req) => {
+  const me = await requireMember(req);
+  if (!me.roles.some((r) => silosLib.UPDATE_ROLES.includes(r))) throw new HttpsError("permission-denied", "Only operators, leads, supervisors, and managers update silo levels.");
+  const levels = silosLib.levelsFrom(req.data?.levels);
+  if (!Object.keys(levels).length) throw new HttpsError("invalid-argument", "Enter at least one silo level (0–100%).");
+  const out = await recordSiloLevels(isTest(req), levels, me, "update");
+  return { ...out, test: isTest(req) };
+});
+
+// Admins: { silos: { [siloId]: { low, alert } } } — the low line for each silo (blank = no alerts for it).
+exports.adminSaveSiloSettings = onCall(async (req) => {
+  const adminNumber = await requireAdmin(req);
+  const { silos, error } = silosLib.cleanSettings(req.data?.silos);
+  if (error) throw new HttpsError("invalid-argument", error);
+  await siloSettingsDoc.set({ silos, updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber });
+  await auditLog.add({ type: "updated", kind: "silo alerts", recordId: "siloSettings", by: adminNumber, at: FieldValue.serverTimestamp(), silos });
+  return { ok: true };
 });
 
 // ---------------------------------------------------------------------------

@@ -35,6 +35,7 @@ import { openRefDocs } from "./refdocs.js";
 import { openMachines, canViewMachines } from "./machines.js";
 import { openTestReset } from "./testdata.js";
 import { openTrucks, canViewTrucks, canCheckTrucks } from "./trucks.js";
+import { openSilos, openSiloAdmin, UPDATE_ROLES as SILO_UPDATE_ROLES, ALERT_ROLES as SILO_ALERT_ROLES } from "./silos.js";
 
 const screen = document.getElementById("screen");
 const deviceBadge = document.getElementById("device-badge");
@@ -266,6 +267,7 @@ function renderHome() {
       shop: (id) => openShopScreen(id),
       station: (formId) => openStationScreen(formId),
       lineCheck: (lineId, logId) => openLineCheckScreen(lineId, logId),
+      silos: () => openSiloScreen(),
     },
   });
   return [
@@ -383,7 +385,8 @@ function openChecklistsHub() {
       el("div", { class: "hub-row" },
         (data.formTemplates || []).some((t) => t.id === "line-check" && t.active !== false)
           ? el("button", { class: "btn big secondary", type: "button", onclick: () => openLineCheckScreen() }, "📈 Line Check Log") : null,
-        stationForms().length ? el("button", { class: "btn big secondary", type: "button", onclick: () => openStationScreen() }, "📋 Station checklists") : null),
+        stationForms().length ? el("button", { class: "btn big secondary", type: "button", onclick: () => openStationScreen() }, "📋 Station checklists") : null,
+        shownRoles().some((r) => SILO_UPDATE_ROLES.includes(r)) ? el("button", { class: "btn big secondary", type: "button", onclick: () => openSiloScreen(openChecklistsHub, "Checklists") }, "🛢 Update silo levels") : null),
       el("h2", {}, "Machine checklists"),
       loading ? spinner() : !units.length ? emptyState("No machine checklists yet", "An admin sets them up in Admin → Checklists.") : null,
       el("div", { class: "hub-lines" }, [...byLine.entries()].map(([lineId, list]) =>
@@ -465,6 +468,14 @@ function openLineCheckScreen(lineId = null, logId = null) {
   setNav("checklists");
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openLineCheck(screen, { me: me(), startLine: lineId, startLogId: logId, onExit: () => go("home") });
+}
+
+// Silo levels (Checklists page, Home's silo card / low silo item, or a low silo notification: ?silos=1).
+function openSiloScreen(back = () => go("home"), backLabel = "Home") {
+  if (closeModule) closeModule();
+  setNav(back === openChecklistsHub ? "checklists" : "home");
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  closeModule = openSilos(screen, { me: me(), onExit: back, backLabel });
 }
 
 // Trucks board (from the bar, or a truck notification: ?trucks=1).
@@ -652,6 +663,7 @@ function renderAdminMenu() {
     el("button", { class: "btn", type: "button", onclick: () => openModule(openRequestTypesAdmin) }, "🙋 Request types & routing"),
     el("button", { class: "btn", type: "button", onclick: () => openModule((c, o) => openFormsAdmin(c, { ...o, me: me() })) }, "📝 Forms"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openMapAdmin) }, "🗺 Shop map setup"),
+    el("button", { class: "btn", type: "button", onclick: () => openModule(openSiloAdmin) }, "🛢 Silo alerts"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openTrainingAdmin) }, "🎓 Training setup"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openActivity) }, "📜 Admin activity"),
     TEST_MODE ? el("button", { class: "btn secondary", type: "button", onclick: () => openModule((c, o) => openTestReset(c, { ...o, onIssues: () => openIssues() })) }, "🧹 Reset test data") : null,
@@ -835,7 +847,8 @@ onAuthStateChanged(auth, async (user) => {
     const docs = params.get("docs"); // the Training page's "Reference documents" link
     const machinePage = params.get("machine"); // a link to one machine's parts & specs page
     const trucksLink = params.get("trucks"); // a truck arrived / out the door notification
-    if (cat || machine || req || issuesLink || ann || handoff || shop || lineLog || docs || machinePage || trucksLink) history.replaceState(null, "", location.pathname);
+    const silosLink = params.get("silos"); // a low silo notification
+    if (cat || machine || req || issuesLink || ann || handoff || shop || lineLog || docs || machinePage || trucksLink || silosLink) history.replaceState(null, "", location.pathname);
     if (ann) openAnn(ann);
     else if (handoff) openHandoffScreen(handoff);
     else if (shop) openShopScreen(shop);
@@ -843,6 +856,7 @@ onAuthStateChanged(auth, async (user) => {
     else if (docs) openDocsScreen();
     else if (machinePage) openMachineScreen(machinePage);
     else if (trucksLink) openTrucksScreen();
+    else if (silosLink) openSiloScreen();
     else if (req) openRequestScreen(req);
     else if (issuesLink) openIssues();
     else if (cat || machine) openFixes(cat, machine);

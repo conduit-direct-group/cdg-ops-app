@@ -292,6 +292,17 @@ service cloud.firestore {
       }
     }
 
+    // Silo levels (from the Shift Handoff and "Update silo levels") and their low lines: everyone signed in reads.
+    match /siloLevels/{id} {
+      allow read: if member();
+    }
+    match /test_siloLevels/{id} {
+      allow read: if member();
+    }
+    match /meta/siloSettings {
+      allow read: if member();
+    }
+
     // Trucks board: Logistics & Distribution, Plant Manager, Sales, Admin, plus roles allowed to post trucks in
     // Admin → Roles (the server keeps that list in meta/truckAccess). Changed only by the server. Test site: test_trucks.
     function truckViewer() {

@@ -23,6 +23,8 @@ const TEST_COLLECTIONS = [
   ["test_fixes", "Fix Library practice fixes"],
   ["test_trash", "Fix Library practice trash"],
   ["test_trucks", "Trucks"],
+  ["test_siloLevels", "Silo levels"],
+  ["test_siloReadings", "Silo readings"],
 ];
 const DAY_MS = 86400000;
 

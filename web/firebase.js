@@ -142,6 +142,9 @@ export const callLineLogReviewers = call("lineLogReviewers");
 export const callSaveRefDoc = call("saveRefDoc");
 // Machines — parts & specs
 export const callSaveMachineSpecs = call("saveMachineSpecs");
+// Silo levels
+export const callUpdateSiloLevels = call("updateSiloLevels");
+export const callAdminSaveSiloSettings = call("adminSaveSiloSettings");
 // Trucks board
 export const callSaveTruck = call("saveTruck");
 export const callRemoveTruck = call("removeTruck");
