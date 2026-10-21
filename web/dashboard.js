@@ -260,12 +260,22 @@ function needsItems(ctx, roles) {
   }
 
   // Open maintenance requests — Maintenance, Admin, Plant Manager (red when a line is down or it's unsafe).
+  // "Down" comes from the same summary as the line status at the top, so the two always agree. Requests still
+  // flagged line-down whose line is running are named as such, so someone marks them back up in Open issues.
   if (machines && roles.some((r) => ISSUE_ROLES.includes(r)) && data.openIssues) {
     const open = data.openIssues;
-    const ld = open.filter((i) => i.lineDown).length;
+    const down = data.plantStatus?.down || {};
+    const linesDown = (data.lines || []).filter((l) => down[l.id]).map((l) => l.name);
+    const lineOf = (i) => (data.machines || []).find((m) => m.id === i.machineId)?.lineId || null;
+    const stale = open.filter((i) => i.lineDown && lineOf(i) && !down[lineOf(i)]).length;
     const unsafe = open.filter((i) => i.unsafe && !i.lineDown).length;
+    const detail = [
+      linesDown.length && `⛔ ${linesDown.join(", ")} down`,
+      stale && `${stale} still marked line-down, but ${stale === 1 ? "its line is" : "their lines are"} running — mark ${stale === 1 ? "it" : "them"} back up`,
+      unsafe && `${unsafe} unsafe`,
+    ].filter(Boolean).join(" · ");
     items.push(open.length
-      ? { key: "maint", icon: "🚨", title: `Open maintenance requests: ${open.length}`, detail: [ld && `${ld} line down`, unsafe && `${unsafe} unsafe`].filter(Boolean).join(" · ") || "none urgent", state: ld + unsafe ? "late" : "due", onOpen: go.issues }
+      ? { key: "maint", icon: "🚨", title: `Open maintenance requests: ${open.length}`, detail: detail || "none urgent", state: linesDown.length + unsafe ? "late" : "due", onOpen: go.issues }
       : { key: "maint", icon: "🚨", title: "Maintenance requests", detail: "none open", state: "done", onOpen: go.issues });
   }
 

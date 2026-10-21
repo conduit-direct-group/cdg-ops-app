@@ -32,6 +32,7 @@ import { openShopTasks, runsShopList } from "./shoptasks.js";
 import { openStations, stationForms } from "./stations.js";
 import { openLineCheck } from "./linecheck.js";
 import { openRefDocs } from "./refdocs.js";
+import { openMachines, canViewMachines } from "./machines.js";
 
 const screen = document.getElementById("screen");
 const deviceBadge = document.getElementById("device-badge");
@@ -282,7 +283,8 @@ function renderHome() {
 
 // ---------------------------------------------------------------------------
 // Navigation bar (Decision 66): always visible once signed in — a bottom bar on phones and tablets, a side bar on
-// desktops. Home · Map · Checklists (people who work with the machines) · Announcements · More.
+// desktops. Home · Map · Checklists (people who work with the machines) · Machines (Maintenance, Plant Manager, Admin)
+// · Announcements · More.
 // ---------------------------------------------------------------------------
 
 const nav = document.getElementById("app-nav");
@@ -308,6 +310,7 @@ function renderNav() {
     item("home", "🏠", "Home", () => go("home")),
     item("map", "🗺", "Map", () => openMap()),
     usesMachines(shownRoles()) ? item("checklists", "📋", "Checklists", () => openChecklistsHub()) : null,
+    canViewMachines(shownRoles()) ? item("machines", "⚙", "Machines", () => openMachineScreen()) : null,
     item("ann", "📣", "Announce\u00adments" /* soft hyphen: wraps as Announce-ments on phones */, () => openAnn(), unsigned),
     item("more", "☰", "More", openMore),
   ].filter(Boolean));
@@ -402,7 +405,9 @@ function openMap(station = null) {
     startStation: station,
     onExit: () => go("home"),
     // Office, Sales, Quality, Logistics: the map without machine buttons (Decision 53).
-    onFixes: usesMachines(me().roles) ? (machineId) => openFixes(null, machineId) : null,
+    // Maintenance, Plant Manager, Admin: the machine's page (parts, specs, service, fixes); others: its Fix Library page.
+    onFixes: usesMachines(me().roles) && !canViewMachines(me().roles) ? (machineId) => openFixes(null, machineId) : null,
+    onMachine: canViewMachines(me().roles) ? (machineId) => openMachineScreen(machineId, () => openMap(station), "Shop Map") : null,
     onReport: usesMachines(me().roles) ? (machineId) => openReport(null, () => openMap(station), machineId) : null,
     onDocs: () => openDocsScreen(() => openMap(station), "Shop Map"),
   });
@@ -456,6 +461,21 @@ function openLineCheckScreen(lineId = null, logId = null) {
   setNav("checklists");
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openLineCheck(screen, { me: me(), startLine: lineId, startLogId: logId, onExit: () => go("home") });
+}
+
+// Machines — parts & specs (from the bar, or a machine on the Shop Map).
+function openMachineScreen(machineId = null, back = () => go("home"), backLabel = "Home") {
+  if (!canViewMachines(me().roles)) return go("home");
+  if (closeModule) closeModule();
+  setNav("machines");
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  const here = () => openMachineScreen(machineId, back, backLabel);
+  closeModule = openMachines(screen, {
+    me: me(), startMachine: machineId, onExit: back, backLabel,
+    onFixes: (id) => openFixes(null, id),
+    onIssues: () => openIssues(),
+    onReport: (id) => openReport(null, here, id),
+  });
 }
 
 // Reference documents (from the Shop Map, or the Training page's link: ?docs=1).
@@ -799,12 +819,14 @@ onAuthStateChanged(auth, async (user) => {
     const shop = params.get("shop"); // a shop task notification
     const lineLog = params.get("linelog"); // an out-of-spec line check alert
     const docs = params.get("docs"); // the Training page's "Reference documents" link
-    if (cat || machine || req || issuesLink || ann || handoff || shop || lineLog || docs) history.replaceState(null, "", location.pathname);
+    const machinePage = params.get("machine"); // a link to one machine's parts & specs page
+    if (cat || machine || req || issuesLink || ann || handoff || shop || lineLog || docs || machinePage) history.replaceState(null, "", location.pathname);
     if (ann) openAnn(ann);
     else if (handoff) openHandoffScreen(handoff);
     else if (shop) openShopScreen(shop);
     else if (lineLog) openLineCheckScreen(lineLog.split("__")[2] || null, lineLog);
     else if (docs) openDocsScreen();
+    else if (machinePage) openMachineScreen(machinePage);
     else if (req) openRequestScreen(req);
     else if (issuesLink) openIssues();
     else if (cat || machine) openFixes(cat, machine);

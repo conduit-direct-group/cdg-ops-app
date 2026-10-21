@@ -1305,3 +1305,43 @@ body.has-nav .toast { bottom: calc(84px + env(safe-area-inset-bottom)); }
 .hub-lines { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s3); }
 .hub-line { margin: 0; }
 @media (min-width: 900px) { .hub-lines { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); } main[data-width="wide"] .hub-line .person-list { grid-template-columns: 1fr; } }
+
+/* ---- Machines: parts & specs (Decision 51) ---------------------------------- */
+.mach-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); }
+.mach-head h1 { margin: 0; }
+.mach-head + .hint { text-align: left; }
+.mach-cols { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 var(--s4); align-items: start; }
+.mach-col { min-width: 0; }
+.mach-col > .card { margin: var(--s3) 0; }
+.mach-note { margin: var(--s2) 0; padding: var(--s3); border: var(--border-width) solid var(--line); border-left: 5px solid var(--orange); border-radius: var(--radius); background: var(--surface-1); }
+.mach-note.safety { border-color: var(--red); background: var(--red-tint); }
+.mach-note p { margin: var(--s1) 0 0; white-space: pre-line; }
+.spec-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s2); margin: 0 0 var(--s3); }
+.spec-row { display: flex; flex-direction: column; gap: 2px; padding: var(--s2) var(--s3); border-radius: var(--radius); background: var(--surface-2); min-width: 0; }
+.spec-row.hist { flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s2); }
+.spec-row.hist > span { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 200px; }
+.spec-row.hist .btn { flex: none; width: auto; min-width: 0; margin: 0; padding: 0 var(--s3); }
+.spec-edit { display: flex; flex-direction: column; gap: var(--s2); margin: 0 0 var(--s3); padding: var(--s3); border: var(--border-width) solid var(--line); border-radius: var(--radius); background: var(--surface-2); }
+.spec-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 0 var(--s3); }
+.spec-field { min-width: 0; }
+.spec-field.wide { grid-column: 1 / -1; }
+.spec-field .field-label { margin: var(--s2) 0 var(--s1); }
+.spec-edit .link-btn, .mach-file .link-btn { align-self: flex-start; }
+.danger-link { color: var(--red); }
+.mach-files { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: var(--s2); margin: 0 0 var(--s3); }
+.mach-file { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }
+.mach-file-open { display: flex; flex-direction: column; gap: var(--s1); color: var(--white); text-decoration: none; border-radius: var(--radius); overflow: hidden; background: var(--surface-2); }
+.mach-file-open img, .mach-pdf { display: flex; align-items: center; justify-content: center; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; background: var(--surface-3); font-weight: bold; font-size: var(--text-section); color: var(--muted); }
+.mach-file-label { display: flex; flex-direction: column; padding: 0 var(--s2) var(--s2); min-width: 0; }
+.mach-fixes { margin: var(--s1) 0 var(--s2); padding-left: var(--s4); }
+.mach-fixes li { margin: 2px 0; }
+.mach-app .person-list { margin: var(--s2) 0; }
+.mach-hits .person-list { margin-top: var(--s2); }
+.mach-changed { margin-top: var(--s3); }
+.fold-body h3 { margin: var(--s3) 0 var(--s2); font-size: var(--text-body); }
+@media (min-width: 900px) {
+  .mach-cols { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
+  .spec-list { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+  main[data-width="wide"] .mach-app .person-list, main[data-width="wide"] .mach-hits .person-list { grid-template-columns: 1fr; }
+  main[data-width="wide"] .mach-col .card > .btn { min-width: 0; }
+}

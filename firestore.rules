@@ -279,6 +279,19 @@ service cloud.firestore {
       allow read: if member();
     }
 
+    // Machines — parts & specs (Decision 51): Maintenance, Plant Manager, Admin, plus any role allowed to edit machines
+    // in Admin → Roles (the server keeps that list in meta/machineAccess). Changed only by the server.
+    function machineViewer() {
+      return fixer() || (member() && exists(/databases/$(database)/documents/meta/machineAccess)
+        && employee().roles.hasAny(get(/databases/$(database)/documents/meta/machineAccess).data.roles));
+    }
+    match /machineSpecs/{id} {
+      allow read: if machineViewer();
+      match /{sub}/{doc} {
+        allow read: if machineViewer();
+      }
+    }
+
     // Admin-only lists: who did what (every admin action), Odoo sync status, searches with no results.
     match /auditLog/{id} {
       allow read: if admin();

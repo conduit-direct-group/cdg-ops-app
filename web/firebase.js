@@ -140,6 +140,11 @@ export const callReviewLineLog = call("reviewLineLog");
 export const callLineLogReviewers = call("lineLogReviewers");
 // Reference documents
 export const callSaveRefDoc = call("saveRefDoc");
+// Machines — parts & specs
+export const callSaveMachineSpecs = call("saveMachineSpecs");
+export const callCopyMachineSpecs = call("copyMachineSpecs");
+export const callRestoreMachineSpecsVersion = call("restoreMachineSpecsVersion");
+export const callRestoreMachineSpecItem = call("restoreMachineSpecItem");
 export const callAdminSyncOdoo = call("adminSyncOdoo", { timeout: 120000 });
 // Copying files from the old library can take a few minutes.
 export const callAdminImportOldLibrary = call("adminImportOldLibrary", { timeout: 540000 });

@@ -25,6 +25,7 @@ export const data = {
   myself: null, roles: null, teams: null, machineTypes: null, lines: null, machines: null, fixCategories: null, checklistTemplates: null, requestTypes: null,
   fixes: null, myFixes: null, openIssues: null, myIssues: null, checklistUnits: null, requestsForMe: null, requestsSent: null,
   plantStatus: null, urgentRequests: null, announcements: null, mySigs: null, mySigList: null, formTemplates: null, handoffsOpen: null, shopLists: null, stationLists: null, lineLogs: null, plantLogs: null, refDocs: null,
+  machineSpecs: null, machineSpecsError: false,
 };
 
 const listeners = new Set();
@@ -124,6 +125,10 @@ export function startData(me) {
   const sent = (name) => query(collection(db, name), where("createdBy", "==", me.emp));
   stopFns.push(watchMerged("requestsSent", sent("requests"), sent("test_requests"), requestOrder));
   stopFns.push(watchChecklistUnits());
+  // Machines — parts & specs: Maintenance, Plant Manager, Admin (and roles allowed in Admin → Roles). Others: refused → [].
+  stopFns.push(onSnapshot(collection(db, "machineSpecs"),
+    (snap) => { data.machineSpecs = snap.docs.map((d) => ({ id: d.id, ...d.data() })); data.machineSpecsError = false; changed(); },
+    (err) => { data.machineSpecs = data.machineSpecs || []; data.machineSpecsError = err.code !== "permission-denied"; changed(); }));
   stopFns.push(watchAnnouncements(me));
   // Shift handoffs not yet received (drafts and sent ones) — Line Leads, Supervisors, Plant Manager, Admin.
   if ((me.roles || []).some((r) => ["lead", "supervisor", "plant-manager", "admin"].includes(r))) {

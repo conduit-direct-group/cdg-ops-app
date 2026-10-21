@@ -29,6 +29,7 @@ const floorMapLib = require("./floormap");
 const trainingApi = require("./training-api");
 const annLib = require("./announcements");
 const formsLib = require("./forms");
+const specsLib = require("./machinespecs");
 const crypto = require("node:crypto");
 const { getMessaging } = require("firebase-admin/messaging");
 const { defineSecret } = require("firebase-functions/params");
@@ -501,8 +502,8 @@ async function saveNamedRecord(collection, kind, req, extraCheck, extraFields = 
 // Roles: create { create: true, name, id? } or update { id, name, active? }.
 // The admin role can't be retired — someone has to be able to run the app.
 // Optional { canPostAnnouncements: true|false } (Admin → Roles); left out = unchanged.
-exports.adminSaveRole = onCall((req) =>
-  saveNamedRecord(roles, "role", req, (id, active) => {
+exports.adminSaveRole = onCall(async (req) => {
+  const out = await saveNamedRecord(roles, "role", req, (id, active) => {
     if (id === "admin" && active === false) {
       throw new HttpsError("failed-precondition", "The Admin role can't be retired.");
     }
@@ -517,9 +518,16 @@ exports.adminSaveRole = onCall((req) =>
       if (!Array.isArray(d.editForms) || d.editForms.length > 50 || !d.editForms.every(records.isRecordId)) throw new HttpsError("invalid-argument", "Pick forms from the list.");
       extra.editForms = [...new Set(d.editForms)];
     }
+    // { editMachines: true|false } — may add and edit machine parts & specs (Machines). Unset = Maintenance and Admin.
+    if (d.editMachines !== undefined) {
+      if (typeof d.editMachines !== "boolean") throw new HttpsError("invalid-argument", "editMachines must be true or false.");
+      extra.editMachines = d.editMachines;
+    }
     return extra;
-  })
-);
+  });
+  await writeMachineAccess();
+  return out;
+});
 
 // Lines: create { create: true, name } or update { id, name, active? }.
 // The id comes from the first name ("Line 3" -> line-3) and never changes, even if the line is renamed.
@@ -1689,16 +1697,18 @@ exports.adminImportOldChecklists = onCall({ timeoutSeconds: 540, memory: "1GiB" 
 async function purgeOnce(test) {
   const now = new Date();
   const bucket = getStorage().bucket();
-  const [allFixes, templates, oldFiles, oldFixes] = await Promise.all([
+  const [allFixes, templates, oldFiles, oldFixes, specs] = await Promise.all([
     col("fixes", test).get(),
     checklistTemplates.get(),
     col("trash", test).where("purgeAfter", "<", now).get(),
     col("fixes", test).where("status", "==", "trashed").where("purgeAfter", "<", now).get(),
+    machineSpecs.get(),
   ]);
   const goingIds = new Set(oldFixes.docs.map((d) => d.id));
   const inUse = new Set([
     ...allFixes.docs.filter((d) => !goingIds.has(d.id)).flatMap((d) => fixesLib.fileLinks(d.data())),
     ...templates.docs.flatMap((d) => (d.get("items") || []).flatMap((i) => [...(i.photos || []), ...(i.videos || [])])),
+    ...specs.docs.flatMap((d) => (d.get("files") || []).map((f) => f.url)),
   ]);
   const removeFile = async (url) => {
     const path = fixesLib.storagePath(url, BUCKET);
@@ -1713,6 +1723,17 @@ async function purgeOnce(test) {
   for (const f of oldFixes.docs) {
     for (const url of fixesLib.fileLinks(f.data())) await removeFile(url);
     await db.recursiveDelete(f.ref); // the fix and its version history
+  }
+  // Machines: rows and files removed more than 30 days ago (live list only — the test site edits the same list).
+  if (!test) {
+    for (const m of specs.docs) {
+      const old = await m.ref.collection("removed").where("purgeAfter", "<", now).get();
+      for (const r of old.docs) {
+        if (r.get("section") === "files" && r.get("row")?.url) await removeFile(r.get("row").url);
+        await r.ref.delete();
+        files++;
+      }
+    }
   }
   if (files || oldFixes.size) {
     await auditLog.add({
@@ -2896,6 +2917,157 @@ exports.saveRefDoc = onCall(async (req) => {
     tx.set(ref, doc, { merge: true });
     auditRecord(tx, id ? (active ? "updated" : "retired") : "created", "reference document", ref.id, adminNumber, { name, rev });
     return { id: ref.id, rev };
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Machines — parts & specs per machine (Decision 51, updated 10-21-2026). Kept in the app only for now; nothing goes
+// to Odoo yet (the fields match the Decision 51 mapping, see machinespecs.js). Company content, so the dev test site
+// edits the same list as the live site (like forms and reference documents) — what Maintenance enters is never lost.
+//   machineSpecs/{M-001}              info, parts, fasteners, belts, fluids, files, notes, partNumbers, rev
+//   machineSpecs/{id}/versions/{auto} the record before each change (restore)
+//   machineSpecs/{id}/removed/{auto}  rows and files taken off (put back within 30 days, then cleared at night)
+//   meta/machineAccess                { roles } — who may read these (the database rules use it)
+// Maintenance and Admin add and edit (Admin → Roles: "Can edit machines"); the Plant Manager views.
+// ---------------------------------------------------------------------------
+
+const machineSpecs = db.collection("machineSpecs");
+const SPEC_SECTIONS = Object.keys(specsLib.SECTIONS);
+const SECTION_NAMES = { info: "Info", parts: "Parts", fasteners: "Fasteners", belts: "Belts & bearings", fluids: "Fluids & lubrication", files: "Photos & documents", notes: "Important notes" };
+
+async function roleList() {
+  return (await roles.get()).docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+async function writeMachineAccess() {
+  const list = await roleList();
+  const ids = [...new Set([...specsLib.VIEW_ROLES, ...list.filter((r) => r.active !== false && specsLib.roleEditsMachines(r)).map((r) => r.id)])];
+  await db.collection("meta").doc("machineAccess").set({ roles: ids, updatedAt: FieldValue.serverTimestamp() });
+}
+
+async function requireMachineEditor(req) {
+  const me = await requireMember(req);
+  if (!specsLib.canEditMachines(await roleList(), me.roles)) throw new HttpsError("permission-denied", "Your role can't edit machines. An admin can allow it in Admin → Roles.");
+  return me;
+}
+
+function requireMachineId(value) {
+  const id = String(value || "");
+  if (!records.isMachineId(id)) throw new HttpsError("invalid-argument", "Unknown machine.");
+  return id;
+}
+
+const isOurUpload = (url) => (fixesLib.storagePath(url, BUCKET) || "").startsWith("uploads/");
+const specFields = (d) => Object.fromEntries(["info", ...SPEC_SECTIONS].map((k) => [k, d?.[k] ?? (k === "info" ? {} : [])]));
+
+// Same transaction steps for every change: check the machine and the revision, save a version, write, log.
+async function changeSpecs(tx, me, machineId, expectRev, reason, makeChanges) {
+  const [mSnap, sSnap] = await Promise.all([tx.get(machines.doc(machineId)), tx.get(machineSpecs.doc(machineId))]);
+  if (!mSnap.exists) throw new HttpsError("not-found", "That machine is no longer on the list.");
+  const cur = sSnap.exists ? sSnap.data() : { rev: 0 };
+  if (expectRev !== undefined && expectRev !== null && Number(expectRev) !== (cur.rev || 0)) {
+    throw new HttpsError("aborted", "Someone else just changed this machine. Your screen has their changes now — make your change again.");
+  }
+  const { changes, removed, summary } = makeChanges(cur);
+  const ref = machineSpecs.doc(machineId);
+  if (sSnap.exists) tx.create(ref.collection("versions").doc(), { ...specFields(cur), rev: cur.rev || 0, savedAt: FieldValue.serverTimestamp(), savedBy: me.employeeNumber, savedByName: me.name, reason });
+  for (const r of removed) {
+    tx.create(ref.collection("removed").doc(), { ...r, removedBy: me.employeeNumber, removedByName: me.name, removedAt: FieldValue.serverTimestamp(), purgeAfter: purgeDate() });
+  }
+  const next = { ...specFields(cur), ...changes };
+  const rev = (cur.rev || 0) + 1;
+  tx.set(ref, { ...next, machineId, partNumbers: specsLib.partNumbersOf(next), rev, updatedAt: FieldValue.serverTimestamp(), updatedBy: me.employeeNumber, updatedByName: me.name });
+  auditRecord(tx, "updated", "machine specs", machineId, me.employeeNumber, { summary, rev });
+  return { machineId, rev };
+}
+
+// { machineId, section: "info", info } or { machineId, section, items } (the whole section's rows), rev (what the
+// screen had — if someone else saved in between, nothing is overwritten).
+exports.saveMachineSpecs = onCall(async (req) => {
+  const me = await requireMachineEditor(req);
+  const machineId = requireMachineId(req.data?.machineId);
+  const section = String(req.data?.section || "");
+  let value;
+  if (section === "info") {
+    const { info, error } = specsLib.cleanInfo(req.data?.info);
+    if (error) throw new HttpsError("invalid-argument", error);
+    value = info;
+  } else {
+    const { items, error } = specsLib.cleanSection(section, req.data?.items, isOurUpload);
+    if (error) throw new HttpsError("invalid-argument", error);
+    value = items;
+  }
+  return db.runTransaction((tx) => changeSpecs(tx, me, machineId, req.data?.rev, `edited ${SECTION_NAMES[section]}`, (cur) => {
+    if (section === "info") return { changes: { info: value }, removed: [], summary: "Info changed" };
+    const d = specsLib.diffSection(cur[section], value);
+    return { changes: { [section]: value }, removed: d.removed.map((row) => ({ section, row })), summary: `${SECTION_NAMES[section]}: ${specsLib.describeDiff(section, d)}` };
+  }));
+});
+
+// { fromId, toId, sections: ["parts", …], replace } — copy rows from another machine, then edit them.
+// replace: true takes the target's old rows off (to Removed, 30 days); otherwise the copies are added after them.
+// Photos and documents are not copied (each machine's own).
+exports.copyMachineSpecs = onCall(async (req) => {
+  const me = await requireMachineEditor(req);
+  const fromId = requireMachineId(req.data?.fromId);
+  const toId = requireMachineId(req.data?.toId);
+  if (fromId === toId) throw new HttpsError("invalid-argument", "Pick a different machine to copy from.");
+  const sections = [...new Set(Array.isArray(req.data?.sections) ? req.data.sections : [])].filter((k) => ["info", "parts", "fasteners", "belts", "fluids", "notes"].includes(k));
+  if (!sections.length) throw new HttpsError("invalid-argument", "Pick what to copy.");
+  const replace = req.data?.replace === true;
+  return db.runTransaction(async (tx) => {
+    const src = await tx.get(machineSpecs.doc(fromId));
+    if (!src.exists) throw new HttpsError("not-found", "That machine has nothing to copy yet.");
+    const from = src.data();
+    return changeSpecs(tx, me, toId, req.data?.rev, `copied from ${fromId}`, (cur) => {
+      const changes = {};
+      const removed = [];
+      for (const k of sections) {
+        if (k === "info") { // make, model, vendor, notes only — serial number and install date belong to one machine
+          const i = from.info || {};
+          changes.info = { ...(cur.info || {}), make: i.make || "", model: i.model || "", vendor: i.vendor || "", notes: i.notes || (cur.info?.notes || "") };
+          continue;
+        }
+        const copies = specsLib.copyRows(from[k]);
+        if (replace) removed.push(...(cur[k] || []).map((row) => ({ section: k, row })));
+        changes[k] = [...(replace ? [] : cur[k] || []), ...copies].slice(0, 300);
+      }
+      return { changes, removed, summary: `Copied ${sections.map((k) => SECTION_NAMES[k]).join(", ")} from ${fromId}${replace ? " (replaced)" : ""}` };
+    });
+  });
+});
+
+// { machineId, versionId } — put the machine's specs back the way they were (what's there now is saved first).
+exports.restoreMachineSpecsVersion = onCall(async (req) => {
+  const me = await requireMachineEditor(req);
+  const machineId = requireMachineId(req.data?.machineId);
+  const versionId = String(req.data?.versionId || "");
+  return db.runTransaction(async (tx) => {
+    const v = await tx.get(machineSpecs.doc(machineId).collection("versions").doc(versionId));
+    if (!v.exists) throw new HttpsError("not-found", "That version no longer exists.");
+    const old = specFields(v.data());
+    return changeSpecs(tx, me, machineId, null, "before restoring an older version", (cur) => {
+      const removed = SPEC_SECTIONS.flatMap((k) => specsLib.diffSection(cur[k], old[k]).removed.map((row) => ({ section: k, row })));
+      return { changes: old, removed, summary: `Restored the version from revision ${v.get("rev")}` };
+    });
+  });
+});
+
+// { machineId, removedId } — put a removed row or file back (within 30 days).
+exports.restoreMachineSpecItem = onCall(async (req) => {
+  const me = await requireMachineEditor(req);
+  const machineId = requireMachineId(req.data?.machineId);
+  const rRef = machineSpecs.doc(machineId).collection("removed").doc(String(req.data?.removedId || ""));
+  return db.runTransaction(async (tx) => {
+    const r = await tx.get(rRef);
+    if (!r.exists) throw new HttpsError("not-found", "That item is no longer in Removed.");
+    const { section, row } = r.data();
+    const out = await changeSpecs(tx, me, machineId, null, `put back a row in ${SECTION_NAMES[section]}`, (cur) => {
+      const rows = cur[section] || [];
+      return { changes: { [section]: rows.some((x) => x.id === row.id) ? rows : [...rows, row] }, removed: [], summary: `${SECTION_NAMES[section]}: 1 put back` };
+    });
+    tx.delete(rRef);
+    return out;
   });
 });
 

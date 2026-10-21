@@ -11,7 +11,7 @@ export function el(tag, props = {}, ...children) {
     else if (value === true) node.setAttribute(key, "");
     else if (value !== false && value != null) node.setAttribute(key, value);
   }
-  for (const child of children.flat()) {
+  for (const child of children.flat(Infinity)) {
     if (child != null) node.append(child.nodeType ? child : document.createTextNode(String(child)));
   }
   return node;

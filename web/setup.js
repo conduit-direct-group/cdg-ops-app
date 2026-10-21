@@ -6,6 +6,7 @@
 import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, picker } from "./ui.js";
 import { data, onDataChange, lineName } from "./data.js";
 import { rolePosts } from "./announcements.js";
+import { roleEditsMachines } from "./machines.js";
 import { callAdminSaveLine, callAdminSaveMachine, callAdminSaveRole, callAdminSaveTeam, callAdminSaveMachineType, callAdminListEmployees } from "./firebase.js";
 
 // The starting roles from the plan (§5). Ids are permanent; names can be edited later.
@@ -601,7 +602,7 @@ export function openRoles(container, { onExit }) {
       title: "Roles", noun: "role", a: "a role", plural: "roles", nameLabel: "Role name (e.g. Quality)",
       hint: "A person's roles decide what shows on their home screen and what they can do.",
       items: () => data.roles, save: callAdminSaveRole, rename: true,
-      meta: (r) => (rolePosts(r) ? "📣 Can post announcements" : null),
+      meta: (r) => [rolePosts(r) ? "📣 Can post announcements" : null, roleEditsMachines(r) ? "⚙ Can edit machines" : null].filter(Boolean).join(" · ") || null,
       // Who may post announcements (Decision 58). Starts on for Admin, Plant Manager, Supervisor, Training & Safety, Office.
       members: (r, { kit, show }) => {
         const on = rolePosts(r);
@@ -617,11 +618,21 @@ export function openRoles(container, { onExit }) {
           if (ok) show("item", `${r.name}: forms they can edit updated`, "ok");
         };
         const forms = (data.formTemplates || []).filter((t) => t.active !== false);
+        // Who may add and edit machine parts & specs (Decision 51). Starts on for Maintenance and Admin.
+        const edits = roleEditsMachines(r);
+        const flipMachines = async () => {
+          const ok = await kit.act(() => callAdminSaveRole({ id: r.id, name: r.name, editMachines: !edits }), flipMachines);
+          if (ok) show("item", edits ? `${r.name}: editing machines turned off` : `${r.name} can now edit machines`, "ok");
+        };
         return [
           el("div", { class: "card" },
             el("strong", {}, "📣 Announcements"),
             el("p", { class: "card-note" }, on ? "People with this role can post announcements." : "People with this role can't post announcements."),
             el("button", { class: on ? "btn secondary" : "btn", type: "button", disabled: kit.busy, onclick: flip }, on ? "Turn off posting" : "✔ Allow posting")),
+          el("div", { class: "card" },
+            el("strong", {}, "⚙ Machines"),
+            el("p", { class: "card-note" }, edits ? "People with this role can add and edit machine parts, specs, photos, and notes." : "People with this role can't edit machines. (Maintenance, Plant Manager, and Admin can always view them.)"),
+            el("button", { class: edits ? "btn secondary" : "btn", type: "button", disabled: kit.busy, onclick: flipMachines }, edits ? "Turn off editing" : "✔ Allow editing")),
           el("div", { class: "card" },
             el("strong", {}, "📝 Forms this role can edit"),
             r.id === "admin"

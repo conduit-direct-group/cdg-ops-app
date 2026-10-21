@@ -132,7 +132,7 @@ function databaseSource(onLayout, onStations, onSops, onFail) {
   return () => stops.forEach((x) => x());
 }
 
-export function openShopMap(container, { onExit, onFixes, onReport, onDocs = null, startStation = null, source = databaseSource }) {
+export function openShopMap(container, { onExit, onFixes, onReport, onMachine = null, onDocs = null, startStation = null, source = databaseSource }) {
   const st = {
     ready: false, failed: false, view: "map", sel: null, sheetFull: false, doc: null, mode: "steps", stepIdx: 0,
     searchOpen: false, q: "", v: { s: 0.5, tx: 0, ty: 0 }, anim: false, zone: null, w: 0, vw: 390, vh: 800,
@@ -437,10 +437,11 @@ export function openShopMap(container, { onExit, onFixes, onReport, onDocs = nul
         sheet || tab ? el("button", { class: "sm-sqbtn", type: "button", "aria-label": "Close", onclick: close }, "×") : null),
       el("div", { class: "sm-panelbody" },
         el("p", { class: "sm-desc" }, s.desc || ""),
-        s.machineId && (onFixes || onReport)
+        s.machineId && (onFixes || onReport || onMachine)
           ? el("div", { class: "sm-machine" },
               el("span", { class: "sm-eyebrow" }, `MACHINE ${s.machineId}${machine ? ` · ${machine.name}` : ""}`),
               el("div", { class: "sm-row" },
+                onMachine ? el("button", { class: "btn", type: "button", onclick: () => onMachine(s.machineId) }, "⚙ Machine page") : null,
                 onFixes ? el("button", { class: "btn secondary", type: "button", onclick: () => onFixes(s.machineId) }, "🔧 Fixes & last service") : null,
                 onReport ? el("button", { class: "btn danger", type: "button", onclick: () => onReport(s.machineId) }, "🚨 Maintenance Request") : null))
           : null,
