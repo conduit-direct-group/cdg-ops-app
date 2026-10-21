@@ -2860,6 +2860,44 @@ exports.lineLogReviewers = onCall(async (req) => {
 });
 
 // ---------------------------------------------------------------------------
+// Reference documents (Decision 65) — e.g. the Shift Station Assignment Sheet, viewable from the Shop Map and the
+// Training page. The file is in our storage (uploads/…); the list is here (signed-in people read it). Admins only.
+//   refDocs/{auto}   name, url, kind ("pdf" | "image"), fileName, rev, history [{rev, url, fileName, at, by}], active
+// ---------------------------------------------------------------------------
+
+const refDocs = db.collection("refDocs");
+
+// Admins: add { name, url, kind, fileName, note } or change { id, name, url?, kind?, fileName?, active? }.
+// A new file is a new revision; earlier files stay in the history.
+exports.saveRefDoc = onCall(async (req) => {
+  const adminNumber = await requireAdmin(req);
+  const me = await requireMember(req);
+  const name = records.cleanName(req.data?.name, 120);
+  if (!name) throw new HttpsError("invalid-argument", "Give the document a title (120 characters max).");
+  const url = req.data?.url ? String(req.data.url) : null;
+  if (url && !(fixesLib.storagePath(url, BUCKET) || "").startsWith("uploads/")) throw new HttpsError("invalid-argument", "That file didn't upload. Add it again.");
+  const kind = req.data?.kind === "image" ? "image" : "pdf";
+  const fileName = typeof req.data?.fileName === "string" ? req.data.fileName.slice(0, 120) : "";
+  const active = req.data?.active === false ? false : true;
+  const id = req.data?.id ? String(req.data.id) : null;
+  return db.runTransaction(async (tx) => {
+    const ref = id ? refDocs.doc(id) : refDocs.doc();
+    const snap = id ? await tx.get(ref) : null;
+    if (id && !snap.exists) throw new HttpsError("not-found", "That document is no longer on the list.");
+    if (!id && !url) throw new HttpsError("invalid-argument", "Add the file first.");
+    const cur = snap?.data() || { rev: 0, history: [] };
+    const rev = url ? (cur.rev || 0) + 1 : cur.rev || 1;
+    const doc = {
+      name, active, updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber, updatedByName: me.name,
+      ...(url ? { url, kind, fileName, rev, history: [...(cur.history || []), { rev, url, fileName, at: new Date(), by: me.name }] } : {}),
+    };
+    tx.set(ref, doc, { merge: true });
+    auditRecord(tx, id ? (active ? "updated" : "retired") : "created", "reference document", ref.id, adminNumber, { name, rev });
+    return { id: ref.id, rev };
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Shop map (plant floor map). Company content — kept in the database only, read by signed-in people:
 //   floorMap/layout          size, building outline, zones, icons
 //   floorStations/{id}       position, shape, label, description, linked documents, machineId (M-number or null)

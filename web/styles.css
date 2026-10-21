@@ -1213,3 +1213,11 @@ details.fold.fold-due { border-color: var(--orange); background: var(--orange-ti
   .tally-row .btn { grid-column: auto; width: 100%; min-width: 0; }
   main[data-width="wide"] .timer-card { max-width: 520px; }
 }
+
+/* Reference documents (Decision 65). */
+.doc-row { gap: var(--s2); }
+.doc-link { display: flex; flex-direction: column; gap: 2px; color: var(--white); text-decoration: none; min-height: var(--tap); justify-content: center; }
+.doc-link:hover .person-name { color: var(--orange); }
+.sm-docs-btn { white-space: nowrap; margin-left: auto; min-width: 44px; justify-content: center; }
+@media (max-width: 520px) { .sm-docs-text { display: none; } .sm-docs-btn { font-size: var(--text-section); text-decoration: none; } }
+@media (max-width: 420px) { .sm-top .sm-tab { padding: 0 var(--s1); } } /* room for the 📄 button on small phones */

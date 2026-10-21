@@ -274,6 +274,11 @@ service cloud.firestore {
       allow read: if member();
     }
 
+    // Reference documents (posted-on-the-floor documents, e.g. the station assignment sheet): signed-in people read.
+    match /refDocs/{id} {
+      allow read: if member();
+    }
+
     // Admin-only lists: who did what (every admin action), Odoo sync status, searches with no results.
     match /auditLog/{id} {
       allow read: if admin();

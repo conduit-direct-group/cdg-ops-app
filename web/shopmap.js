@@ -132,7 +132,7 @@ function databaseSource(onLayout, onStations, onSops, onFail) {
   return () => stops.forEach((x) => x());
 }
 
-export function openShopMap(container, { onExit, onFixes, onReport, startStation = null, source = databaseSource }) {
+export function openShopMap(container, { onExit, onFixes, onReport, onDocs = null, startStation = null, source = databaseSource }) {
   const st = {
     ready: false, failed: false, view: "map", sel: null, sheetFull: false, doc: null, mode: "steps", stepIdx: 0,
     searchOpen: false, q: "", v: { s: 0.5, tx: 0, ty: 0 }, anim: false, zone: null, w: 0, vw: 390, vh: 800,
@@ -179,7 +179,9 @@ export function openShopMap(container, { onExit, onFixes, onReport, startStation
     return el("div", { class: "sm-top" },
       el("button", { class: "link-btn", type: "button", onclick: onExit }, "← Home"),
       el("div", { class: "sm-tabs", role: "tablist" }, ["map", "zones", "lines"].map((v) =>
-        el("button", { class: "sm-tab", type: "button", role: "tab", "data-view": v, onclick: () => setView(v) }, { map: "🗺 Map", zones: "▦ Zones", lines: "☰ Lines" }[v]))));
+        el("button", { class: "sm-tab", type: "button", role: "tab", "data-view": v, onclick: () => setView(v) }, { map: "🗺 Map", zones: "▦ Zones", lines: "☰ Lines" }[v]))),
+      // Reference documents (e.g. the shift station assignment sheet).
+      onDocs ? el("button", { class: "link-btn sm-docs-btn", type: "button", onclick: onDocs, "aria-label": "Reference documents" }, "📄", el("span", { class: "sm-docs-text" }, " Documents")) : null);
   }
   function setView(v) {
     if (st.view === v) return;

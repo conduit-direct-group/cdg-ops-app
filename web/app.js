@@ -31,6 +31,7 @@ import { openFormsAdmin, editableForms } from "./forms.js";
 import { openShopTasks, runsShopList } from "./shoptasks.js";
 import { openStations, stationForms } from "./stations.js";
 import { openLineCheck } from "./linecheck.js";
+import { openRefDocs } from "./refdocs.js";
 
 const screen = document.getElementById("screen");
 const deviceBadge = document.getElementById("device-badge");
@@ -301,6 +302,7 @@ function openMap(station = null) {
     // Office, Sales, Quality, Logistics: the map without machine buttons (Decision 53).
     onFixes: usesMachines(me().roles) ? (machineId) => openFixes(null, machineId) : null,
     onReport: usesMachines(me().roles) ? (machineId) => openReport(null, () => openMap(station), machineId) : null,
+    onDocs: () => openDocsScreen(() => openMap(station), "Shop Map"),
   });
 }
 
@@ -347,6 +349,13 @@ function openLineCheckScreen(lineId = null, logId = null) {
   if (closeModule) closeModule();
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openLineCheck(screen, { me: me(), startLine: lineId, startLogId: logId, onExit: () => go("home") });
+}
+
+// Reference documents (from the Shop Map, or the Training page's link: ?docs=1).
+function openDocsScreen(back = () => go("home"), backLabel = "Home") {
+  if (closeModule) closeModule();
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  closeModule = openRefDocs(screen, { me: me(), onExit: back, backLabel });
 }
 
 // Forms editor for non-admins allowed on the Roles screen (admins use Admin → Forms).
@@ -731,11 +740,13 @@ onAuthStateChanged(auth, async (user) => {
     const handoff = params.get("handoff"); // a shift handoff notification
     const shop = params.get("shop"); // a shop task notification
     const lineLog = params.get("linelog"); // an out-of-spec line check alert
-    if (cat || machine || req || issuesLink || ann || handoff || shop || lineLog) history.replaceState(null, "", location.pathname);
+    const docs = params.get("docs"); // the Training page's "Reference documents" link
+    if (cat || machine || req || issuesLink || ann || handoff || shop || lineLog || docs) history.replaceState(null, "", location.pathname);
     if (ann) openAnn(ann);
     else if (handoff) openHandoffScreen(handoff);
     else if (shop) openShopScreen(shop);
     else if (lineLog) openLineCheckScreen(lineLog.split("__")[2] || null, lineLog);
+    else if (docs) openDocsScreen();
     else if (req) openRequestScreen(req);
     else if (issuesLink) openIssues();
     else if (cat || machine) openFixes(cat, machine);

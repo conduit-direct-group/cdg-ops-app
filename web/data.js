@@ -7,7 +7,7 @@
 import { db, TEST_MODE } from "./firebase.js";
 import { collection, doc, onSnapshot, query, where } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 
-const LISTS = ["roles", "lines", "machines", "fixCategories", "checklistTemplates", "requestTypes", "teams", "machineTypes", "formTemplates"];
+const LISTS = ["roles", "lines", "machines", "fixCategories", "checklistTemplates", "requestTypes", "teams", "machineTypes", "formTemplates", "refDocs"];
 
 // null = still loading; [] = loaded and empty.
 // myself = my own employee record (live roles). fixes = approved fixes; myFixes = pending suggestions I can see
@@ -24,7 +24,7 @@ const LISTS = ["roles", "lines", "machines", "fixCategories", "checklistTemplate
 export const data = {
   myself: null, roles: null, teams: null, machineTypes: null, lines: null, machines: null, fixCategories: null, checklistTemplates: null, requestTypes: null,
   fixes: null, myFixes: null, openIssues: null, myIssues: null, checklistUnits: null, requestsForMe: null, requestsSent: null,
-  plantStatus: null, urgentRequests: null, announcements: null, mySigs: null, mySigList: null, formTemplates: null, handoffsOpen: null, shopLists: null, stationLists: null, lineLogs: null, plantLogs: null,
+  plantStatus: null, urgentRequests: null, announcements: null, mySigs: null, mySigList: null, formTemplates: null, handoffsOpen: null, shopLists: null, stationLists: null, lineLogs: null, plantLogs: null, refDocs: null,
 };
 
 const listeners = new Set();

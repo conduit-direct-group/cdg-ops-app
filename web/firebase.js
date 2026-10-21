@@ -138,6 +138,8 @@ export const callTapPlantItem = call("tapPlantItem");
 export const callSignLineLog = call("signLineLog");
 export const callReviewLineLog = call("reviewLineLog");
 export const callLineLogReviewers = call("lineLogReviewers");
+// Reference documents
+export const callSaveRefDoc = call("saveRefDoc");
 export const callAdminSyncOdoo = call("adminSyncOdoo", { timeout: 120000 });
 // Copying files from the old library can take a few minutes.
 export const callAdminImportOldLibrary = call("adminImportOldLibrary", { timeout: 540000 });
