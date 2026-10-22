@@ -114,3 +114,11 @@ test("a Supervisor can cover several teams (shifts)", () => {
   assert.deepStrictEqual(d.cleanOrg({ department: "production", supervisesTeams: ["b", "d", "b"] }, { departments: d.startingDepartments(), people, emp: "supBD", teamIds: teams }).org.supervisesTeams, ["b", "d"]);
   assert.match(d.cleanOrg({ department: "production", supervisesTeams: ["z"] }, { departments: d.startingDepartments(), people, emp: "supBD", teamIds: teams }).error, /teams/);
 });
+
+test("practice accounts are left off the org chart", () => {
+  assert.strictEqual(d.isPracticeAccount("test"), true);
+  assert.strictEqual(d.isPracticeAccount("TEST Operator"), true);
+  assert.strictEqual(d.isPracticeAccount(" TEST Lead"), true);
+  assert.strictEqual(d.isPracticeAccount("Testa Smith"), false);
+  assert.strictEqual(d.isPracticeAccount("Pat Lopez"), false);
+});

@@ -4039,7 +4039,7 @@ exports.orgChart = onCall(async (req) => {
   const me = await requireMember(req);
   const o = await orgData();
   const name = new Map(o.people.map((x) => [x.id, x.name]));
-  const on = o.people.filter((x) => x.active);
+  const on = o.people.filter((x) => x.active && !deptLib.isPracticeAccount(x.name)); // practice accounts stay off the chart
   return {
     departments: o.departments.filter((dep) => dep.active !== false).map((dep) => ({ id: dep.id, name: dep.name, head: o.headIds.get(dep.id) })),
     people: on.map((x) => ({ emp: x.id, name: x.name, title: o.title(x), department: x.department, head: !!x.department && o.headIds.get(x.department) === x.id, reportsTo: o.reports.get(x.id)?.reportsTo || null }))

@@ -118,6 +118,9 @@ function reportsToAll(people, { headsReportTo = null } = {}) {
   return out;
 }
 
+// Practice accounts ("test", "TEST Operator", "TEST Lead") are left off the org chart everyone sees.
+const isPracticeAccount = (name) => /^test\b/i.test(String(name || "").trim());
+
 // Departments (on) with people in them but no head.
 function departmentsWithoutHead(people, departments) {
   return (departments || []).filter((d) => d.active !== false && people.some((p) => p.active !== false && p.department === d.id) && !headOf(d.id, people)).map((d) => d.id);
@@ -125,5 +128,5 @@ function departmentsWithoutHead(people, departments) {
 
 module.exports = {
   STARTING_DEPARTMENTS, PRODUCTION, TOP, startingDepartments, suggestDepartment, cleanDepartments, cleanOrg, headOf, reportsToAll,
-  departmentsWithoutHead,
+  departmentsWithoutHead, isPracticeAccount,
 };
