@@ -1986,6 +1986,7 @@ function signable(handler) {
   return async (req) => {
     const clientId = offlineLib.cleanClientId(req.data?.clientId);
     if (!clientId) return handler(req);
+    requireSignedIn(req); // never look up a receipt for someone not signed in
     const ref = col("outboxReceipts", isTest(req)).doc(clientId);
     const prior = await ref.get();
     if (prior.exists) return { ...(prior.get("result") || {}), already: true };
