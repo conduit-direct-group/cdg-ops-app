@@ -278,6 +278,7 @@ function renderHome() {
       lineCheck: (lineId, logId) => openLineCheckScreen(lineId, logId),
       silos: () => openSiloScreen(),
       reels: (view) => openReelScreen(view),
+      downtime: () => openDowntimeScreen(),
       incidents: (view, id) => openIncidentScreen(view, id),
     },
   });

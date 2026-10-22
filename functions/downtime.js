@@ -4,8 +4,10 @@
 //
 //   shiftReports/{lineId__date__shiftId}   lineId, lineName, lineNumber, date (the day the shift started), shiftId,
 //                  shiftName, team ("A"… or "Sat A"/"Sat B" picked on Saturdays), size, sdr, productSize,
-//                  changeover { minutes, type, productSize, by, byName, atMs } | null, comments,
+//                  changeover (only on the first practice reports — changeovers are now their own entries), comments,
 //                  signed { by, byName, atMs, device } | null
+//   changeoverEvents/{auto} reportId + date, lineId, lineNumber, team, productSize, minutes, type, by, byName, atMs
+//                  (as many per shift as needed — Chris, 10-22-2026)
 //   downtimeEvents/{auto}   reportId + date, lineId, lineNumber, team, productSize, minutes, reason, called, calledWho,
 //                  maintenance ("none" | "team" | "called"), issueId, issueTitle, fix (what was done), by, byName, atMs
 //   scrapEntries/{auto}     reportId + date, lineId, lineNumber, team, productSize, feet, reason, notes, tag, by, atMs
@@ -142,14 +144,20 @@ function reelScrap(reel) {
   };
 }
 
+// Changeovers for a report: its entries, plus the single changeover the first practice reports kept on the report.
+function changeoverList(report, changeovers = []) {
+  const legacy = report.changeover ? [{ id: "legacy", legacy: true, ...report.changeover }] : [];
+  return [...legacy, ...changeovers].sort((a, b) => (a.atMs || 0) - (b.atMs || 0));
+}
+
 // A typed scrap entry whose tag matches a flagged reel already counted.
 const duplicateTag = (tag, reels) => !!clean(tag, 30) && (reels || []).some((r) => r.tag && r.tag.toLowerCase() === clean(tag, 30).toLowerCase());
 
 // Workbook rows for one report (data columns only, in column order). Date as "YYYY-MM-DD".
-function sheetRows(report, events = [], scraps = []) {
+function sheetRows(report, events = [], scraps = [], changeovers = []) {
   const head = (x) => [report.date, report.lineNumber, x.team || report.team || "", x.productSize || report.productSize || ""];
   return {
-    changeover: report.changeover ? [[...head(report.changeover), report.changeover.minutes, report.changeover.type]] : [],
+    changeover: changeoverList(report, changeovers).map((c) => [...head(c), c.minutes, c.type]),
     downtime: events.map((e) => [...head(e), e.minutes, e.reason, downtimeNotes(e), maintenanceLog(e), someoneContacted(e)]),
     scrap: scraps.filter((s) => s.feet).map((s) => [...head(s), s.feet, s.reason, s.notes || ""]),
   };
@@ -164,5 +172,5 @@ const SHEET_HEADERS = {
 module.exports = {
   CHANGEOVER_TYPES, DOWNTIME_REASONS, SCRAP_REASONS, SATURDAY_TEAMS, ENTER_ROLES, SIGN_ROLES, REEL_TO_SCRAP, SHEET_HEADERS,
   reportId, productSize, lineNumber, canEnter, canSign, teamFor, cleanProduct, cleanChangeover, cleanDowntime, cleanScrap,
-  someoneContacted, maintenanceLog, downtimeNotes, reelScrap, duplicateTag, sheetRows,
+  someoneContacted, maintenanceLog, downtimeNotes, reelScrap, duplicateTag, changeoverList, sheetRows,
 };

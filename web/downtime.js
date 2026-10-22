@@ -1,4 +1,5 @@
-// Downtime & Scrap shift report (Chris, 10-22-2026). Line Leads and Supervisors enter each changeover, downtime
+// Downtime & Scrap shift report (Chris, 10-22-2026). Line Leads and Supervisors enter each changeover (as many as
+// needed), downtime
 // event, and partial reel / scrap as it happens, then sign with a PIN. Flagged reels decided Scrap or Regrind show up
 // in the scrap list on their own (never entered twice). Rules and workbook columns: functions/downtime.js.
 // The SharePoint workbook isn't connected yet — Export to Excel gives the rows for each tab.
@@ -16,6 +17,8 @@ const LINE_KEY = "cdg.lineCheckLine"; // the line tablet's line (shared with the
 const MAINT = [["none", "No"], ["team", "Fixed by our team"], ["called", "Maintenance called"]];
 
 export const usesDowntime = (roles) => roles.some((r) => DOWNTIME_ROLES.includes(r));
+const HOME_ROLES = ["lead", "supervisor"]; // Home "Needs you" item (Chris, 10-22-2026)
+const HOME_REFRESH_MS = 2 * 60000;
 const stored = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
 const store = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
 const fmtDay = (day) => new Date(`${day}T12:00:00`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
@@ -29,8 +32,53 @@ function signTag(r, now = Date.now()) {
   return el("span", { class: "tag" }, r.endMs ? `Not signed — due by ${fmtTime(r.endMs)}` : "Not signed");
 }
 
+// Home → Needs you (Line Leads, Supervisors): this shift's report for their line — the line tablet's line, else the
+// line they last picked, else their home line. Gray until the last hour, red after, green once signed. The status is
+// read from the server in the background (every 2 minutes at most) and the Home redraws when it arrives.
+const home = { lineId: null, at: 0, busy: false, report: null, events: 0, feet: 0, error: false };
+
+function homeLine(myself) {
+  const lines = (data.lines || []).filter((l) => l.active !== false);
+  const pick = [stored(LINE_KEY), myself?.homeLineId].find((id) => id && lines.some((l) => l.id === id));
+  return pick || null;
+}
+
+function rememberHome(view) {
+  const r = view.report;
+  Object.assign(home, { lineId: r.lineId, at: Date.now(), report: r, error: false,
+    events: (view.events || []).length, feet: (view.scraps || []).reduce((a, x) => a + (x.feet || 0), 0) });
+}
+
+async function refreshHome(lineId, onRedraw) {
+  if (home.busy || !navigator.onLine) return;
+  home.busy = true;
+  try {
+    rememberHome((await callShiftReport({ lineId })).data);
+  } catch {
+    Object.assign(home, { lineId, at: Date.now(), report: null, error: true });
+  }
+  home.busy = false;
+  onRedraw?.();
+}
+
+export function downtimeItems(roles, myself, onOpen, onRedraw) {
+  if (!roles.some((r) => HOME_ROLES.includes(r))) return [];
+  const lineId = homeLine(myself);
+  const base = { key: "downtime", icon: "⏱", onOpen };
+  if (!lineId) return [{ ...base, title: "Downtime & scrap shift report", detail: "pick your line to start", state: "due" }];
+  if (home.lineId !== lineId || Date.now() - home.at > HOME_REFRESH_MS || (home.report?.endMs && Date.now() > home.report.endMs)) refreshHome(lineId, onRedraw);
+  const r = home.lineId === lineId ? home.report : null;
+  const name = lines().find((l) => l.id === lineId)?.name || "";
+  if (!r) return [{ ...base, title: `Downtime & scrap — ${name}`, detail: home.error ? "couldn't check — tap to open" : "checking…", state: "due" }];
+  const counts = `${home.events} downtime · ${plainNum(home.feet)} ft scrap`;
+  if (r.signed) return [{ ...base, title: `Downtime & scrap — ${name}`, detail: `signed by ${r.signed.byName} · ${counts}`, state: "done" }];
+  const late = r.endMs && Date.now() >= r.endMs - 3600000;
+  return [{ ...base, title: `Downtime & scrap — ${name}: not signed`, detail: `${r.saved ? counts : "not started"} · ${late ? "due" : "due by"} ${fmtTime(r.endMs)}`, state: late ? "late" : "due" }];
+}
+
+const lines = () => (data.lines || []).filter((l) => l.active !== false);
+
 export function openDowntime(container, { me, onExit, backLabel = "Home" }) {
-  const lines = () => (data.lines || []).filter((l) => l.active !== false);
   const keepLine = stored(LINE_KEY);
   const ui = {
     lineId: lines().some((l) => l.id === keepLine) ? keepLine : null, reportId: null,
@@ -47,6 +95,7 @@ export function openDowntime(container, { me, onExit, backLabel = "Home" }) {
     render();
     try {
       ui.view = (await callShiftReport(ui.reportId ? { reportId: ui.reportId } : { lineId: ui.lineId })).data;
+      if (!ui.reportId) rememberHome(ui.view); // keeps the Home item up to date after each save
       const r = ui.view.report;
       ui.head = { team: r.team || "", size: r.size || "", sdr: r.sdr || "", otherSize: "" };
       if (r.size && !ui.view.lists.sizes.includes(r.size)) Object.assign(ui.head, { size: "other", otherSize: r.size });
@@ -98,7 +147,8 @@ export function openDowntime(container, { me, onExit, backLabel = "Home" }) {
   }
 
   async function removeEntry(kind, e) {
-    const ok = await choose({ title: kind === "downtime" ? `Remove ${e.minutes} min · ${e.reason}?` : `Remove ${plainNum(e.feet)} ft · ${e.reason}?`, options: [{ value: "yes", label: "Yes, remove it" }] });
+    const what = kind === "changeover" ? `${e.minutes} min · ${e.type} changeover` : kind === "downtime" ? `${e.minutes} min · ${e.reason}` : `${plainNum(e.feet)} ft · ${e.reason}`;
+    const ok = await choose({ title: `Remove ${what}?`, options: [{ value: "yes", label: "Yes, remove it" }] });
     if (ok) await act(() => callSaveShiftEntry({ reportId: report().id, kind, id: e.id, remove: true }), () => removeEntry(kind, e), "Removed");
   }
 
@@ -171,34 +221,57 @@ export function openDowntime(container, { me, onExit, backLabel = "Home" }) {
           h.size === "other" ? el("input", { class: "field", value: h.otherSize, maxlength: "30", placeholder: "Specialty size, e.g. 3\"", oninput: (e) => { h.otherSize = e.target.value; } }) : null,
           label("Wall"), chips(L.sdrs, h.sdr, (v) => { h.sdr = v; }),
           changed ? el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: () => saveHeader({}, "Product saved") }, ui.busy ? "Saving…" : r.saved ? "Save product change" : "Start the shift report") : null,
-          r.saved ? el("p", { class: "card-note" }, "Change it when the product changes — new entries use the product shown here.") : el("p", { class: "card-note" }, "Pick the product first; then add changeover, downtime, and scrap as they happen."),
+          r.saved ? el("p", { class: "card-note" }, "Change it when the product changes — new entries use the product shown here.") : el("p", { class: "card-note" }, "Pick the product first; then add changeovers, downtime, and scrap as they happen."),
         ]);
   }
 
+  // A new changeover asks for the product it changed TO (starts as the current one); saving it also updates
+  // "Product running", so the entries after it carry the new size.
+  async function saveChangeover() {
+    const f = ui.form;
+    const size = f.size === "other" ? f.otherSize.trim() : f.size;
+    const productChanged = !f.id && (size !== headSize() || f.sdr !== ui.head.sdr);
+    await act(async () => {
+      if (productChanged) {
+        Object.assign(ui.head, { size: f.size, otherSize: f.otherSize, sdr: f.sdr });
+        await callSaveShiftReport(headerPayload());
+      }
+      await callSaveShiftEntry({ reportId: report().id, kind: "changeover", ...(f.id ? { id: f.id } : {}), minutes: f.minutes, type: f.type });
+    }, saveChangeover, f.id ? "Updated" : productChanged ? "Changeover added — product updated" : "Changeover added");
+  }
+
+  function changeoverForm(f) {
+    const L = ui.view.lists;
+    return el("div", { class: "entry-form" },
+      label("Minutes"), num(f.minutes, (v) => { f.minutes = v; }, "min", "1440"),
+      label("Type"), chips(L.changeoverTypes, f.type, (v) => { f.type = v; }),
+      f.id ? null : [
+        label("New product (after the changeover)"),
+        chips([...L.sizes, "other"], f.size, (v) => { f.size = v; }, (x) => (x === "other" ? "Other size…" : x)),
+        f.size === "other" ? el("input", { class: "field", value: f.otherSize, maxlength: "30", placeholder: "Specialty size, e.g. 3\"", oninput: (e) => { f.otherSize = e.target.value; } }) : null,
+        chips(L.sdrs, f.sdr, (v) => { f.sdr = v; }),
+      ],
+      el("div", { class: "btn-row" },
+        el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: saveChangeover }, ui.busy ? "Saving…" : f.id ? "Save changes" : "Add changeover"),
+        el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => { ui.form = null; render(); } }, "Cancel")));
+  }
+
   function changeoverCard() {
-    const r = report();
+    const list = ui.view.changeovers || [];
     const f = ui.form?.kind === "changeover" ? ui.form : null;
-    const c = r.changeover;
+    const total = list.reduce((a, c) => a + (c.minutes || 0), 0);
     return el("section", { class: "card" },
-      el("strong", {}, "🔁 Changeover (once per shift)"),
-      f
-        ? [
-          label("Minutes"), num(f.minutes, (v) => { f.minutes = v; }, "min", "1440"),
-          label("Type"), chips(ui.view.lists.changeoverTypes, f.type, (v) => { f.type = v; }),
-          el("p", { class: "card-note" }, `Logged for the product above: ${headSize()} ${ui.head.sdr}`.trim()),
-          el("div", { class: "btn-row" },
-            el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: () => saveHeader({ changeover: { minutes: f.minutes, type: f.type } }, "Changeover saved") }, ui.busy ? "Saving…" : "Save changeover"),
-            el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => { ui.form = null; render(); } }, "Cancel")),
-        ]
-        : c
-          ? [
-            el("p", {}, `${c.minutes} min · ${c.type} · ${c.productSize}`),
-            locked() ? null : el("span", { class: "dt-actions" },
-              el("button", { class: "link-btn", type: "button", disabled: ui.busy, onclick: () => { ui.form = { kind: "changeover", minutes: String(c.minutes), type: c.type }; render(); } }, "Edit"),
-              el("button", { class: "link-btn", type: "button", disabled: ui.busy, onclick: async () => { if (await choose({ title: "Remove the changeover?", options: [{ value: "yes", label: "Yes, remove it" }] })) saveHeader({ changeover: null }, "Changeover removed"); } }, "Remove")),
-          ]
-          : locked() ? el("p", { class: "card-note" }, "No changeover this shift.")
-            : el("button", { class: "btn secondary", type: "button", disabled: ui.busy || !r.saved, onclick: () => { ui.form = { kind: "changeover", minutes: "", type: "" }; render(); } }, "+ Add changeover"));
+      el("strong", {}, `🔁 Changeovers${list.length ? ` · ${list.length} · ${total} min` : ""}`),
+      list.length ? el("div", { class: "dt-list" }, list.map((c) => f?.id === c.id ? changeoverForm(f) : el("div", { class: "dt-entry" },
+        el("strong", {}, `${c.minutes} min · ${c.type}`),
+        el("span", { class: "dt-note" }, [c.productSize, c.atMs ? fmtTime(c.atMs) : ""].filter(Boolean).join(" · ")),
+        locked() || f || c.legacy ? null : el("span", { class: "dt-actions" },
+          el("button", { class: "link-btn", type: "button", onclick: () => { ui.form = { kind: "changeover", id: c.id, minutes: String(c.minutes), type: c.type }; render(); } }, "Edit"),
+          el("button", { class: "link-btn", type: "button", onclick: () => removeEntry("changeover", c) }, "Remove"))))) : null,
+      f && !f.id ? changeoverForm(f) : null,
+      !list.length && !f ? el("p", { class: "card-note" }, locked() ? "No changeovers this shift." : "None yet — add each one as it happens.") : null,
+      locked() || f ? null : el("button", { class: "btn secondary", type: "button", disabled: ui.busy || !report().saved,
+        onclick: () => { ui.form = { kind: "changeover", minutes: "", type: "", size: ui.head.size, otherSize: ui.head.otherSize, sdr: ui.head.sdr }; render(); } }, "+ Add changeover"));
   }
 
   function downtimeForm(f) {

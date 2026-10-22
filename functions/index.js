@@ -4071,7 +4071,8 @@ async function loadShiftReport(test, { lineId, reportId }) {
 }
 
 async function shiftReportView(test, report) {
-  const [events, scraps, reelScraps, openOnLine] = await Promise.all([
+  const [changeovers, events, scraps, reelScraps, openOnLine] = await Promise.all([
+    col("changeoverEvents", test).where("reportId", "==", report.id).get(),
     col("downtimeEvents", test).where("reportId", "==", report.id).get(),
     col("scrapEntries", test).where("reportId", "==", report.id).get(),
     reelScrapsFor(test, report),
@@ -4081,6 +4082,7 @@ async function shiftReportView(test, report) {
   const byTime = (a, b) => (a.atMs || 0) - (b.atMs || 0);
   return {
     report,
+    changeovers: downtimeLib.changeoverList(report, changeovers.docs.map((d) => ({ id: d.id, ...d.data() }))),
     events: events.docs.map((d) => ({ id: d.id, ...d.data() })).sort(byTime)
       .map((e) => ({ ...e, contacted: downtimeLib.someoneContacted(e), maintLog: downtimeLib.maintenanceLog(e) })),
     scraps: [...scraps.docs.map((d) => ({ id: d.id, source: "entry", ...d.data() })).sort(byTime), ...reelScraps],
@@ -4147,21 +4149,22 @@ exports.saveShiftReport = onCall(async (req) => {
   return { id };
 });
 
-// One entry: { reportId, kind: "downtime" | "scrap", id? (edit), remove?: true, ...fields }. Copies the report's date,
+// One entry: { reportId, kind: "changeover" | "downtime" | "scrap", id? (edit), remove?: true, ...fields }. Copies the report's date,
 // line, team, and current product size. Not after the report is signed.
 exports.saveShiftEntry = onCall(async (req) => {
   const me = await requireMember(req);
   requireEnter(me);
   const test = isTest(req);
-  const kind = req.data?.kind === "scrap" ? "scrap" : req.data?.kind === "downtime" ? "downtime" : null;
-  if (!kind) throw new HttpsError("invalid-argument", "Downtime or scrap?");
+  const ENTRY = { changeover: ["changeoverEvents", downtimeLib.cleanChangeover], downtime: ["downtimeEvents", downtimeLib.cleanDowntime], scrap: ["scrapEntries", downtimeLib.cleanScrap] };
+  const kind = Object.prototype.hasOwnProperty.call(ENTRY, req.data?.kind) ? req.data.kind : null;
+  if (!kind) throw new HttpsError("invalid-argument", "Changeover, downtime, or scrap?");
   const reportRef = col("shiftReports", test).doc(String(req.data?.reportId || "x"));
-  const entries = col(kind === "downtime" ? "downtimeEvents" : "scrapEntries", test);
+  const entries = col(ENTRY[kind][0], test);
   let fields = null;
   if (req.data?.remove !== true) {
-    const out = kind === "downtime" ? downtimeLib.cleanDowntime(req.data) : downtimeLib.cleanScrap(req.data);
+    const out = ENTRY[kind][1](req.data);
     if (out.error) throw new HttpsError("invalid-argument", out.error);
-    fields = out.event || out.scrap;
+    fields = out.changeover || out.event || out.scrap;
     if (fields.issueId) {
       const issue = await col("issues", test).doc(fields.issueId).get();
       if (!issue.exists) throw new HttpsError("not-found", "That Maintenance Request isn't here any more — pick it again.");
@@ -4225,17 +4228,18 @@ exports.exportShiftReports = onCall(async (req) => {
   const from = day(req.data?.from), to = day(req.data?.to);
   if (!from || !to || from > to || Date.parse(to) - Date.parse(from) > 92 * 86400000) throw new HttpsError("invalid-argument", "Pick a date range of up to 92 days.");
   const inRange = (c) => col(c, test).where("date", ">=", from).where("date", "<=", to).get();
-  const [reports, events, scraps, reels, lineSnaps, form] = await Promise.all([
-    inRange("shiftReports"), inRange("downtimeEvents"), inRange("scrapEntries"),
+  const [reports, changeovers, events, scraps, reels, lineSnaps, form] = await Promise.all([
+    inRange("shiftReports"), inRange("changeoverEvents"), inRange("downtimeEvents"), inRange("scrapEntries"),
     col("reels", test).where("flaggedAtMs", ">=", Date.parse(`${from}T00:00:00Z`) - 86400000).get(),
     lines.get(), formTemplates.doc(formsLib.SHIFT_FORM).get(),
   ]);
-  const byReport = new Map(reports.docs.map((d) => [d.id, { id: d.id, ...d.data(), events: [], scraps: [] }]));
+  const byReport = new Map(reports.docs.map((d) => [d.id, { id: d.id, ...d.data(), changeovers: [], events: [], scraps: [] }]));
   const lineName = new Map(lineSnaps.docs.map((d) => [d.id, d.get("name")]));
   const reportFor = (id, x) => {
-    if (!byReport.has(id)) byReport.set(id, { id, date: x.date, lineId: x.lineId, lineNumber: x.lineNumber || downtimeLib.lineNumber(lineName.get(x.lineId)), team: x.team || "", productSize: "", changeover: null, events: [], scraps: [] });
+    if (!byReport.has(id)) byReport.set(id, { id, date: x.date, lineId: x.lineId, lineNumber: x.lineNumber || downtimeLib.lineNumber(lineName.get(x.lineId)), team: x.team || "", productSize: "", changeover: null, changeovers: [], events: [], scraps: [] });
     return byReport.get(id);
   };
+  for (const d of changeovers.docs) reportFor(d.get("reportId"), d.data()).changeovers.push(d.data());
   for (const d of events.docs) reportFor(d.get("reportId"), d.data()).events.push(d.data());
   for (const d of scraps.docs) reportFor(d.get("reportId"), d.data()).scraps.push(d.data());
   const shifts = form.get("shifts") || [];
@@ -4248,7 +4252,7 @@ exports.exportShiftReports = onCall(async (req) => {
   }
   const out = { changeover: [], downtime: [], scrap: [] };
   for (const r of [...byReport.values()].sort((a, b) => (a.id < b.id ? -1 : 1))) {
-    const rows = downtimeLib.sheetRows(r, r.events.sort((a, b) => a.atMs - b.atMs), r.scraps);
+    const rows = downtimeLib.sheetRows(r, r.events.sort((a, b) => a.atMs - b.atMs), r.scraps, r.changeovers);
     for (const k of Object.keys(out)) out[k].push(...rows[k]);
   }
   await auditLog.add({ type: "exported", kind: "shift reports", recordId: `${from}..${to}`, by: me.employeeNumber, at: FieldValue.serverTimestamp(), test });

@@ -59,9 +59,12 @@ test("a flagged reel decided Scrap or Regrind is a scrap entry, counted once", (
 });
 
 test("workbook rows: data columns only, in column order", () => {
-  const report = { date: "2026-10-22", lineNumber: "1", team: "A", productSize: "1.25\" SDR 13.5", changeover: { minutes: 60, type: "Color", productSize: "1\" SDR 11" } };
-  const rows = d.sheetRows(report, [{ minutes: 50, reason: "Water", fix: "Topped up", called: false, maintenance: "team" }], [{ feet: 300, reason: "Startup/Purge", notes: "" }, { feet: null, reason: "Other" }]);
-  assert.deepStrictEqual(rows.changeover, [["2026-10-22", "1", "A", "1\" SDR 11", 60, "Color"]]);
+  const report = { date: "2026-10-22", lineNumber: "1", team: "A", productSize: "1.25\" SDR 13.5" };
+  const changeovers = [{ minutes: 30, type: "SDR", productSize: "1.25\" SDR 11", atMs: 2 }, { minutes: 60, type: "Color", productSize: "1\" SDR 11", atMs: 1 }];
+  const rows = d.sheetRows(report, [{ minutes: 50, reason: "Water", fix: "Topped up", called: false, maintenance: "team" }], [{ feet: 300, reason: "Startup/Purge", notes: "" }, { feet: null, reason: "Other" }], changeovers);
+  assert.deepStrictEqual(rows.changeover, [["2026-10-22", "1", "A", "1\" SDR 11", 60, "Color"], ["2026-10-22", "1", "A", "1.25\" SDR 11", 30, "SDR"]]);
+  // the first practice reports kept one changeover on the report itself — still exported
+  assert.strictEqual(d.sheetRows({ ...report, changeover: { minutes: 45, type: "Full", atMs: 0 } }, [], [], changeovers).changeover.length, 3);
   assert.deepStrictEqual(rows.downtime, [["2026-10-22", "1", "A", "1.25\" SDR 13.5", 50, "Water", "Topped up. Fixed by team", "Not Needed", "Not Needed"]]);
   assert.deepStrictEqual(rows.scrap, [["2026-10-22", "1", "A", "1.25\" SDR 13.5", 300, "Startup/Purge", ""]]);
   for (const k of Object.keys(rows)) assert.strictEqual(d.SHEET_HEADERS[k].length, (rows[k][0] || d.SHEET_HEADERS[k]).length);
