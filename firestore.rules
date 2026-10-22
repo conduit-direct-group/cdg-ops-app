@@ -31,12 +31,12 @@ service cloud.firestore {
       return member() && employee().roles.hasAny(['admin']);
     }
 
-    // Maintenance or Admin right now — they work the open-issues board. The Plant Manager sees it too.
+    // Maintenance or Admin right now — they work the open-issues board. The Production Manager sees it too.
     function fixer() {
       return member() && employee().roles.hasAny(['maintenance', 'admin', 'plant-manager']);
     }
 
-    // Supervisor, Training & Safety, Plant Manager, Admin: see every open urgent request (safety concerns),
+    // Supervisor, Training & Safety, Production Manager, Admin: see every open urgent request (safety concerns),
     // not only the ones sent to them — for their dashboard's safety card.
     function safetyWatcher() {
       return member() && employee().roles.hasAny(['supervisor', 'training-safety', 'plant-manager', 'admin']);
@@ -177,7 +177,7 @@ service cloud.firestore {
       allow read: if admin();
     }
 
-    // Open issues (mirrored from Odoo maintenance requests): Maintenance, Admin, Plant Manager only (Decision 54).
+    // Open issues (mirrored from Odoo maintenance requests): Maintenance, Admin, Production Manager only (Decision 54).
     // Test-site reports: test_issues.
     match /issues/{id} {
       allow read: if fixer();
@@ -237,7 +237,7 @@ service cloud.firestore {
       }
     }
 
-    // Shift Handoff Notes: Line Leads, Supervisors, Plant Manager, Admin (Decision 60). Test site: test_handoffs.
+    // Shift Handoff Notes: Line Leads, Supervisors, Production Manager, Admin (Decision 60). Test site: test_handoffs.
     function handoffReader() {
       return member() && employee().roles.hasAny(['lead', 'supervisor', 'plant-manager', 'admin']);
     }
@@ -248,7 +248,7 @@ service cloud.firestore {
       allow read: if handoffReader();
     }
 
-    // Keep the Shop Clean task lists: Line Leads, Supervisors, Plant Manager, Admin, and the people given a task.
+    // Keep the Shop Clean task lists: Line Leads, Supervisors, Production Manager, Admin, and the people given a task.
     // Test site: test_shopTasks.
     match /shopTasks/{id} {
       allow read: if handoffReader() || (member() && me() in resource.data.assignees);
@@ -284,7 +284,7 @@ service cloud.firestore {
       allow read: if member();
     }
 
-    // Machines — parts & specs (Decision 51): Maintenance, Plant Manager, Admin, plus any role allowed to edit machines
+    // Machines — parts & specs (Decision 51): Maintenance, Production Manager, Admin, plus any role allowed to edit machines
     // in Admin → Roles (the server keeps that list in meta/machineAccess). Changed only by the server.
     function machineViewer() {
       return fixer() || (member() && exists(/databases/$(database)/documents/meta/machineAccess)
@@ -297,7 +297,7 @@ service cloud.firestore {
       }
     }
 
-    // Near-miss & incident reports: Training & Safety, Plant Manager, Admin only — the injured person's details too
+    // Near-miss & incident reports: Training & Safety, Production Manager, Admin only — the injured person's details too
     // (private/osha). Reporters follow their own report through the server (myIncidents), never by reading here.
     // Corrective actions: the owner sees their own; follow-up sees all. Test site: test_ copies.
     function incidentFollower() {
@@ -362,7 +362,7 @@ service cloud.firestore {
       allow read: if member();
     }
 
-    // Trucks board: Logistics & Distribution, Plant Manager, Sales, Admin, plus roles allowed to post trucks in
+    // Trucks board: Logistics & Distribution, Production Manager, Sales, Admin, plus roles allowed to post trucks in
     // Admin → Roles (the server keeps that list in meta/truckAccess). Changed only by the server. Test site: test_trucks.
     function truckViewer() {
       return member() && (employee().roles.hasAny(['shipping', 'plant-manager', 'sales', 'admin'])

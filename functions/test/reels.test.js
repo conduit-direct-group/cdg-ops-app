@@ -11,7 +11,7 @@ test("flagging a reel: line, tag or no tag, reason, size + SDR (specialty sizes 
   assert.deepStrictEqual(ok.reel.product, { size: "1.25\"", sdr: "SDR 11", color: "Orange" });
   assert.strictEqual(ok.reel.tag, "104523");
   assert.strictEqual(ok.reel.footage, 850);
-  const typed = r.cleanFlag({ lineId: "line-1", noTag: true, reasonId: "kinks-or-bends", product: { size: "3\" specialty", sdr: "SDR 13.5", color: "" } }, ctx);
+  const typed = r.cleanFlag({ lineId: "line-1", noTag: true, reasonId: "kinks-or-bends", product: { size: "3\" specialty", sdr: "SDR 13.5", color: "Orange" } }, ctx);
   assert.strictEqual(typed.reel.noTag, true);
   assert.strictEqual(typed.reel.product.size, "3\" specialty");
   assert.match(r.cleanFlag({ lineId: "line-1", tag: "1", reasonId: "ovality", product: { size: "1\"" } }, ctx).error, /SDR/);
@@ -50,12 +50,28 @@ test("reason, size, and SDR lists", () => {
   assert.match(r.cleanChoices(["SDR 11", "sdr 11"], "walls").error, /twice/);
 });
 
-test("color comes from the list once it exists; typed only until then", () => {
+test("color: Orange or typed; a color used before keeps its first spelling; a new one is added to the list", () => {
   const base = { lineId: "line-1", tag: "1", reasonId: "ovality" };
-  assert.strictEqual(r.cleanFlag({ ...base, product: { size: "1\"", sdr: "SDR 11", color: "Orange" } }, ctx).reel.product.color, "Orange");
-  const withList = { ...ctx, colors: ["Orange", "Black"] };
-  assert.strictEqual(r.cleanFlag({ ...base, product: { size: "1\"", sdr: "SDR 11", color: "Black" } }, withList).reel.product.color, "Black");
-  assert.match(r.cleanFlag({ ...base, product: { size: "1\"", sdr: "SDR 11", color: "Purple" } }, withList).error, /color/);
+  const color = (c, colors = []) => r.cleanFlag({ ...base, product: { size: "1\"", sdr: "SDR 11", color: c } }, { ...ctx, colors });
+  assert.strictEqual(color("Orange").reel.product.color, "Orange");
+  assert.strictEqual(color("orange").reel.product.color, "Orange");
+  assert.strictEqual(color(" black ", ["Black", "Blue"]).reel.product.color, "Black");
+  assert.strictEqual(color("purple", ["Black"]).reel.product.color, "Purple");
+  assert.match(color("  ").error, /Orange/);
+  assert.deepStrictEqual(r.withColor(["Black"], "Purple"), ["Black", "Purple"]);
+  assert.strictEqual(r.withColor(["Black"], "black"), null);
+  assert.strictEqual(r.withColor(Array.from({ length: 200 }, (_, i) => `c${i}`), "New"), null);
   assert.deepStrictEqual(r.cleanChoices([], "colors", { optional: true }), { list: [] });
   assert.match(r.cleanChoices([], "sizes").error, /Add 1/);
+});
+
+test("Admin merges a duplicate color into the one to keep", () => {
+  assert.deepStrictEqual(r.cleanMerge({ from: "Blk", to: "black" }, ["Black", "Blk"]), { from: "Blk", to: "Black" });
+  assert.deepStrictEqual(r.cleanMerge({ from: "Blk", to: "orange" }, ["Blk"]), { from: "Blk", to: "Orange" });
+  assert.match(r.cleanMerge({ from: "Nope", to: "Black" }, ["Black"]).error, /merge/);
+  assert.match(r.cleanMerge({ from: "Blk", to: "" }, ["Blk"]).error, /keep/);
+  assert.match(r.cleanMerge({ from: "Blk", to: "blk" }, ["Blk"]).error, /different/);
+  assert.deepStrictEqual(r.mergedColors(["Black", "Blk", "Blue"], "Blk", "Black"), ["Black", "Blue"]);
+  assert.deepStrictEqual(r.mergedColors(["Blk", "Blue"], "Blk", "Black"), ["Black", "Blue"]);
+  assert.deepStrictEqual(r.mergedColors(["Blue"], "Blk", "Black"), ["Blue"]);
 });

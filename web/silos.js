@@ -1,11 +1,12 @@
 // Low silo alert (Chris, 10-21-2026). Silo levels come from the Shift Handoff and from "Update silo levels"
 // (Line Operator / material system, mid-shift). Admin → Silo alerts sets each silo's low line; no alerts until set.
-// Logistics, Supervisors, and the Production Manager get a push and a red Home item while a silo is below its line.
+// Logistics, Supervisors, the Production Manager, and the extra people picked in Admin → Silo alerts get a push and a
+// red Home item while a silo is below its line.
 // Rules match functions/silos.js.
 
-import { el, friendlyError, spinner, banner, toast } from "./ui.js";
+import { el, friendlyError, spinner, banner, toast, picker } from "./ui.js";
 import { data, onDataChange } from "./data.js";
-import { callUpdateSiloLevels, callAdminSaveSiloSettings } from "./firebase.js";
+import { callUpdateSiloLevels, callAdminSaveSiloSettings, callAdminListEmployees } from "./firebase.js";
 
 export const SILOS = [
   { id: "regrind-silo", name: "Regrind silo", alertByDefault: false },
@@ -37,9 +38,10 @@ export function lowSilos() {
   }).map((s) => ({ ...s, level: levelOf(s.id).level, low: setting(s.id).low }));
 }
 
-// Home → Needs you (Logistics, Supervisors, Production Manager): one red item while any silo is low.
-export function siloItems(roles, onOpen) {
-  if (!roles.some((r) => ALERT_ROLES.includes(r)) || !data.siloLevels || !data.siloSettings) return [];
+// Home → Needs you (Logistics, Supervisors, Production Manager, extra people): one red item while any silo is low.
+export function siloItems(roles, onOpen, emp = null) {
+  const extra = emp && (data.siloSettings?.alertPeople || []).includes(emp);
+  if ((!roles.some((r) => ALERT_ROLES.includes(r)) && !extra) || !data.siloLevels || !data.siloSettings) return [];
   const low = lowSilos();
   if (!low.length) return [];
   return [{ key: "silos", icon: "🛢", title: `Low silo: ${low.map((s) => `${s.name} at ${s.level}%`).join(", ")}`, detail: `low line ${[...new Set(low.map((s) => `${s.low}%`))].join(" / ")} · tap for all levels`, state: "late", onOpen }];
@@ -109,19 +111,27 @@ export function openSilos(container, { me, onExit, backLabel = "Home" }) {
 
 // Admin → Silo alerts: each silo's low line (blank = no alerts) and whether it alerts.
 export function openSiloAdmin(container, { onExit }) {
-  const ui = { draft: null, busy: false, message: "", messageKind: "", retry: null };
-  const draft = () => ui.draft || (ui.draft = Object.fromEntries(SILOS.map((s) => {
-    const st = setting(s.id);
-    return [s.id, { low: st?.low ?? "", alert: st ? st.alert !== false : s.alertByDefault }];
-  })));
+  const ui = { draft: null, people: null, busy: false, message: "", messageKind: "", retry: null };
+  const draft = () => ui.draft || (ui.draft = {
+    silos: Object.fromEntries(SILOS.map((s) => {
+      const st = setting(s.id);
+      return [s.id, { low: st?.low ?? "", alert: st ? st.alert !== false : s.alertByDefault }];
+    })),
+    alertPeople: [...(data.siloSettings?.alertPeople || [])],
+  });
+  callAdminListEmployees().then(
+    ({ data: r }) => { ui.people = r.employees.filter((e) => e.active); render(); },
+    () => { ui.people = []; render(); }
+  );
+  const personName = (emp) => ui.people?.find((p) => p.employeeNumber === emp)?.name || `#${emp}`;
 
   async function save() {
     if (!navigator.onLine) { Object.assign(ui, { message: friendlyError({ code: "offline" }), messageKind: "error", retry: save }); return render(); }
     Object.assign(ui, { busy: true, message: "", retry: null });
     render();
     try {
-      await callAdminSaveSiloSettings({ silos: draft() });
-      Object.assign(ui, { busy: false, draft: null });
+      await callAdminSaveSiloSettings({ silos: draft().silos, alertPeople: draft().alertPeople });
+      Object.assign(ui, { busy: false }); // keep the draft: it is what was just saved (the update arrives a moment later)
       toast("Silo alerts saved");
       render();
     } catch (err) {
@@ -132,11 +142,13 @@ export function openSiloAdmin(container, { onExit }) {
 
   function render() {
     if (!data.siloSettings) return container.replaceChildren(el("button", { class: "link-btn", type: "button", onclick: onExit }, "← Admin"), spinner());
-    const d = draft();
+    const d = draft().silos;
+    const extra = draft().alertPeople;
+    const unpicked = (ui.people || []).filter((p) => !extra.includes(p.employeeNumber));
     container.replaceChildren(...[
       el("button", { class: "link-btn", type: "button", onclick: onExit }, "← Admin"),
       el("h1", {}, "🛢 Silo alerts"),
-      el("p", { class: "hint" }, "Logistics, Supervisors, and the Production Manager get one alert when a silo drops below its low line — again only after it's refilled above the line and drops again. Leave the low line blank for no alerts."),
+      el("p", { class: "hint" }, "Logistics, Supervisors, the Production Manager, and the people below get one alert when a silo drops below its low line — again only after it's refilled above the line and drops again. Leave the low line blank for no alerts."),
       banner(ui),
       el("form", { class: "card", onsubmit: (e) => { e.preventDefault(); save(); } },
         SILOS.map((s) => el("div", { class: "silo-set" },
@@ -144,6 +156,14 @@ export function openSiloAdmin(container, { onExit }) {
           el("label", { class: "spec-field" }, el("span", { class: "field-label" }, "Alert below (%)"),
             el("input", { class: "field", type: "number", inputmode: "numeric", min: "1", max: "99", placeholder: "not set", value: d[s.id].low, oninput: (e) => { d[s.id].low = e.target.value; } })),
           el("label", { class: "check-row" }, el("input", { type: "checkbox", checked: d[s.id].alert, onchange: (e) => { d[s.id].alert = e.target.checked; } }), el("span", {}, "Send alerts for this silo")))),
+        el("strong", {}, "Also send alerts to"),
+        extra.length
+          ? extra.map((emp) => el("div", { class: "import-row" }, el("span", { class: "gap-term" }, personName(emp)),
+              el("button", { class: "link-btn", type: "button", onclick: () => { draft().alertPeople = extra.filter((x) => x !== emp); render(); } }, "Remove")))
+          : el("p", { class: "hint" }, "No one else — only the roles above."),
+        ui.people === null
+          ? el("p", { class: "hint" }, "Loading people…")
+          : picker({ id: "silo-person", title: "Add a person", value: "", placeholder: "+ Add a person", options: unpicked.map((p) => ({ value: p.employeeNumber, label: `${p.name} (#${p.employeeNumber})` })), onChange: (v) => { draft().alertPeople = [...extra, v]; render(); } }),
         el("button", { class: "btn", type: "submit", disabled: ui.busy }, ui.busy ? "Saving…" : "Save")),
     ].filter(Boolean));
   }

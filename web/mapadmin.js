@@ -44,7 +44,9 @@ export function openMapAdmin(container, { onExit }) {
   }
 
   async function ensureOdoo() {
-    const ids = [...new Set((ui.stations || []).map((s) => s.machineId).filter(Boolean))];
+    // Only stations on the map and machines in use — never a retired one.
+    const inUse = new Set((data.machines || []).filter((m) => m.active !== false).map((m) => m.id));
+    const ids = [...new Set((ui.stations || []).filter((s) => s.active !== false).map((s) => s.machineId).filter((id) => id && inUse.has(id)))];
     const r = await act(() => callAdminEnsureOdooEquipment({ machineIds: ids }), ensureOdoo);
     if (r) toast(r.created.length ? `Added to Odoo: ${r.created.join(", ")}` : "Odoo already has every linked machine");
   }

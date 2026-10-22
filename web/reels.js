@@ -2,9 +2,9 @@
 // 🏷 Flagged → in QC Staging (Floater) → ⚖️ decision (Line Lead / Quality / Supervisor, PIN) → ♻️ Reclamation closes
 // regrind and scrap → ✓ Done. A reel with no decision turns red at the end of the next shift. Rules: functions/reels.js.
 
-import { el, breakable, friendlyError, spinner, emptyState, banner, toast, picker } from "./ui.js";
+import { el, breakable, friendlyError, spinner, emptyState, banner, toast, picker, choose } from "./ui.js";
 import { data, onDataChange } from "./data.js";
-import { db, storage, TEST_MODE, callFlagReel, callStageReel, callDecideReel, callReclaimReel, callReelDeciders, callAdminSaveReelSettings } from "./firebase.js";
+import { db, storage, TEST_MODE, callFlagReel, callStageReel, callDecideReel, callReclaimReel, callReelDeciders, callAdminSaveReelSettings, callAdminMergeReelColor } from "./firebase.js";
 import { collection, getDocs, query, where } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 import { ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-storage.js";
 import { signOff } from "./signoff.js";
@@ -16,6 +16,7 @@ const DECISIONS = [["release", "✅ Release"], ["rework", "🔁 Rewind / Rework"
 const STARTING_REASONS = ["OD/wall out of spec", "Ovality", "Print missing or faded", "Surface (wood-grain, scuffing)", "Kinks or bends", "Wind or tension problem", "Contamination", "Short footage", "Other"];
 const STARTING_SIZES = ["3/4\"", "1\"", "1.25\"", "1.5\"", "2\""];
 const STARTING_SDRS = ["SDR 11", "SDR 13.5"];
+const DEFAULT_COLOR = "Orange"; // picked to start; anything else is typed under Other (Chris, 10-22-2026)
 const LINE_KEY = "cdg.reelLine";
 const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
 
@@ -26,8 +27,16 @@ export function reelSettings() {
     reasons: d.reasons || STARTING_REASONS.map((name) => ({ id: slug(name), name, active: true })),
     sizes: d.sizes || STARTING_SIZES,
     sdrs: d.sdrs || STARTING_SDRS,
-    colors: d.colors || [], // empty until Chris's product list arrives
+    colors: [...new Set([...(d.colors || []), ...(TEST_MODE ? d.testColors || [] : [])])], // every color used so far
   };
+}
+
+// Colors used before that match what's typed: starts-with first ("bl" → Black, Blue), then contains.
+function colorSuggestions(typed, colors) {
+  const t = typed.trim().toLowerCase();
+  if (!t) return [];
+  const list = colors.filter((c) => c !== DEFAULT_COLOR && c.toLowerCase() !== t);
+  return [...list.filter((c) => c.toLowerCase().startsWith(t)), ...list.filter((c) => !c.toLowerCase().startsWith(t) && c.toLowerCase().includes(t))].slice(0, 6);
 }
 
 const plantDay = (ms = Date.now()) => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago" }).format(new Date(ms));
@@ -146,7 +155,7 @@ export function openReels(container, { me, onExit, backLabel = "Home", start = "
   function newForm() {
     const lines = (data.lines || []).filter((l) => l.active !== false);
     const keep = stored(LINE_KEY);
-    return { lineId: lines.some((l) => l.id === keep) ? keep : lines[0]?.id || "", winder: "", tag: "", noTag: false, footage: "", reasonId: "", size: "", otherSize: "", sdr: "", color: "", photo: null, note: "" };
+    return { lineId: lines.some((l) => l.id === keep) ? keep : lines[0]?.id || "", winder: "", tag: "", noTag: false, footage: "", reasonId: "", size: "", otherSize: "", sdr: "", color: DEFAULT_COLOR, otherColor: false, photo: null, note: "" };
   }
 
   async function addPhoto(file) {
@@ -193,10 +202,19 @@ export function openReels(container, { me, onExit, backLabel = "Home", start = "
         f.size === "other" ? el("input", { class: "field", value: f.otherSize, maxlength: "30", placeholder: "Specialty size, e.g. 3\"", oninput: (e) => { f.otherSize = e.target.value; } }) : null,
         label("Wall"), chips(s.sdrs, f.sdr, (v) => { f.sdr = v; }),
         label("Color"),
-        s.colors.length
-          ? chips(s.colors, f.color, (v) => { f.color = v; })
-          : [el("input", { class: "field", value: f.color, maxlength: "30", placeholder: "e.g. Orange", oninput: (e) => { f.color = e.target.value; } }),
-             el("p", { class: "card-note" }, "Type the color for now — a pick list is coming with the product list.")],
+        chips([DEFAULT_COLOR, "other"], f.otherColor ? "other" : DEFAULT_COLOR, (v) => {
+          f.otherColor = v === "other";
+          f.color = f.otherColor ? "" : DEFAULT_COLOR;
+          if (f.otherColor) setTimeout(() => container.querySelector("#reel-color")?.focus(), 0);
+        }, (x) => (x === "other" ? "Other…" : x)),
+        f.otherColor
+          ? [el("input", { id: "reel-color", class: "field", value: f.color, maxlength: "30", placeholder: "Type the color", autocomplete: "off", "aria-label": "Color",
+              oninput: (e) => { f.color = e.target.value; const pos = e.target.selectionStart; render(); const x = container.querySelector("#reel-color"); x?.focus(); x?.setSelectionRange(pos, pos); } }),
+             colorSuggestions(f.color, s.colors).length
+               ? el("div", { class: "chips", "aria-label": "Colors used before" }, colorSuggestions(f.color, s.colors).map((c) =>
+                   el("button", { class: "chip", type: "button", onclick: () => { f.color = c; render(); } }, c)))
+               : null]
+          : null,
         label("Photo (optional)"),
         f.photo ? el("img", { class: "reel-photo", src: f.photo, alt: "Reel photo" }) : null,
         fileInput,
@@ -364,8 +382,34 @@ export function openReels(container, { me, onExit, backLabel = "Home", start = "
 // ---- Admin → QC hold lists ------------------------------------------------------------------------------------
 
 export function openReelAdmin(container, { onExit }) {
-  const ui = { draft: null, busy: false, message: "", messageKind: "", retry: null };
-  const draft = () => ui.draft || (ui.draft = (() => { const s = reelSettings(); return { reasons: s.reasons.map((r) => ({ ...r })), sizes: s.sizes.join("\n"), sdrs: s.sdrs.join("\n"), colors: s.colors.join("\n") }; })());
+  const ui = { draft: null, busy: false, message: "", messageKind: "", retry: null, typing: null };
+  const draft = () => ui.draft || (ui.draft = (() => { const s = reelSettings(); return { reasons: s.reasons.map((r) => ({ ...r })), sizes: s.sizes.join("\n"), sdrs: s.sdrs.join("\n") }; })());
+
+  // Merge a duplicate color ("blk" → "Black"): every reel with it changes, and it leaves the list.
+  async function pickMerge(from) {
+    const others = [DEFAULT_COLOR, ...reelSettings().colors.filter((c) => c !== from && c !== DEFAULT_COLOR)];
+    const to = await choose({ title: `Merge “${from}” into…`, options: [...others.map((c) => ({ value: c, label: c })), { value: "__type", label: "✏️ Type the right name…" }] });
+    if (to === "__type") { ui.typing = { from, to: "" }; return render(); }
+    if (to) merge(from, to);
+  }
+
+  async function merge(from, to) {
+    if (!to.trim()) return;
+    const ok = await choose({ title: `Change every reel marked “${from}” to “${to.trim()}”?`, options: [{ value: "yes", label: "Yes, merge" }] });
+    if (!ok) return;
+    if (!navigator.onLine) { Object.assign(ui, { message: friendlyError({ code: "offline" }), messageKind: "error", retry: () => merge(from, to) }); return render(); }
+    Object.assign(ui, { busy: true, message: "", retry: null });
+    render();
+    try {
+      const r = (await callAdminMergeReelColor({ from, to })).data;
+      Object.assign(ui, { busy: false, typing: null });
+      toast(`“${r.from}” merged into “${r.to}” — ${r.reels} reel${r.reels === 1 ? "" : "s"} changed`);
+      render();
+    } catch (err) {
+      Object.assign(ui, { busy: false, message: friendlyError(err), messageKind: "error", retry: () => merge(from, to) });
+      render();
+    }
+  }
 
   async function save() {
     const d = draft();
@@ -374,7 +418,7 @@ export function openReelAdmin(container, { onExit }) {
     render();
     try {
       const lines = (t) => t.split("\n").map((x) => x.trim()).filter(Boolean);
-      await callAdminSaveReelSettings({ reasons: d.reasons.filter((r) => r.name.trim()), sizes: lines(d.sizes), sdrs: lines(d.sdrs), colors: lines(d.colors) });
+      await callAdminSaveReelSettings({ reasons: d.reasons.filter((r) => r.name.trim()), sizes: lines(d.sizes), sdrs: lines(d.sdrs) });
       Object.assign(ui, { busy: false, draft: null });
       toast("QC hold lists saved");
       render();
@@ -399,11 +443,29 @@ export function openReelAdmin(container, { onExit }) {
         el("button", { class: "btn secondary", type: "button", onclick: () => { d.reasons.push({ name: "", active: true }); render(); } }, "+ Add reason"),
         el("div", { class: "spec-fields" },
           el("label", { class: "spec-field" }, el("span", { class: "field-label strong" }, "Sizes (one per line)"), el("textarea", { class: "field", rows: "6", oninput: (e) => { d.sizes = e.target.value; } }, d.sizes)),
-          el("label", { class: "spec-field" }, el("span", { class: "field-label strong" }, "Walls / SDR (one per line)"), el("textarea", { class: "field", rows: "6", oninput: (e) => { d.sdrs = e.target.value; } }, d.sdrs)),
-          el("label", { class: "spec-field" }, el("span", { class: "field-label strong" }, "Colors (one per line)"), el("textarea", { class: "field", rows: "6", placeholder: "Waiting on the product list — leave empty and operators type the color", oninput: (e) => { d.colors = e.target.value; } }, d.colors))),
+          el("label", { class: "spec-field" }, el("span", { class: "field-label strong" }, "Walls / SDR (one per line)"), el("textarea", { class: "field", rows: "6", oninput: (e) => { d.sdrs = e.target.value; } }, d.sdrs))),
         el("p", { class: "card-note" }, "Specialty sizes don't need to be listed — people can type them on the flag screen."),
         el("button", { class: "btn", type: "submit", disabled: ui.busy }, ui.busy ? "Saving…" : "Save")),
+      colorsCard(),
     ].filter(Boolean));
+  }
+
+  function colorsCard() {
+    const used = reelSettings().colors.filter((c) => c !== DEFAULT_COLOR);
+    const t = ui.typing;
+    return el("div", { class: "card" },
+      el("strong", {}, "Colors"),
+      el("p", { class: "card-note" }, `${DEFAULT_COLOR} is picked to start. Other colors are typed and listed here the first time they're used, then suggested as people type. Merge a misspelling into the right color — every reel with it changes too.`),
+      used.length
+        ? el("div", { class: "reel-reasons" }, used.map((c) => t?.from === c
+            ? el("div", { class: "reel-reason" },
+                el("input", { id: "merge-to", class: "field", value: t.to, maxlength: "30", placeholder: `Right name for “${c}”`, "aria-label": `Right name for ${c}`, oninput: (e) => { t.to = e.target.value; } }),
+                el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: () => merge(c, t.to) }, "Merge"),
+                el("button", { class: "link-btn", type: "button", onclick: () => { ui.typing = null; render(); } }, "Cancel"))
+            : el("div", { class: "reel-reason" },
+                el("span", { class: "gap-term" }, c),
+                el("button", { class: "link-btn", type: "button", disabled: ui.busy, onclick: () => pickMerge(c) }, "Merge into…"))))
+        : el("p", { class: "hint" }, "No other colors yet — they appear here once someone types one on Flag a reel."));
   }
 
   render();

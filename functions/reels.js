@@ -8,7 +8,9 @@
 //                  flagged {at, by, byName, shiftId, shiftDate}, dueMs (end of the NEXT shift — red after that),
 //                  staged {…}, decision { kind, note, by, byName, at, device }, reclaim { footage, segregation, … }
 //   Test site: test_reels.
-//   meta/reelSettings   reasons [{ id, name, active }], sizes ["3/4\"", …], sdrs ["SDR 11", …] (Admin → QC hold)
+//   meta/reelSettings   reasons [{ id, name, active }], sizes ["3/4\"", …], sdrs ["SDR 11", …] (Admin → QC hold),
+//                       colors ["Orange", …] — every color used so far (suggested as people type; Admin merges
+//                       duplicates); testColors — the same for practice flags on the test site
 
 const DECIDE_ROLES = ["lead", "quality", "supervisor"];
 const WINDERS = ["Winder 1", "Winder 2", "Winder 3"];
@@ -22,6 +24,9 @@ const DECISIONS = {
 // Main sizes, each in two walls; specialty sizes are typed in by hand.
 const STARTING_SIZES = ["3/4\"", "1\"", "1.25\"", "1.5\"", "2\""];
 const STARTING_SDRS = ["SDR 11", "SDR 13.5"];
+// Color (Chris, 10-22-2026): Orange is picked to start; anything else is typed under "Other".
+const DEFAULT_COLOR = "Orange";
+const MAX_COLORS = 200;
 const STARTING_REASONS = [
   "OD/wall out of spec", "Ovality", "Print missing or faded", "Surface (wood-grain, scuffing)", "Kinks or bends",
   "Wind or tension problem", "Contamination", "Short footage", "Other",
@@ -32,8 +37,8 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$
 const canDecide = (roles) => (roles || []).some((r) => DECIDE_ROLES.includes(r));
 
 // A new flagged reel. reasons / colors: the lists from meta/reelSettings. isOurFile(url) for the photo.
-// Product (Chris, 10-21-2026): the operator picks size, SDR, and color from lists (specialty sizes typed). Until the
-// color list is entered (waiting on Chris's product list), color is typed; once it exists, color must come from it.
+// Product: size and SDR from lists (specialty sizes typed). Color (Chris, 10-22-2026): Orange, or typed under Other —
+// a color already used keeps its first spelling ("black" → "Black"); a new one starts with a capital.
 function cleanFlag(raw, { reasons = [], lineIds = [], colors = [], isOurFile = () => false } = {}) {
   if (!lineIds.includes(raw?.lineId)) return { error: "Pick the line." };
   const winder = WINDERS.includes(raw?.winder) ? raw.winder : "";
@@ -44,15 +49,44 @@ function cleanFlag(raw, { reasons = [], lineIds = [], colors = [], isOurFile = (
   if (footage !== null && (!Number.isFinite(footage) || footage < 0 || footage > 100000)) return { error: "Footage must be a number." };
   const reason = reasons.find((r) => r.id === raw?.reasonId && r.active !== false);
   if (!reason) return { error: "Pick a reason." };
-  const product = { size: clean(raw?.product?.size, 30), sdr: clean(raw?.product?.sdr, 20), color: clean(raw?.product?.color, 30) };
+  const product = { size: clean(raw?.product?.size, 30), sdr: clean(raw?.product?.sdr, 20), color: colorName(raw?.product?.color, colors) };
   if (!product.size) return { error: "Pick the size (or type a specialty size)." };
   if (!product.sdr) return { error: "Pick the wall (SDR)." };
-  if (colors.length && !colors.includes(product.color)) return { error: "Pick the color from the list." };
+  if (!product.color) return { error: "Pick Orange, or tap Other and type the color." };
   const photo = raw?.photo ? String(raw.photo) : null;
   if (photo && !isOurFile(photo)) return { error: "The photo didn't upload. Add it again." };
   const note = typeof raw?.note === "string" ? raw.note.trim().slice(0, 500) : "";
   if (reason.name === "Other" && !note) return { error: "Add a note saying what's wrong." };
   return { reel: { lineId: raw.lineId, winder, tag, noTag, footage, reasonId: reason.id, reasonName: reason.name, product, photo, note } };
+}
+
+// A typed color, matched to one already used (any capitals), else tidied with a capital first letter.
+function colorName(raw, colors = []) {
+  const c = clean(raw, 30);
+  if (!c) return "";
+  return [DEFAULT_COLOR, ...colors].find((x) => x.toLowerCase() === c.toLowerCase()) || c[0].toUpperCase() + c.slice(1);
+}
+
+// The used-colors list after a flag, or null when nothing changes (already on it, or the list is full).
+function withColor(colors = [], color) {
+  if (!color || colors.length >= MAX_COLORS || colors.some((x) => x.toLowerCase() === color.toLowerCase())) return null;
+  return [...colors, color];
+}
+
+// Admin → QC hold lists → Merge: { from, to } — every reel with "from" becomes "to"; "from" leaves the list.
+function cleanMerge(raw, colors = []) {
+  const from = colors.find((x) => x === clean(raw?.from, 30));
+  if (!from) return { error: "Pick the color to merge from the list." };
+  const to = colorName(raw?.to, colors.filter((x) => x !== from));
+  if (!to) return { error: "Pick or type the color to keep." };
+  if (to.toLowerCase() === from.toLowerCase()) return { error: "Pick a different color to keep." };
+  return { from, to };
+}
+
+// A list after a merge: "from" gone; "to" takes its place if it wasn't listed yet.
+function mergedColors(colors = [], from, to) {
+  if (colors.includes(to)) return colors.filter((x) => x !== from);
+  return colors.includes(from) ? colors.map((x) => (x === from ? to : x)) : colors;
 }
 
 function cleanDecision(raw) {
@@ -108,4 +142,5 @@ function cleanChoices(raw, what, { optional = false } = {}) {
   return out.length ? { list: out } : { error: `Add at least one of the ${what}.` };
 }
 
-module.exports = { DECIDE_ROLES, WINDERS, DECISIONS, STARTING_REASONS, STARTING_SIZES, STARTING_SDRS, slug, canDecide, cleanFlag, cleanDecision, cleanReclaim, dueAfterNextShift, cleanReasons, cleanChoices };
+module.exports = { DECIDE_ROLES, WINDERS, DECISIONS, STARTING_REASONS, STARTING_SIZES, STARTING_SDRS, DEFAULT_COLOR, slug, canDecide, cleanFlag,
+  colorName, withColor, cleanMerge, mergedColors, cleanDecision, cleanReclaim, dueAfterNextShift, cleanReasons, cleanChoices };

@@ -3552,9 +3552,12 @@ async function reelSettings() {
     reasons: d.reasons || reelsLib.STARTING_REASONS.map((name) => ({ id: reelsLib.slug(name), name, active: true })),
     sizes: d.sizes || reelsLib.STARTING_SIZES,
     sdrs: d.sdrs || reelsLib.STARTING_SDRS,
-    colors: d.colors || [], // empty until Chris's product list arrives
+    colors: d.colors || [], // every color used so far (Orange is always offered)
+    testColors: d.testColors || [], // practice flags on the test site
   };
 }
+
+const reelSearch = (r) => [r.tag, r.reasonName, r.product?.size, r.product?.sdr, r.product?.color, r.note].join(" ").toLowerCase();
 
 async function getReel(tx, test, id) {
   const snap = await tx.get(col("reels", test).doc(String(id || "")));
@@ -3568,8 +3571,10 @@ exports.flagReel = onCall(async (req) => {
   const test = isTest(req);
   const [settings, lineSnaps, shiftForm] = await Promise.all([reelSettings(), lines.get(), formTemplates.doc(formsLib.SHIFT_FORM).get()]);
   const activeLines = lineSnaps.docs.filter((l) => l.get("active") !== false);
-  const { reel, error } = reelsLib.cleanFlag(req.data, { reasons: settings.reasons, colors: settings.colors, lineIds: activeLines.map((l) => l.id), isOurFile: isOurUpload });
+  const known = test ? [...settings.colors, ...settings.testColors] : settings.colors;
+  const { reel, error } = reelsLib.cleanFlag(req.data, { reasons: settings.reasons, colors: known, lineIds: activeLines.map((l) => l.id), isOurFile: isOurUpload });
   if (error) throw new HttpsError("invalid-argument", error);
+  const newColor = reel.product.color !== reelsLib.DEFAULT_COLOR && reelsLib.withColor(known, reel.product.color) ? reel.product.color : null;
   const now = Date.now();
   const shift = formsLib.currentShift(shiftForm.get("shifts") || [], now);
   const ref = col("reels", test).doc();
@@ -3578,9 +3583,10 @@ exports.flagReel = onCall(async (req) => {
       ...reel, lineName: activeLines.find((l) => l.id === reel.lineId).get("name"), status: "flagged",
       flagged: { at: FieldValue.serverTimestamp(), atMs: now, by: me.employeeNumber, byName: me.name, shiftId: shift?.shift.id || null, shiftName: shift?.shift.name || null },
       flaggedDate: plantToday(), flaggedAtMs: now, dueMs: reelsLib.dueAfterNextShift(shift, now),
-      search: [reel.tag, reel.reasonName, reel.product.size, reel.product.sdr, reel.product.color, reel.note].join(" ").toLowerCase(),
+      search: reelSearch(reel),
       ...(test ? { test: true } : {}),
     });
+    if (newColor) tx.set(reelSettingsDoc, { [test ? "testColors" : "colors"]: FieldValue.arrayUnion(newColor) }, { merge: true });
     auditRecord(tx, "flagged", "reel", ref.id, me.employeeNumber, { tag: reel.tag || "no tag", reason: reel.reasonName, test });
   });
   return { id: ref.id, test };
@@ -3666,6 +3672,34 @@ exports.adminSaveReelSettings = onCall(async (req) => {
   return { ok: true };
 });
 
+// Admins: { from, to } — merge a duplicate color ("blk" → "Black"): every reel (live and practice) with "from" is
+// changed to "to", and "from" leaves the used-colors lists. Logged.
+exports.adminMergeReelColor = onCall(async (req) => {
+  const adminNumber = await requireAdmin(req);
+  const cur = await reelSettings();
+  const { from, to, error } = reelsLib.cleanMerge(req.data, [...new Set([...cur.colors, ...cur.testColors])]);
+  if (error) throw new HttpsError("invalid-argument", error);
+  let changed = 0;
+  for (const test of [false, true]) {
+    const snaps = await col("reels", test).where("product.color", "==", from).get();
+    for (let i = 0; i < snaps.docs.length; i += 400) {
+      const batch = db.batch();
+      for (const d of snaps.docs.slice(i, i + 400)) {
+        const product = { ...d.get("product"), color: to };
+        batch.update(d.ref, { product, search: reelSearch({ ...d.data(), product }) });
+      }
+      await batch.commit();
+    }
+    changed += snaps.size;
+  }
+  await reelSettingsDoc.set({
+    colors: reelsLib.mergedColors(cur.colors, from, to), testColors: reelsLib.mergedColors(cur.testColors, from, to),
+    updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber,
+  }, { merge: true });
+  await auditLog.add({ type: "merged", kind: "reel color", recordId: "reelSettings", by: adminNumber, at: FieldValue.serverTimestamp(), from, to, reels: changed });
+  return { from, to, reels: changed };
+});
+
 // ---------------------------------------------------------------------------
 // Low silo alert (Chris, 10-21-2026). Rules in silos.js. Levels from the Shift Handoff and "Update silo levels";
 // low lines per silo in Admin → Silo alerts (meta/siloSettings). Test site: test_siloLevels / test_siloReadings
@@ -3674,11 +3708,13 @@ exports.adminSaveReelSettings = onCall(async (req) => {
 
 const siloSettingsDoc = db.collection("meta").doc("siloSettings");
 
-// Saves each reading, decides alerts (one per drop), and tells Logistics, Supervisors, and the Production Manager.
+// Saves each reading, decides alerts (one per drop), and tells Logistics, Supervisors, the Production Manager, and the
+// extra people picked in Admin → Silo alerts.
 async function recordSiloLevels(test, levels, me, source) {
   const ids = Object.keys(levels);
   if (!ids.length) return { saved: 0, alerts: [] };
-  const settings = (await siloSettingsDoc.get()).get("silos") || {};
+  const settingsSnap = await siloSettingsDoc.get();
+  const settings = settingsSnap.get("silos") || {};
   const alerts = await db.runTransaction(async (tx) => {
     const refs = ids.map((id) => col("siloLevels", test).doc(id));
     const snaps = await Promise.all(refs.map((r) => tx.get(r)));
@@ -3694,7 +3730,7 @@ async function recordSiloLevels(test, levels, me, source) {
   });
   if (alerts.length) {
     const list = alerts.map((a) => `${silosLib.siloName(a.id)} at ${a.level}% (low line ${a.low}%)`).join(", ");
-    const to = test ? [me.employeeNumber] : (await activeEmployees()).filter((e) => e.active !== false && e.roles.some((r) => silosLib.ALERT_ROLES.includes(r))).map((e) => e.id);
+    const to = test ? [me.employeeNumber] : silosLib.alertRecipients(await activeEmployees(), settingsSnap.get("alertPeople") || []);
     await pushTo(to, { title: `${test ? "[TEST] " : ""}🛢 Low silo: ${alerts.map((a) => silosLib.siloName(a.id)).join(", ")}`, body: `${list} — entered by ${me.name}`, url: "/?silos=1", urgent: true });
     await auditLog.add({ type: "low-silo", kind: "silo", recordId: alerts.map((a) => a.id).join(","), by: me.employeeNumber, at: FieldValue.serverTimestamp(), alerts, test });
   }
@@ -3711,13 +3747,20 @@ exports.updateSiloLevels = onCall(async (req) => {
   return { ...out, test: isTest(req) };
 });
 
-// Admins: { silos: { [siloId]: { low, alert } } } — the low line for each silo (blank = no alerts for it).
+// Admins: { silos: { [siloId]: { low, alert } }, alertPeople? } — the low line for each silo (blank = no alerts for
+// it) and the extra people who get alerts (left as is when not sent, so older screens don't clear it).
 exports.adminSaveSiloSettings = onCall(async (req) => {
   const adminNumber = await requireAdmin(req);
   const { silos, error } = silosLib.cleanSettings(req.data?.silos);
   if (error) throw new HttpsError("invalid-argument", error);
-  await siloSettingsDoc.set({ silos, updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber });
-  await auditLog.add({ type: "updated", kind: "silo alerts", recordId: "siloSettings", by: adminNumber, at: FieldValue.serverTimestamp(), silos });
+  const extra = {};
+  if (req.data?.alertPeople !== undefined) {
+    const { people, error: peopleError } = silosLib.cleanPeople(req.data.alertPeople);
+    if (peopleError) throw new HttpsError("invalid-argument", peopleError);
+    extra.alertPeople = people;
+  }
+  await siloSettingsDoc.set({ silos, ...extra, updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber }, { merge: true });
+  await auditLog.add({ type: "updated", kind: "silo alerts", recordId: "siloSettings", by: adminNumber, at: FieldValue.serverTimestamp(), silos, ...extra });
   return { ok: true };
 });
 
@@ -3932,7 +3975,8 @@ exports.adminSetStationMachine = onCall(async (req) => {
 });
 
 // Admins: { machineIds } — make sure Odoo has an equipment record for each ("M-031 Outside Chiller"),
-// so Maintenance Requests work for them. Existing ones are left alone.
+// so Maintenance Requests work for them. Existing ones are left alone, and retired machines are never added
+// (10-22-2026: a retired station still linked to retired M-039 put it in Odoo).
 exports.adminEnsureOdooEquipment = onCall({ secrets: [odooKey] }, async (req) => {
   const adminNumber = await requireAdmin(req);
   const ids = Array.isArray(req.data?.machineIds) ? [...new Set(req.data.machineIds.map(String))] : [];
@@ -3941,9 +3985,11 @@ exports.adminEnsureOdooEquipment = onCall({ secrets: [odooKey] }, async (req) =>
   const refs = await getOdooRefs(key);
   const created = [];
   const already = [];
+  const skipped = [];
   for (const id of ids) {
     const snap = await machines.doc(id).get();
     if (!snap.exists) throw new HttpsError("not-found", `There's no machine ${id} in the app.`);
+    if (snap.get("active") === false) { skipped.push(id); continue; }
     const found = await odoo.odooCall(key, "maintenance.equipment", "search_read", { domain: [["name", "=like", `${id} %`]], fields: ["id", "name"], limit: 1 });
     if (found.length) { already.push(found[0].name); continue; }
     const lineSnap = snap.get("lineId") ? await lines.doc(snap.get("lineId")).get() : null;
@@ -3952,7 +3998,7 @@ exports.adminEnsureOdooEquipment = onCall({ secrets: [odooKey] }, async (req) =>
     created.push(name);
   }
   if (created.length) await auditLog.add({ type: "created", kind: "odoo equipment", recordId: ids.join(","), by: adminNumber, at: FieldValue.serverTimestamp(), created });
-  return { created, already };
+  return { created, already, skipped };
 });
 
 // ---------------------------------------------------------------------------

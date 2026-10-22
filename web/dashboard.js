@@ -284,7 +284,7 @@ function needsItems(ctx, roles) {
       : { key: "maint", icon: "🚨", title: "Maintenance requests", detail: "none open", state: "done", onOpen: go.issues });
   }
 
-  items.push(...siloItems(roles, go.silos));
+  items.push(...siloItems(roles, go.silos, ctx.emp));
   items.push(...reelItems(roles, () => go.reels("list")));
   items.push(...incidentItems(roles, { emp: ctx.emp }, go.incidents));
   items.push(...handoffItems(me, go.handoff));

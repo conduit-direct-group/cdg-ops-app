@@ -28,3 +28,17 @@ test("no alerts when the low level isn't set or the silo's alert is off", () => 
   assert.strictEqual(s.judge({ low: 25, alert: false }, false, 5).alert, false);
   assert.strictEqual(s.judge(undefined, false, 5).alert, false);
 });
+
+test("low silo alerts: the alert roles plus the extra people picked in Admin (if on)", () => {
+  const people = [
+    { id: "1001", roles: ["admin"], active: true },
+    { id: "1002", roles: ["shipping"], active: true },
+    { id: "1003", roles: ["operator"], active: true },
+    { id: "1004", roles: ["admin"], active: false },
+  ];
+  assert.deepStrictEqual(s.alertRecipients(people, []), ["1002"]);
+  assert.deepStrictEqual(s.alertRecipients(people, ["1001", "1004"]), ["1001", "1002"]);
+  assert.deepStrictEqual(s.cleanPeople(["1001", "1001"]), { people: ["1001"] });
+  assert.deepStrictEqual(s.cleanPeople(undefined), { people: [] });
+  assert.match(s.cleanPeople(["10 01"]).error, /people/);
+});

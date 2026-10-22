@@ -168,6 +168,7 @@ export const callDecideReel = call("decideReel");
 export const callReclaimReel = call("reclaimReel");
 export const callReelDeciders = call("reelDeciders");
 export const callAdminSaveReelSettings = call("adminSaveReelSettings");
+export const callAdminMergeReelColor = call("adminMergeReelColor");
 // Silo levels
 export const callUpdateSiloLevels = call("updateSiloLevels");
 export const callAdminSaveSiloSettings = call("adminSaveSiloSettings");

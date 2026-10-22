@@ -1397,6 +1397,7 @@ body.has-nav .toast { bottom: calc(84px + env(safe-area-inset-bottom)); }
 .reel-reasons { display: flex; flex-direction: column; gap: var(--s2); margin: var(--s2) 0; }
 .reel-reason { display: flex; gap: var(--s2); align-items: center; }
 .reel-reason .field { flex: 1 1 auto; min-width: 0; }
+.reel-reason .btn { width: auto; margin-top: 0; flex: none; }
 .reel-filters { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: var(--s2); margin: var(--s2) 0; }
 .trend-wrap { overflow-x: auto; margin: var(--s2) 0 var(--s3); }
 .trend { border-collapse: separate; border-spacing: 2px; font-size: var(--text-small); min-width: 560px; }
