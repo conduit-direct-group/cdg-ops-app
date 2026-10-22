@@ -3,7 +3,9 @@
 //   meta/departments     departments [{ id, name, active }] (Admin → Departments), headsReportTo: employee # or null
 //                        (null = the Production head)
 //   employees/{emp}      department (id), deptHead (true on the one head of a department), reportsTo (an admin's
-//                        override: employee #; missing = worked out automatically)
+//                        override: employee #, or "none" = top of the chart, e.g. the CEO; missing = automatic),
+//                        supervisesTeams (Supervisors: every team they cover — Chris, 10-22-2026: one supervisor can
+//                        cover several shifts; their own team counts too)
 //
 // Reports to, worked out automatically:
 //   Production, by shift: Operator → their team's Line Lead → their team's Supervisor → Production Manager.
@@ -15,6 +17,7 @@ const STARTING_DEPARTMENTS = [
   ["logistics", "Logistics & Distribution"], ["sales", "Sales"], ["office", "Office"], ["training-safety", "Training & Safety"],
 ];
 const PRODUCTION = "production";
+const TOP = "none"; // reports to no one
 // Role → department, in the order a person with several roles is placed (Admin is not a department).
 const ROLE_DEPARTMENT = [
   ["plant-manager", "production"], ["supervisor", "production"], ["lead", "production"], ["operator", "production"],
@@ -51,16 +54,20 @@ function cleanDepartments(raw) {
   return { departments: out };
 }
 
-// One person's department fields from Admin → People. reportsTo: an employee # (override) or null (automatic).
-function cleanOrg(raw, { departments = [], people = [], emp } = {}) {
+// One person's department fields from Admin → People. reportsTo: an employee # (override), "none" (top), or null
+// (automatic). supervisesTeams: team ids from the Teams list.
+function cleanOrg(raw, { departments = [], people = [], emp, teamIds = null } = {}) {
   const department = raw?.department ? String(raw.department) : null;
   if (department && !departments.some((d) => d.id === department)) return { error: "Pick a department from the list." };
   const head = raw?.head === true;
   if (head && !department) return { error: "Pick the department first, then tick Department head." };
   const reportsTo = raw?.reportsTo ? String(raw.reportsTo) : null;
   if (reportsTo && reportsTo === emp) return { error: "Someone can't report to themselves." };
-  if (reportsTo && !people.some((p) => p.id === reportsTo && p.active !== false)) return { error: "Pick who they report to from the list." };
-  return { org: { department, head, reportsTo } };
+  if (reportsTo && reportsTo !== TOP && !people.some((p) => p.id === reportsTo && p.active !== false)) return { error: "Pick who they report to from the list." };
+  const supervisesTeams = Array.isArray(raw?.supervisesTeams) ? [...new Set(raw.supervisesTeams.map(String))] : [];
+  if (supervisesTeams.length > 10) return { error: "Pick up to 10 teams." };
+  if (teamIds && supervisesTeams.some((t) => !teamIds.includes(t))) return { error: "Pick teams from the list." };
+  return { org: { department, head, reportsTo, supervisesTeams } };
 }
 
 // The head of a department: the person ticked as head (active), or for Production with none ticked, the
@@ -72,9 +79,11 @@ function headOf(dept, people) {
   return on.find((p) => p.department === PRODUCTION && has(p, "plant-manager")) || on.find((p) => has(p, "plant-manager")) || null;
 }
 
-// Someone on the same team with a role, in Production, not this person; same home line first.
+// Someone on the same team with a role, in Production, not this person; same home line first. A Supervisor
+// counts for their own team and every team they supervise.
+const covers = (x, team, role) => x.team === team || (role === "supervisor" && (x.supervisesTeams || []).includes(team));
 function teamMate(p, role, people) {
-  const list = people.filter((x) => x.active !== false && x.id !== p.id && x.department === PRODUCTION && has(x, role) && p.team && x.team === p.team);
+  const list = people.filter((x) => x.active !== false && x.id !== p.id && x.department === PRODUCTION && has(x, role) && p.team && covers(x, p.team, role));
   return list.find((x) => p.homeLineId && x.homeLineId === p.homeLineId) || list.sort((a, b) => a.name.localeCompare(b.name))[0] || null;
 }
 
@@ -88,6 +97,7 @@ function reportsToAll(people, { headsReportTo = null } = {}) {
   for (const p of people) {
     const pick = (to) => (to && to !== p.id ? to : null);
     let to = null;
+    if (p.reportsTo === TOP) { out.set(p.id, { reportsTo: null, source: "top" }); continue; }
     if (p.reportsTo && people.some((x) => x.id === p.reportsTo && x.active !== false) && p.reportsTo !== p.id) {
       out.set(p.id, { reportsTo: p.reportsTo, source: "override" });
       continue;
@@ -114,6 +124,6 @@ function departmentsWithoutHead(people, departments) {
 }
 
 module.exports = {
-  STARTING_DEPARTMENTS, PRODUCTION, startingDepartments, suggestDepartment, cleanDepartments, cleanOrg, headOf, reportsToAll,
+  STARTING_DEPARTMENTS, PRODUCTION, TOP, startingDepartments, suggestDepartment, cleanDepartments, cleanOrg, headOf, reportsToAll,
   departmentsWithoutHead,
 };

@@ -4025,6 +4025,7 @@ async function orgData() {
     id: d.id, name: d.get("name") || `Employee ${d.id}`, roles: d.get("roles") || [], team: d.get("team") || null,
     homeLineId: d.get("homeLineId") || null, active: d.get("active") !== false, position: d.get("position") || "",
     department: d.get("department") || null, deptHead: d.get("deptHead") === true, reportsTo: d.get("reportsTo") || null,
+    supervisesTeams: d.get("supervisesTeams") || [],
   }));
   const reports = deptLib.reportsToAll(people, { headsReportTo });
   // A title: the position, else the role names (Admin only when it's the only role).
@@ -4043,7 +4044,7 @@ exports.orgChart = onCall(async (req) => {
     departments: o.departments.filter((dep) => dep.active !== false).map((dep) => ({ id: dep.id, name: dep.name, head: o.headIds.get(dep.id) })),
     people: on.map((x) => ({ emp: x.id, name: x.name, title: o.title(x), department: x.department, head: !!x.department && o.headIds.get(x.department) === x.id, reportsTo: o.reports.get(x.id)?.reportsTo || null }))
       .sort((a, b) => a.name.localeCompare(b.name)),
-    me: { emp: me.employeeNumber, reportsTo: o.reports.get(me.employeeNumber)?.reportsTo || null, reportsToName: name.get(o.reports.get(me.employeeNumber)?.reportsTo) || null },
+    me: { emp: me.employeeNumber, reportsTo: o.reports.get(me.employeeNumber)?.reportsTo || null, reportsToName: name.get(o.reports.get(me.employeeNumber)?.reportsTo) || null, top: o.reports.get(me.employeeNumber)?.source === "top" },
   };
 });
 
@@ -4056,23 +4057,23 @@ exports.adminOrg = onCall(async (req) => {
     noHead: deptLib.departmentsWithoutHead(o.people, o.departments),
     people: o.people.map((x) => ({
       emp: x.id, department: x.department, suggested: deptLib.suggestDepartment(x.roles, o.departments), deptHead: x.deptHead,
-      isHead: !!x.department && o.headIds.get(x.department) === x.id, override: x.reportsTo,
+      isHead: !!x.department && o.headIds.get(x.department) === x.id, override: x.reportsTo, supervisesTeams: x.supervisesTeams,
       reportsTo: o.reports.get(x.id)?.reportsTo || null, source: o.reports.get(x.id)?.source || "missing",
     })),
   };
 });
 
-// Admins: { emp, department, head, reportsTo (employee # or null = automatic), replace? }. One head per department:
+// Admins: { emp, department, head, reportsTo (employee #, "none" = top, or null = automatic), supervisesTeams, replace? }. One head per department:
 // ticking a second one is refused with the current head unless replace is true (then the old head is unticked).
 exports.adminSaveOrg = onCall(async (req) => {
   const adminNumber = await requireAdmin(req);
   const emp = String(req.data?.emp || "");
   return db.runTransaction(async (tx) => {
-    const [deptSnap, all] = await Promise.all([tx.get(departmentsDoc), tx.get(employees)]);
+    const [deptSnap, all, teamSnaps] = await Promise.all([tx.get(departmentsDoc), tx.get(employees), tx.get(teams)]);
     const departments = deptSnap.get("departments") || deptLib.startingDepartments();
     const people = all.docs.map((d) => ({ id: d.id, name: d.get("name"), active: d.get("active") !== false, department: d.get("department") || null, deptHead: d.get("deptHead") === true }));
     if (!people.some((x) => x.id === emp)) throw new HttpsError("not-found", "That person isn't in the app.");
-    const { org, error } = deptLib.cleanOrg(req.data, { departments, people, emp });
+    const { org, error } = deptLib.cleanOrg(req.data, { departments, people, emp, teamIds: teamSnaps.docs.map((t) => t.id) });
     if (error) throw new HttpsError("invalid-argument", error);
     const current = org.head ? people.find((x) => x.id !== emp && x.active && x.department === org.department && x.deptHead) : null;
     if (current && req.data?.replace !== true) {
@@ -4080,8 +4081,8 @@ exports.adminSaveOrg = onCall(async (req) => {
       throw new HttpsError("already-exists", `${current.name} is the ${deptName} head. Replace ${current.name}?`, { currentHead: { emp: current.id, name: current.name } });
     }
     if (current) tx.update(employees.doc(current.id), { deptHead: false });
-    tx.update(employees.doc(emp), { department: org.department, deptHead: org.head, reportsTo: org.reportsTo || FieldValue.delete() });
-    auditRecord(tx, "updated", "department", emp, adminNumber, { department: org.department, head: org.head, reportsTo: org.reportsTo, replaced: current?.id || null });
+    tx.update(employees.doc(emp), { department: org.department, deptHead: org.head, reportsTo: org.reportsTo || FieldValue.delete(), supervisesTeams: org.supervisesTeams });
+    auditRecord(tx, "updated", "department", emp, adminNumber, { department: org.department, head: org.head, reportsTo: org.reportsTo, supervisesTeams: org.supervisesTeams, replaced: current?.id || null });
     return { ok: true, replaced: current ? current.name : null };
   });
 });

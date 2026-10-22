@@ -136,8 +136,9 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
     return el("span", { class: "org-cols" },
       el("span", { class: o.department ? "org-col" : "org-col muted" }, o.department ? deptName(ui.org, o.department) : "No department"),
       el("span", { class: "org-col org-head", "aria-label": o.isHead ? "Department head" : null }, o.isHead ? "⭐ Head" : ""),
+      o.supervisesTeams?.length ? el("span", { class: "org-col" }, `Supervises ${o.supervisesTeams.map((t) => teamName(t)).join(", ")}`) : null,
       el("span", { class: o.reportsTo || o.source === "top" ? "org-col" : "org-col muted" },
-        o.reportsTo ? `→ ${personName(o.reportsTo)}${o.source === "override" ? " (set)" : ""}` : o.source === "top" ? "Reports to no one (top)" : o.department ? "⚠ Reports to: missing" : ""));
+        o.reportsTo ? `→ ${personName(o.reportsTo)}${o.source === "override" ? " (set)" : ""}` : o.source === "top" ? "Top of the chart" : o.department ? "⚠ Reports to: missing" : ""));
   }
   const visible = () => (ui.people || []).filter(FILTERS[ui.filter].test);
   function filterChips() {
@@ -182,7 +183,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
   // `keep` = same roles, team, and home line as the last one (Save & add another).
   function startAdd(keep = null) {
     if (!keep) ui.justAdded = [];
-    ui.draft = { number: ui.nextNumber, name: "", roles: keep?.roles || ["operator"], team: keep?.team || "", homeLineId: keep?.homeLineId || "", department: keep?.department || "", head: false, reportsTo: "" };
+    ui.draft = { number: ui.nextNumber, name: "", roles: keep?.roles || ["operator"], team: keep?.team || "", homeLineId: keep?.homeLineId || "", department: keep?.department || "", head: false, reportsTo: "", supervisesTeams: [] };
     show("add");
   }
 
@@ -191,7 +192,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
     ui.draft = {
       number: p.employeeNumber, name: p.name, position: p.position || "", roles: p.rolesConfirmed ? [...p.roles] : [...p.suggestedRoles],
       team: p.team || "", homeLineId: p.homeLineId || "", trainingName: p.trainingName || "",
-      department: orgOf(p).department || "", head: orgOf(p).deptHead === true, reportsTo: orgOf(p).override || "",
+      department: orgOf(p).department || "", head: orgOf(p).deptHead === true, reportsTo: orgOf(p).override || "", supervisesTeams: [...(orgOf(p).supervisesTeams || [])],
     };
     show("edit");
   }
@@ -257,9 +258,11 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
     async function saveOrg(emp, replace = false) {
       if (!ui.org) return true;
       const o = ui.org.byEmp.get(emp) || {};
-      if ((o.department || "") === (d.department || "") && (o.deptHead === true) === d.head && (o.override || "") === (d.reportsTo || "")) return true;
+      const sameTeams = [...(o.supervisesTeams || [])].sort().join() === [...(d.supervisesTeams || [])].sort().join();
+      if ((o.department || "") === (d.department || "") && (o.deptHead === true) === d.head && (o.override || "") === (d.reportsTo || "") && sameTeams) return true;
       try {
-        const { data: r } = await callAdminSaveOrg({ emp, department: d.department || null, head: d.head && !!d.department, reportsTo: d.reportsTo || null, replace });
+        const supervisesTeams = d.roles.includes("supervisor") ? d.supervisesTeams || [] : [];
+        const { data: r } = await callAdminSaveOrg({ emp, department: d.department || null, head: d.head && !!d.department, reportsTo: d.reportsTo || null, supervisesTeams, replace });
         await load();
         ui.replacedNote = r.replaced ? ` — ${r.replaced} is no longer the ${deptName(ui.org, d.department)} head` : "";
         return true;
@@ -324,9 +327,17 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
                   el("button", { class: "link-btn", type: "button", onclick: () => { d.department = suggested; render(); } }, "Use it"))
               : null,
             el("label", { class: "check-row" }, el("input", { type: "checkbox", checked: d.head, disabled: !d.department, onchange: (e) => { d.head = e.target.checked; } }), el("span", {}, d.department ? "⭐ Department head (one per department)" : "⭐ Department head — pick a department first")),
+            d.roles.includes("supervisor")
+              ? [el("p", { class: "field-label" }, "Teams they supervise (one or more shifts)"),
+                 el("div", { class: "chips" }, (data.teams || []).filter((t) => t.active !== false || (d.supervisesTeams || []).includes(t.id)).map((t) => {
+                   const on = (d.supervisesTeams || []).includes(t.id);
+                   return el("button", { class: on ? "chip on" : "chip", type: "button", "aria-pressed": String(on), onclick: () => { d.supervisesTeams = on ? d.supervisesTeams.filter((x) => x !== t.id) : [...(d.supervisesTeams || []), t.id]; render(); } }, `Team ${t.name}`);
+                 })),
+                 el("p", { class: "card-note" }, "Leads and operators on these teams report to this Supervisor (their own team counts too).")]
+              : null,
             el("label", { class: "field-label", for: "f-reports" }, "Reports to"),
             picker({ id: "f-reports", title: "Reports to", value: d.reportsTo, placeholder: "Automatic",
-              options: [{ value: "", label: `Automatic${existing && auto.reportsTo && !auto.override ? ` (${personName(auto.reportsTo)})` : ""}` }, ...others.map((x) => ({ value: x.employeeNumber, label: `${x.name} (#${x.employeeNumber})` }))],
+              options: [{ value: "", label: `Automatic${existing && auto.reportsTo && !auto.override ? ` (${personName(auto.reportsTo)})` : ""}` }, { value: "none", label: "No one — top of the chart" }, ...others.map((x) => ({ value: x.employeeNumber, label: `${x.name} (#${x.employeeNumber})` }))],
               onChange: (v) => { d.reportsTo = v; render(); } }),
             el("p", { class: "card-note" }, "Automatic: Production by shift (Operator → team Line Lead → team Supervisor → Production Manager); other departments → their head; heads → the Production Manager (or who's set in Admin → Departments). Pick a person to override it."),
           ]
@@ -423,6 +434,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
       p.position ? el("p", { class: "hint" }, p.position) : null,
       ui.org ? el("div", { class: "card org-card" },
         el("p", {}, el("strong", {}, "Department: "), orgOf(p).department ? `${deptName(ui.org, orgOf(p).department)}${orgOf(p).isHead ? " · ⭐ Head" : ""}` : "none yet"),
+        orgOf(p).supervisesTeams?.length ? el("p", {}, el("strong", {}, "Supervises: "), orgOf(p).supervisesTeams.map((t) => `Team ${teamName(t)}`).join(", ")) : null,
         el("p", {}, el("strong", {}, "Reports to: "), orgOf(p).reportsTo ? `${personName(orgOf(p).reportsTo)}${orgOf(p).source === "override" ? " (set by an admin)" : " (automatic)"}` : orgOf(p).source === "top" ? "no one (top of the chart)" : "⚠ missing")) : null,
       !p.rolesConfirmed ? el("p", { class: "message" }, "Role not confirmed yet — tap Edit, tick the right role(s), and Save.") : null,
       p.loginEnabled

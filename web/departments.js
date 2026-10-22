@@ -102,7 +102,7 @@ export function openProfile(container, { me, onExit, backLabel = "More" }) {
         !c ? (ui.loadError ? banner({ message: ui.loadError, messageKind: "error", retry: load }) : spinner())
           : [
             el("p", {}, el("strong", {}, "Department: "), dept ? `${dept.name}${mine?.head ? " · ⭐ Head" : ""}` : "not set yet"),
-            el("p", { class: "profile-reports" }, el("strong", {}, "You report to: "), c.me.reportsToName || (mine?.head && mine.department === "production" ? "no one — you're at the top" : "not set yet — ask an Admin")),
+            el("p", { class: "profile-reports" }, el("strong", {}, "You report to: "), c.me.reportsToName || (c.me.top ? "no one — you're at the top" : "not set yet — ask an Admin")),
           ]),
       el("button", { class: "btn", type: "button", disabled: !c, onclick: () => { ui.view = "chart"; render(); } }, "🏢 Org chart"),
     ];

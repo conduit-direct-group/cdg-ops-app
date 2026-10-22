@@ -24,7 +24,7 @@ test("departments list: names required, no repeats, ids kept", () => {
 
 test("a person's department fields are checked", () => {
   const people = [P("1001", "Chris", ["admin"]), P("1002", "Ann", ["operator"])];
-  assert.deepStrictEqual(d.cleanOrg({ department: "quality", head: true, reportsTo: "1001" }, { departments: depts, people, emp: "1002" }).org, { department: "quality", head: true, reportsTo: "1001" });
+  assert.deepStrictEqual(d.cleanOrg({ department: "quality", head: true, reportsTo: "1001" }, { departments: depts, people, emp: "1002" }).org, { department: "quality", head: true, reportsTo: "1001", supervisesTeams: [] });
   assert.match(d.cleanOrg({ department: "nope" }, { departments: depts, people, emp: "1002" }).error, /department/);
   assert.match(d.cleanOrg({ head: true }, { departments: depts, people, emp: "1002" }).error, /department first/);
   assert.match(d.cleanOrg({ department: "quality", reportsTo: "1002" }, { departments: depts, people, emp: "1002" }).error, /themselves/);
@@ -82,4 +82,35 @@ test("an admin's override wins; turned-off people are never reported to", () => 
   assert.deepStrictEqual(r.get("q2"), { reportsTo: "pm", source: "override" });
   assert.deepStrictEqual(r.get("q1"), { reportsTo: null, source: "missing" }); // the head is turned off
   assert.strictEqual(d.headOf("quality", people), null);
+});
+
+test("an admin can set someone at the top of the chart (reports to no one)", () => {
+  const people = [P("ceo", "Morgan", ["office"], { department: "office", deptHead: true, reportsTo: "none" }), P("m", "Robin", ["office"], { department: "office" })];
+  const r = d.reportsToAll(people);
+  assert.deepStrictEqual(r.get("ceo"), { reportsTo: null, source: "top" });
+  assert.strictEqual(r.get("m").reportsTo, "ceo");
+  assert.deepStrictEqual(d.cleanOrg({ department: "office", reportsTo: "none" }, { departments: depts, people, emp: "ceo" }).org.reportsTo, "none");
+});
+
+test("a Supervisor can cover several teams (shifts)", () => {
+  const people = [
+    P("pm", "Pat", ["plant-manager"], { department: "production" }),
+    P("supAC", "Sam Reed", ["supervisor"], { department: "production", team: "a", supervisesTeams: ["a", "c"] }),
+    P("supBD", "Lee", ["supervisor"], { department: "production", team: "d", supervisesTeams: ["b", "d"] }),
+    P("leadA", "Avery", ["lead"], { department: "production", team: "a" }),
+    P("leadC", "Quinn", ["lead"], { department: "production", team: "c" }),
+    P("leadD", "Drew", ["lead"], { department: "production", team: "d" }),
+    P("opB", "Blake", ["operator"], { department: "production", team: "b" }),
+    P("opD", "Rowan", ["operator"], { department: "production", team: "d" }),
+  ];
+  const r = d.reportsToAll(people);
+  assert.strictEqual(r.get("leadA").reportsTo, "supAC");
+  assert.strictEqual(r.get("leadC").reportsTo, "supAC"); // team C is covered by Sam
+  assert.strictEqual(r.get("leadD").reportsTo, "supBD");
+  assert.strictEqual(r.get("opB").reportsTo, "supBD"); // team B has no lead; Lee covers B
+  assert.strictEqual(r.get("opD").reportsTo, "leadD");
+  assert.strictEqual(r.get("supAC").reportsTo, "pm");
+  const teams = ["a", "b", "c", "d"];
+  assert.deepStrictEqual(d.cleanOrg({ department: "production", supervisesTeams: ["b", "d", "b"] }, { departments: d.startingDepartments(), people, emp: "supBD", teamIds: teams }).org.supervisesTeams, ["b", "d"]);
+  assert.match(d.cleanOrg({ department: "production", supervisesTeams: ["z"] }, { departments: d.startingDepartments(), people, emp: "supBD", teamIds: teams }).error, /teams/);
 });
