@@ -34,6 +34,7 @@ const testData = require("./testdata");
 const trucksLib = require("./trucks");
 const silosLib = require("./silos");
 const reelsLib = require("./reels");
+const downtimeLib = require("./downtime");
 const callLib = require("./callsheet");
 const incidentsLib = require("./incidents");
 const rotationLib = require("./rotation");
@@ -4006,3 +4007,250 @@ exports.adminEnsureOdooEquipment = onCall({ secrets: [odooKey] }, async (req) =>
 // ---------------------------------------------------------------------------
 
 Object.assign(exports, trainingApi({ db, auditLog, requireMember, requireAdmin, isTest, col }));
+
+// ---------------------------------------------------------------------------
+// Downtime & Scrap shift report (Chris, 10-22-2026). Rules in downtime.js. Line Leads and Supervisors enter each
+// changeover, downtime event, and partial reel / scrap as it happens; the report is signed with a PIN. Read and
+// written only through these functions (no database rules needed). Test site: test_shiftReports /
+// test_downtimeEvents / test_scrapEntries. Flagged reels decided Scrap or Regrind are read in live (counted once).
+// The workbook on SharePoint is not connected yet — entries wait in the app and Export to Excel gives the rows.
+// ---------------------------------------------------------------------------
+
+const SHIFT_REPORT_DAYS = 7; // recent reports a lead can reopen (an unsigned one from last shift, say)
+
+function requireEnter(me) {
+  if (!downtimeLib.canEnter(me.roles)) throw new HttpsError("permission-denied", "Only Line Leads, Supervisors, the Production Manager, and Admins use the shift report.");
+}
+
+// The shift a moment belongs to: { shift, date, startMs, endMs } (night shifts belong to the day they start).
+async function shiftAt(ms) {
+  const form = await formTemplates.doc(formsLib.SHIFT_FORM).get();
+  return formsLib.currentShift(form.get("shifts") || [], ms);
+}
+
+// The rotation's team name for a shift ("A"…), or null on a day with no team (Saturday).
+async function rotationTeamName(shiftNow) {
+  const rot = await rotationDoc.get();
+  const teamId = rotationLib.teamOnShift(rot.get("teams") || [], shiftNow);
+  if (!teamId) return null;
+  const t = await teams.doc(teamId).get();
+  return t.exists ? t.get("name") || null : null;
+}
+
+// Flagged reels from one report's line and shift that were decided Scrap or Regrind, as scrap entries.
+async function reelScrapsFor(test, report) {
+  const next = new Date(Date.parse(`${report.date}T12:00:00Z`) + 86400000).toISOString().slice(0, 10);
+  const snaps = await col("reels", test).where("flaggedDate", "in", [report.date, next]).get();
+  return snaps.docs
+    .map((d) => ({ id: d.id, ...d.data() }))
+    .filter((r) => r.lineId === report.lineId && r.flaggedAtMs >= report.startMs && r.flaggedAtMs < report.endMs)
+    .map(downtimeLib.reelScrap).filter(Boolean)
+    .map((s) => ({ ...s, id: `reel-${s.reelId}`, team: report.team }));
+}
+
+// A report as saved, or a fresh one for the current shift on that line (not saved until something is entered).
+async function loadShiftReport(test, { lineId, reportId }) {
+  if (reportId) {
+    const snap = await col("shiftReports", test).doc(String(reportId)).get();
+    if (!snap.exists) throw new HttpsError("not-found", "That shift report isn't here.");
+    return { id: snap.id, saved: true, ...snap.data() };
+  }
+  const line = lineId ? await lines.doc(String(lineId)).get() : null;
+  if (!line?.exists || line.get("active") === false) throw new HttpsError("invalid-argument", "Pick the line.");
+  const now = await shiftAt(Date.now());
+  if (!now) throw new HttpsError("failed-precondition", "No shift is running right now (Admin → Forms sets the shift times).");
+  const id = downtimeLib.reportId(line.id, now.date, now.shift.id);
+  const snap = await col("shiftReports", test).doc(id).get();
+  if (snap.exists) return { id, saved: true, ...snap.data() };
+  const team = await rotationTeamName(now);
+  return {
+    id, saved: false, lineId: line.id, lineName: line.get("name"), lineNumber: downtimeLib.lineNumber(line.get("name")),
+    date: now.date, shiftId: now.shift.id, shiftName: now.shift.name || now.shift.id, startMs: now.startMs, endMs: now.endMs,
+    team: team || "", needTeamPick: !team, size: "", sdr: "", productSize: "", changeover: null, comments: "", signed: null,
+  };
+}
+
+async function shiftReportView(test, report) {
+  const [events, scraps, reelScraps, openOnLine] = await Promise.all([
+    col("downtimeEvents", test).where("reportId", "==", report.id).get(),
+    col("scrapEntries", test).where("reportId", "==", report.id).get(),
+    reelScrapsFor(test, report),
+    col("issues", test).where("open", "==", true).get(),
+  ]);
+  const lineMachines = new Set((await machines.where("lineId", "==", report.lineId).get()).docs.map((d) => d.id));
+  const byTime = (a, b) => (a.atMs || 0) - (b.atMs || 0);
+  return {
+    report,
+    events: events.docs.map((d) => ({ id: d.id, ...d.data() })).sort(byTime)
+      .map((e) => ({ ...e, contacted: downtimeLib.someoneContacted(e), maintLog: downtimeLib.maintenanceLog(e) })),
+    scraps: [...scraps.docs.map((d) => ({ id: d.id, source: "entry", ...d.data() })).sort(byTime), ...reelScraps],
+    issues: openOnLine.docs.filter((d) => lineMachines.has(d.get("machineId")))
+      .map((d) => ({ id: d.id, odooId: d.get("odooId") || null, title: String(d.get("title") || "").slice(0, 160), machineId: d.get("machineId") })),
+  };
+}
+
+// Line Leads, Supervisors, Production Manager, Admins: { lineId } (this shift) or { reportId } → the report, its
+// entries (with the workbook's Yes / No / Not Needed answers), open Maintenance Requests on the line, the lists, and
+// the line's reports from the last week.
+exports.shiftReport = onCall(async (req) => {
+  const me = await requireMember(req);
+  requireEnter(me);
+  const test = isTest(req);
+  const report = await loadShiftReport(test, req.data || {});
+  const [view, settings, recentSnaps] = await Promise.all([
+    shiftReportView(test, report), reelSettings(),
+    col("shiftReports", test).where("date", ">=", new Date(Date.now() - SHIFT_REPORT_DAYS * 86400000).toISOString().slice(0, 10)).get(),
+  ]);
+  return {
+    ...view, test,
+    canSign: downtimeLib.canSign(me.roles),
+    lists: { changeoverTypes: downtimeLib.CHANGEOVER_TYPES, downtimeReasons: downtimeLib.DOWNTIME_REASONS, scrapReasons: downtimeLib.SCRAP_REASONS, saturdayTeams: downtimeLib.SATURDAY_TEAMS, sizes: settings.sizes, sdrs: settings.sdrs },
+    recent: recentSnaps.docs.filter((d) => d.get("lineId") === report.lineId && d.id !== report.id)
+      .map((d) => ({ id: d.id, date: d.get("date"), shiftName: d.get("shiftName"), team: d.get("team"), signed: !!d.get("signed") }))
+      .sort((a, b) => (a.id < b.id ? 1 : -1)),
+  };
+});
+
+// The report's header: { lineId | reportId, team? (Saturday), size, sdr, changeover? ({ minutes, type } or null),
+// comments? }. Creates the report the first time. Not after it's signed.
+exports.saveShiftReport = onCall(async (req) => {
+  const me = await requireMember(req);
+  requireEnter(me);
+  const test = isTest(req);
+  const report = await loadShiftReport(test, req.data || {});
+  if (report.signed) throw new HttpsError("failed-precondition", "This shift report is signed — it can't be changed.");
+  const product = downtimeLib.cleanProduct(req.data);
+  if (product.error) throw new HttpsError("invalid-argument", product.error);
+  const { team, error: teamError } = report.needTeamPick || downtimeLib.SATURDAY_TEAMS.includes(report.team)
+    ? downtimeLib.teamFor(null, req.data?.team) : { team: report.team };
+  if (teamError) throw new HttpsError("invalid-argument", teamError);
+  let changeover = report.changeover || null;
+  if (req.data?.changeover === null) changeover = null;
+  else if (req.data?.changeover !== undefined) {
+    const c = downtimeLib.cleanChangeover(req.data.changeover);
+    if (c.error) throw new HttpsError("invalid-argument", c.error);
+    changeover = { ...c.changeover, productSize: product.productSize, by: me.employeeNumber, byName: me.name, atMs: Date.now() };
+  }
+  const comments = req.data?.comments === undefined ? report.comments || "" : String(req.data.comments || "").replace(/\r\n/g, "\n").trim().slice(0, 2000);
+  const { id, saved, needTeamPick, ...fields } = report;
+  const ref = col("shiftReports", test).doc(id);
+  await db.runTransaction(async (tx) => {
+    const cur = await tx.get(ref);
+    if (cur.exists && cur.get("signed")) throw new HttpsError("failed-precondition", "This shift report was just signed.");
+    tx.set(ref, {
+      ...fields, team, size: product.size, sdr: product.sdr, productSize: product.productSize, changeover, comments,
+      updatedAtMs: Date.now(), updatedBy: me.employeeNumber, ...(cur.exists ? {} : { createdAtMs: Date.now(), createdBy: me.employeeNumber }),
+      ...(test ? { test: true } : {}),
+    }, { merge: true });
+    auditRecord(tx, cur.exists ? "updated" : "started", "shift report", id, me.employeeNumber, { test });
+  });
+  return { id };
+});
+
+// One entry: { reportId, kind: "downtime" | "scrap", id? (edit), remove?: true, ...fields }. Copies the report's date,
+// line, team, and current product size. Not after the report is signed.
+exports.saveShiftEntry = onCall(async (req) => {
+  const me = await requireMember(req);
+  requireEnter(me);
+  const test = isTest(req);
+  const kind = req.data?.kind === "scrap" ? "scrap" : req.data?.kind === "downtime" ? "downtime" : null;
+  if (!kind) throw new HttpsError("invalid-argument", "Downtime or scrap?");
+  const reportRef = col("shiftReports", test).doc(String(req.data?.reportId || "x"));
+  const entries = col(kind === "downtime" ? "downtimeEvents" : "scrapEntries", test);
+  let fields = null;
+  if (req.data?.remove !== true) {
+    const out = kind === "downtime" ? downtimeLib.cleanDowntime(req.data) : downtimeLib.cleanScrap(req.data);
+    if (out.error) throw new HttpsError("invalid-argument", out.error);
+    fields = out.event || out.scrap;
+    if (fields.issueId) {
+      const issue = await col("issues", test).doc(fields.issueId).get();
+      if (!issue.exists) throw new HttpsError("not-found", "That Maintenance Request isn't here any more — pick it again.");
+      fields.issueTitle = `${issue.get("odooId") ? `#${issue.get("odooId")} ` : ""}${String(issue.get("title") || "").slice(0, 120)}`;
+    }
+  }
+  return db.runTransaction(async (tx) => {
+    const report = await tx.get(reportRef);
+    if (!report.exists) throw new HttpsError("failed-precondition", "Save the product size first.");
+    if (report.get("signed")) throw new HttpsError("failed-precondition", "This shift report is signed — it can't be changed.");
+    const ref = req.data?.id ? entries.doc(String(req.data.id)) : entries.doc();
+    if (req.data?.id) {
+      const cur = await tx.get(ref);
+      if (!cur.exists || cur.get("reportId") !== reportRef.id) throw new HttpsError("not-found", "That entry isn't on this report any more.");
+    }
+    if (!fields) {
+      tx.delete(ref);
+      auditRecord(tx, "removed", `shift ${kind}`, ref.id, me.employeeNumber, { reportId: reportRef.id, test });
+      return { id: ref.id, removed: true };
+    }
+    const r = report.data();
+    tx.set(ref, {
+      ...fields, reportId: reportRef.id, date: r.date, lineId: r.lineId, lineNumber: r.lineNumber, shiftId: r.shiftId, team: r.team,
+      ...(req.data?.id ? {} : { productSize: r.productSize, atMs: Date.now() }), by: me.employeeNumber, byName: me.name, updatedAtMs: Date.now(),
+      ...(test ? { test: true } : {}),
+    }, { merge: true });
+    auditRecord(tx, req.data?.id ? "updated" : "added", `shift ${kind}`, ref.id, me.employeeNumber, { reportId: reportRef.id, test });
+    return { id: ref.id };
+  });
+});
+
+// Line Lead / Supervisor / Production Manager, with their PIN: { reportId, comments?, signer, device }.
+exports.signShiftReport = onCall(async (req) => {
+  const me = await requireMember(req);
+  requireEnter(me);
+  const test = isTest(req);
+  const signer = await requireSignature(req.data);
+  if (!downtimeLib.canSign(signer.roles)) throw new HttpsError("permission-denied", `${signer.name} can't sign shift reports — a Line Lead or Supervisor signs.`);
+  const device = annLib.cleanDevice(req.data?.device);
+  const ref = col("shiftReports", test).doc(String(req.data?.reportId || "x"));
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("failed-precondition", "Save the product size first.");
+    if (snap.get("signed")) throw new HttpsError("failed-precondition", `Already signed by ${snap.get("signed").byName}.`);
+    const comments = req.data?.comments === undefined ? snap.get("comments") || "" : String(req.data.comments || "").replace(/\r\n/g, "\n").trim().slice(0, 2000);
+    tx.update(ref, { comments, signed: { by: signer.employeeNumber, byName: signer.name, atMs: Date.now(), device } });
+    logSignoff(tx, test, { kind: "shift-report", refId: ref.id, version: 1, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber });
+    auditRecord(tx, "signed", "shift report", ref.id, signer.employeeNumber, { test });
+    return { ok: true, name: signer.name };
+  });
+});
+
+// Supervisors, Production Manager, Admins: { from, to } ("YYYY-MM-DD", up to 92 days) → the workbook rows for
+// each tab (Changeover Log, Downtime Log, Scrap Log), data columns only — for Export to Excel until SharePoint is
+// connected. Includes flagged reels decided Scrap or Regrind.
+exports.exportShiftReports = onCall(async (req) => {
+  const me = await requireMember(req);
+  if (!me.roles.some((r) => ["supervisor", "plant-manager", "admin"].includes(r))) throw new HttpsError("permission-denied", "Supervisors, the Production Manager, and Admins export.");
+  const test = isTest(req);
+  const day = (v) => (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null);
+  const from = day(req.data?.from), to = day(req.data?.to);
+  if (!from || !to || from > to || Date.parse(to) - Date.parse(from) > 92 * 86400000) throw new HttpsError("invalid-argument", "Pick a date range of up to 92 days.");
+  const inRange = (c) => col(c, test).where("date", ">=", from).where("date", "<=", to).get();
+  const [reports, events, scraps, reels, lineSnaps, form] = await Promise.all([
+    inRange("shiftReports"), inRange("downtimeEvents"), inRange("scrapEntries"),
+    col("reels", test).where("flaggedAtMs", ">=", Date.parse(`${from}T00:00:00Z`) - 86400000).get(),
+    lines.get(), formTemplates.doc(formsLib.SHIFT_FORM).get(),
+  ]);
+  const byReport = new Map(reports.docs.map((d) => [d.id, { id: d.id, ...d.data(), events: [], scraps: [] }]));
+  const lineName = new Map(lineSnaps.docs.map((d) => [d.id, d.get("name")]));
+  const reportFor = (id, x) => {
+    if (!byReport.has(id)) byReport.set(id, { id, date: x.date, lineId: x.lineId, lineNumber: x.lineNumber || downtimeLib.lineNumber(lineName.get(x.lineId)), team: x.team || "", productSize: "", changeover: null, events: [], scraps: [] });
+    return byReport.get(id);
+  };
+  for (const d of events.docs) reportFor(d.get("reportId"), d.data()).events.push(d.data());
+  for (const d of scraps.docs) reportFor(d.get("reportId"), d.data()).scraps.push(d.data());
+  const shifts = form.get("shifts") || [];
+  for (const d of reels.docs) {
+    const reel = { id: d.id, ...d.data() };
+    const s = downtimeLib.reelScrap(reel);
+    const at = formsLib.currentShift(shifts, reel.flaggedAtMs);
+    if (!s || !at || at.date < from || at.date > to) continue;
+    reportFor(downtimeLib.reportId(reel.lineId, at.date, at.shift.id), { date: at.date, lineId: reel.lineId }).scraps.push(s);
+  }
+  const out = { changeover: [], downtime: [], scrap: [] };
+  for (const r of [...byReport.values()].sort((a, b) => (a.id < b.id ? -1 : 1))) {
+    const rows = downtimeLib.sheetRows(r, r.events.sort((a, b) => a.atMs - b.atMs), r.scraps);
+    for (const k of Object.keys(out)) out[k].push(...rows[k]);
+  }
+  await auditLog.add({ type: "exported", kind: "shift reports", recordId: `${from}..${to}`, by: me.employeeNumber, at: FieldValue.serverTimestamp(), test });
+  return { headers: downtimeLib.SHEET_HEADERS, rows: out, from, to, test };
+});

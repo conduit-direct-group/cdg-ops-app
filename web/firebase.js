@@ -169,6 +169,11 @@ export const callReclaimReel = call("reclaimReel");
 export const callReelDeciders = call("reelDeciders");
 export const callAdminSaveReelSettings = call("adminSaveReelSettings");
 export const callAdminMergeReelColor = call("adminMergeReelColor");
+export const callShiftReport = call("shiftReport");
+export const callSaveShiftReport = call("saveShiftReport");
+export const callSaveShiftEntry = call("saveShiftEntry");
+export const callSignShiftReport = call("signShiftReport");
+export const callExportShiftReports = call("exportShiftReports");
 // Silo levels
 export const callUpdateSiloLevels = call("updateSiloLevels");
 export const callAdminSaveSiloSettings = call("adminSaveSiloSettings");
