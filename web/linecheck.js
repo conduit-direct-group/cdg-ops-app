@@ -10,7 +10,8 @@ import { data, onDataChange } from "./data.js";
 import {
   TEST_MODE, callStartLineLog, callAddLineRound, callSaveLineNotes, callTapPlantItem, callSignLineLog, callReviewLineLog, callLineLogReviewers,
 } from "./firebase.js";
-import { signOff } from "./signoff.js";
+import { signOff, signedNote } from "./signoff.js";
+import { offlineSign } from "./outbox.js";
 
 const LINE_FORM = "line-check";
 const SHIFT_FORM = "clean-shop";
@@ -175,9 +176,9 @@ export function openLineCheck(container, { me, startLine = null, startLogId = nu
       const r = await signOff({
         title: "Operator sign-off", what: `${log.lineName} · ${log.shift.name} shift · ${log.rounds.length} checks`,
         me: { emp: me.emp, name: me.name },
-        action: async ({ signer, device }) => (await callSignLineLog({ id: log.id, signer, device })).data,
+        action: offlineSign("signLineLog", { id: log.id }, { label: `Line Check Log · ${log.lineName} · ${log.shift.name} shift`, key: `linelog:${log.id}` }),
       });
-      if (r) toast(`Signed by ${r.name}${r.test ? " (test)" : ""}`);
+      if (r) toast(signedNote(r, `Signed by ${r.name}${r.test ? " (test)" : ""}`));
     }
     async function review() {
       const canMe = me.roles.some((x) => CHECK_ROLES.includes(x));
@@ -185,9 +186,9 @@ export function openLineCheck(container, { me, startLine = null, startLogId = nu
         title: "Supervisor review", what: `${log.lineName} · ${log.shift.name} shift`,
         me: canMe ? { emp: me.emp, name: me.name } : null,
         others: async () => (await callLineLogReviewers()).data.people,
-        action: async ({ signer, device }) => (await callReviewLineLog({ id: log.id, signer, device })).data,
+        action: offlineSign("reviewLineLog", { id: log.id }, { label: `Line Check review · ${log.lineName} · ${log.shift.name} shift`, key: `linelog-review:${log.id}` }),
       });
-      if (r) toast(`Reviewed by ${r.name}${r.test ? " (test)" : ""}`);
+      if (r) toast(signedNote(r, `Reviewed by ${r.name}${r.test ? " (test)" : ""}`));
     }
     const rounds = [...(log.rounds || [])].reverse();
     return [

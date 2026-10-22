@@ -8,7 +8,8 @@ import { data, onDataChange } from "./data.js";
 import {
   TEST_MODE, callStartShopTasks, callShopTaskPeople, callAssignShopTask, callMarkShopTaskDone, callCheckShopTasks, callShopTaskSigners,
 } from "./firebase.js";
-import { signOff } from "./signoff.js";
+import { signOff, signedNote } from "./signoff.js";
+import { offlineSign } from "./outbox.js";
 
 export const TASKLIST_ROLES = ["lead", "supervisor", "plant-manager", "admin"];
 const CHECK_ROLES = ["supervisor", "plant-manager", "admin"];
@@ -145,9 +146,9 @@ export function openShopTasks(container, { me, startId = null, onExit }) {
     const r = await signOff({
       title: "Mark done", what: `${t.label} · ${l.shift.name} shift`,
       me: { emp, name: personName(emp, l) },
-      action: async ({ signer, device }) => (await callMarkShopTaskDone({ id: l.id, taskId: t.id, signer, device })).data,
+      action: offlineSign("markShopTaskDone", { id: l.id, taskId: t.id }, { label: `Keep the Shop Clean · ${t.label}`, key: `shop:${l.id}:${t.id}` }),
     });
-    if (r) toast(`${r.task} — done by ${r.name}${r.test ? " (test)" : ""}`);
+    if (r) toast(signedNote(r, `${r.task} — done by ${r.name}${r.test ? " (test)" : ""}`));
   }
 
   async function check(l) {
@@ -156,9 +157,9 @@ export function openShopTasks(container, { me, startId = null, onExit }) {
       title: "Supervisor check", what: `Keep the Shop Clean · ${l.shift.name} shift · ${dayLabel(l.date)}`,
       me: canMe ? { emp: me.emp, name: me.name } : null, // not a supervisor: go straight to the supervisors' names
       others: async () => (await callShopTaskSigners({ id: l.id })).data.people,
-      action: async ({ signer, device }) => (await callCheckShopTasks({ id: l.id, signer, device })).data,
+      action: offlineSign("checkShopTasks", { id: l.id }, { label: `Keep the Shop Clean check · ${l.shift.name} shift`, key: `shop-check:${l.id}` }),
     });
-    if (r) toast(`Checked by ${r.name}${r.test ? " (test)" : ""}`);
+    if (r) toast(signedNote(r, `Checked by ${r.name}${r.test ? " (test)" : ""}`));
   }
 
   const personName = (emp, l) => l?.names?.[emp] || ui.people?.find((p) => p.id === emp)?.name || `#${emp}`;

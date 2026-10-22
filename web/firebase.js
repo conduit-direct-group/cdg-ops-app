@@ -49,6 +49,9 @@ function call(name, options) {
       : Promise.reject(Object.assign(new Error("You're offline."), { code: "offline" }));
 }
 
+// Any server function by name — the offline sign-off outbox (outbox.js) sends saved sign-offs this way.
+export const callNamed = (name) => call(name, { timeout: 30000 });
+
 export const callPinLogin = call("pinLogin");
 export const callChangePin = call("changePin");
 export const callAdminListEmployees = call("adminListEmployees");

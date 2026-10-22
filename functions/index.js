@@ -38,6 +38,8 @@ const callLib = require("./callsheet");
 const incidentsLib = require("./incidents");
 const rotationLib = require("./rotation");
 const hrLib = require("./hraccess");
+const offlineLib = require("./offline");
+const { AsyncLocalStorage } = require("node:async_hooks");
 const crypto = require("node:crypto");
 const { getMessaging } = require("firebase-admin/messaging");
 const { defineSecret } = require("firebase-functions/params");
@@ -1504,7 +1506,7 @@ async function liveUnits() {
 
 // Anyone signed in: { unitId, itemIds: [...], signer: { emp, pin }, device, test? } — "I did these items",
 // signed with the shared PIN sign-off (Decision 7). The PIN is required (locked 10-20-2026).
-exports.signChecklist = onCall(async (req) => {
+exports.signChecklist = onCall(signable(async (req) => {
   const signedIn = await requireMember(req);
   const test = isTest(req);
   if (!req.data?.signer) throw new HttpsError("failed-precondition", "Sign-offs need your PIN now. Close this screen and open the checklist again (or reload the app).");
@@ -1536,7 +1538,7 @@ exports.signChecklist = onCall(async (req) => {
   logSignoff(batch, test, { kind: "checklist", refId: unit.id, version: null, items: itemIds, emp: me.employeeNumber, name: me.name, method: "pin", device, signedOn: signedIn.employeeNumber });
   await batch.commit();
   return { ok: true, count: itemIds.length, name: me.name, test };
-});
+}));
 
 function requireTemplate(data, existing) {
   const { template, error } = checklistsLib.cleanTemplate(data, existing);
@@ -1969,7 +1971,29 @@ async function requireSignature(data) {
 }
 
 function logSignoff(tx, test, entry) {
-  tx.create(col("signoffs", test).doc(), { ...entry, at: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}) });
+  const signedAtMs = offlineSend.getStore()?.signedAtMs;
+  tx.create(col("signoffs", test).doc(), {
+    ...entry, at: FieldValue.serverTimestamp(), ...(signedAtMs ? { signedAtMs, offline: true } : {}), ...(test ? { test: true } : {}),
+  });
+}
+
+// Offline sign-offs (offline.js): a sign-off saved on a device with no connection arrives later with { clientId,
+// signedAtMs }. The PIN is checked now, as usual. The same clientId is applied only once — a second send (a reply
+// lost on bad Wi-Fi) gets the first result back — and the sign-off record keeps when it was signed on the floor.
+// Without a clientId (older screens) nothing changes.
+const offlineSend = new AsyncLocalStorage();
+function signable(handler) {
+  return async (req) => {
+    const clientId = offlineLib.cleanClientId(req.data?.clientId);
+    if (!clientId) return handler(req);
+    const ref = col("outboxReceipts", isTest(req)).doc(clientId);
+    const prior = await ref.get();
+    if (prior.exists) return { ...(prior.get("result") || {}), already: true };
+    const signedAtMs = offlineLib.cleanSignedAt(req.data?.signedAtMs, Date.now());
+    const result = await offlineSend.run({ signedAtMs }, () => handler(req));
+    await ref.set({ result: result ?? null, atMs: Date.now(), signedAtMs, by: req.auth?.uid || null, ...(isTest(req) ? { test: true } : {}) });
+    return result;
+  };
 }
 
 // Everyone, with whether they have a login yet (PIN records are only checked for existence, never read).
@@ -2118,7 +2142,7 @@ exports.endAnnouncement = onCall(async (req) => {
 
 // "Read & understood": { id, version, signer: { emp, pin }, device }. The version is the one the person read —
 // if it was edited meanwhile, they're asked to read the new one.
-exports.signAnnouncement = onCall(async (req) => {
+exports.signAnnouncement = onCall(signable(async (req) => {
   const me = await requireMember(req);
   const test = isTest(req);
   const signer = await requireSignature(req.data);
@@ -2140,11 +2164,11 @@ exports.signAnnouncement = onCall(async (req) => {
     return false;
   });
   return { ok: true, already, name: signer.name, version, test };
-});
+}));
 
 // Supervisor, Production Manager, Admin — for someone with no login yet: { id, emp, note, signer: { emp, pin }, device }.
 // Signed with the recorder's own PIN; the note says how it was reviewed.
-exports.recordReviewedInPerson = onCall(async (req) => {
+exports.recordReviewedInPerson = onCall(signable(async (req) => {
   const me = await requireMember(req);
   const test = isTest(req);
   const signer = await requireSignature(req.data);
@@ -2176,7 +2200,7 @@ exports.recordReviewedInPerson = onCall(async (req) => {
     logSignoff(tx, test, { kind: "announcement", refId: snap.id, version, emp, name: person.name, method: "in-person", note, device, recordedBy: me.employeeNumber, signedOn: me.employeeNumber });
   });
   return { ok: true, name: person.name, test };
-});
+}));
 
 // Who has and hasn't signed one announcement (current version). Poster, Production Manager, Office, Admin: everyone;
 // Supervisors: their crew.
@@ -2459,7 +2483,7 @@ const pickHeader = (d) => Object.fromEntries(["team", "toTeam", "date"].filter((
 
 // The outgoing lead signs and sends it: { id, team, toTeam, date, values, signer: { emp, pin }, device }.
 // The signer must be the person who started it. The incoming team's Line Leads get a notification.
-exports.sendHandoff = onCall(async (req) => {
+exports.sendHandoff = onCall(signable(async (req) => {
   const me = await requireHandoffRole(req);
   const test = isTest(req);
   const signer = await requireSignature(req.data);
@@ -2491,7 +2515,7 @@ exports.sendHandoff = onCall(async (req) => {
     url: `/?handoff=${req.data.id}`,
   });
   return { ok: true, leads: leads.length, pushed, test };
-});
+}));
 
 // Throw away your unsent handoff: { id } (kept, marked discarded — nothing is deleted).
 exports.discardHandoff = onCall(async (req) => {
@@ -2506,7 +2530,7 @@ exports.discardHandoff = onCall(async (req) => {
 
 // The incoming lead signs received: { id, signer: { emp, pin }, device }. On a line tablet any incoming Line Lead
 // can sign without signing in.
-exports.receiveHandoff = onCall(async (req) => {
+exports.receiveHandoff = onCall(signable(async (req) => {
   const me = await requireMember(req);
   const test = isTest(req);
   const signer = await requireSignature(req.data);
@@ -2525,7 +2549,7 @@ exports.receiveHandoff = onCall(async (req) => {
     logSignoff(tx, test, { kind: "handoff-received", refId: ref.id, version: h.formRev, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber });
   });
   return { ok: true, name: signer.name, test };
-});
+}));
 
 // Names that can sign received on this device (line tablets): the incoming team's Line Leads. { id }
 exports.handoffReceivers = onCall(async (req) => {
@@ -2615,7 +2639,7 @@ exports.assignShopTask = onCall(async (req) => {
 });
 
 // Mark your own task done: { id, taskId, signer: { emp, pin }, device }. The signer must be the person it's assigned to.
-exports.markShopTaskDone = onCall(async (req) => {
+exports.markShopTaskDone = onCall(signable(async (req) => {
   const me = await requireMember(req);
   const test = isTest(req);
   const signer = await requireSignature(req.data);
@@ -2634,10 +2658,10 @@ exports.markShopTaskDone = onCall(async (req) => {
     return task.label;
   });
   return { ok: true, name: signer.name, task: label, test };
-});
+}));
 
 // Supervisor check, once every task is done: { id, signer: { emp, pin }, device }. Supervisor, Production Manager, Admin.
-exports.checkShopTasks = onCall(async (req) => {
+exports.checkShopTasks = onCall(signable(async (req) => {
   const me = await requireMember(req);
   const test = isTest(req);
   const signer = await requireSignature(req.data);
@@ -2655,7 +2679,7 @@ exports.checkShopTasks = onCall(async (req) => {
     logSignoff(tx, test, { kind: "shop-check", refId: ref.id, version: l.formRev, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber });
   });
   return { ok: true, name: signer.name, test };
-});
+}));
 
 // Who can sign on this device's sheet (line tablets): { id, taskId } -> the person it's assigned to; { id } (check) ->
 // Supervisors, Production Manager, Admins with a login.
@@ -2727,7 +2751,7 @@ exports.saveStationList = onCall(async (req) => {
 });
 
 // Sign it off: { id, values, signer: { emp, pin }, device } — every task ticked and every count filled in.
-exports.signStationList = onCall(async (req) => {
+exports.signStationList = onCall(signable(async (req) => {
   const me = await requireMember(req);
   const test = isTest(req);
   const signer = await requireSignature(req.data);
@@ -2744,7 +2768,7 @@ exports.signStationList = onCall(async (req) => {
     return l.formName;
   });
   return { ok: true, name: signer.name, form: name, test };
-});
+}));
 
 // ---------------------------------------------------------------------------
 // Line Check Log (Decision 64) — from the Line Daily Checklist. The readings, checks, limits, how often, and the
@@ -2860,7 +2884,7 @@ exports.tapPlantItem = onCall(async (req) => {
 });
 
 // End of shift — operator signs: { id, signer: { emp, pin }, device }. At least one round recorded.
-exports.signLineLog = onCall(async (req) => {
+exports.signLineLog = onCall(signable(async (req) => {
   const me = await requireMember(req);
   const test = isTest(req);
   const signer = await requireSignature(req.data);
@@ -2876,10 +2900,10 @@ exports.signLineLog = onCall(async (req) => {
     logSignoff(tx, test, { kind: "line-log", refId: ref.id, version: l.formRev, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber });
   });
   return { ok: true, name: signer.name, test };
-});
+}));
 
 // Supervisor review (after the operator signed): { id, signer: { emp, pin }, device }. Supervisor, Production Manager, Admin.
-exports.reviewLineLog = onCall(async (req) => {
+exports.reviewLineLog = onCall(signable(async (req) => {
   const me = await requireMember(req);
   const test = isTest(req);
   const signer = await requireSignature(req.data);
@@ -2896,7 +2920,7 @@ exports.reviewLineLog = onCall(async (req) => {
     logSignoff(tx, test, { kind: "line-log-review", refId: ref.id, version: l.formRev, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber });
   });
   return { ok: true, name: signer.name, test };
-});
+}));
 
 // Supervisors who can review on this device (line tablets).
 exports.lineLogReviewers = onCall(async (req) => {
@@ -3314,7 +3338,7 @@ exports.completeIncidentAction = onCall(async (req) => {
 });
 
 // Training & Safety or Production Manager, with PIN: { id, signer, device } — close (every action done first).
-exports.closeIncident = onCall(async (req) => {
+exports.closeIncident = onCall(signable(async (req) => {
   await requireMember(req);
   const test = isTest(req);
   const signer = await requireSignature(req.data);
@@ -3334,7 +3358,7 @@ exports.closeIncident = onCall(async (req) => {
     auditRecord(tx, "closed", "incident", ref.id, signer.employeeNumber, { test });
     return { ok: true, name: signer.name, test };
   });
-});
+}));
 
 // Follow-up: active people (for action owners), and who can close with a PIN on this device.
 exports.incidentPeople = onCall(async (req) => {
@@ -3606,7 +3630,7 @@ exports.stageReel = onCall(async (req) => {
 });
 
 // Line Lead / Quality / Supervisor, with their PIN: { id, kind, note, signer, device }.
-exports.decideReel = onCall(async (req) => {
+exports.decideReel = onCall(signable(async (req) => {
   await requireMember(req);
   const test = isTest(req);
   const signer = await requireSignature(req.data);
@@ -3627,7 +3651,7 @@ exports.decideReel = onCall(async (req) => {
     auditRecord(tx, "decided", "reel", snap.id, signer.employeeNumber, { decision: kind, test });
     return { ok: true, name: signer.name, next: d.next, test };
   });
-});
+}));
 
 // Reclamation: { id, footage, segregation } — closes a regrind / scrap reel.
 exports.reclaimReel = onCall(async (req) => {

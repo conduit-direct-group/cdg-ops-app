@@ -7,7 +7,8 @@ import { data, onDataChange } from "./data.js";
 import { db, storage, TEST_MODE, callFlagReel, callStageReel, callDecideReel, callReclaimReel, callReelDeciders, callAdminSaveReelSettings, callAdminMergeReelColor } from "./firebase.js";
 import { collection, getDocs, query, where } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 import { ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-storage.js";
-import { signOff } from "./signoff.js";
+import { signOff, signedNote } from "./signoff.js";
+import { offlineSign } from "./outbox.js";
 import { clock } from "./shift.js";
 
 export const DECIDE_ROLES = ["lead", "quality", "supervisor"];
@@ -237,9 +238,9 @@ export function openReels(container, { me, onExit, backLabel = "Home", start = "
       title: "Decision (PIN)", what: `${r.tag || "No tag"} · ${r.lineName} · ${DECISIONS.find((x) => x[0] === d.kind)[1]}`,
       me: decider() ? { emp: me.emp, name: me.name } : null,
       others: async () => (await callReelDeciders()).data.people,
-      action: async ({ signer, device }) => (await callDecideReel({ id: r.id, kind: d.kind, note: d.note, signer, device })).data,
+      action: offlineSign("decideReel", { id: r.id, kind: d.kind, note: d.note }, { label: `Reel decision · ${r.tag || "No tag"} · ${r.lineName}`, key: `reel:${r.id}` }),
     });
-    if (out) { ui.decide = null; toast(`Decided by ${out.name}${out.next === "reclaim" ? " — goes to Reclamation" : ""}${out.test ? " (test)" : ""}`); render(); }
+    if (out) { ui.decide = null; toast(signedNote(out, `Decided by ${out.name}${out.next === "reclaim" ? " — goes to Reclamation" : ""}${out.test ? " (test)" : ""}`)); render(); }
   }
 
   async function reclaim(r) {

@@ -1,7 +1,8 @@
 // The one sign-off part (Decision 7): tap your name, then your own 6-digit PIN, checked on the server.
 // Checklists, announcements, and anything later use it. On a line tablet anyone on the crew can sign without
 // signing in ("Someone else?" lists their names), so a crew can sign one after another.
-// Each sign-off records which device it was made on.
+// Each sign-off records which device it was made on. With no connection, outbox.js saves it on the device and sends
+// it later (the action gets { signer, device, who } and may return { queued: true, name }).
 
 import { el, friendlyError } from "./ui.js";
 
@@ -61,7 +62,7 @@ export function signOff({ title, what, me, others = null, action, doneLabel = "S
       Object.assign(ui, { busy: true, message: "" });
       draw();
       try {
-        const result = await action({ signer: { emp: ui.who.emp, pin: ui.pin }, device: deviceInfo() });
+        const result = await action({ signer: { emp: ui.who.emp, pin: ui.pin }, device: deviceInfo(), who: ui.who });
         close(result);
       } catch (err) {
         Object.assign(ui, { busy: false, pin: "", message: friendlyError(err) });
@@ -91,8 +92,12 @@ export function signOff({ title, what, me, others = null, action, doneLabel = "S
       if (ui.list) return;
       try {
         ui.list = await others();
+        try { localStorage.setItem(`cdg.signers.${title}`, JSON.stringify(ui.list.map((p) => ({ emp: p.emp, name: p.name })))); } catch {}
       } catch (err) {
-        ui.listError = friendlyError(err);
+        let kept = null;
+        try { kept = JSON.parse(localStorage.getItem(`cdg.signers.${title}`) || "null"); } catch {}
+        if (kept?.length) ui.list = kept; // offline: the names this device saw last time
+        else ui.listError = friendlyError(err);
       }
       draw();
     }
@@ -164,4 +169,9 @@ export function signOff({ title, what, me, others = null, action, doneLabel = "S
     draw();
     sheet.querySelector(".signoff-name")?.focus();
   });
+}
+
+// The message after a sign-off: as usual, or "saved on this device" when it waits for the connection.
+export function signedNote(r, text) {
+  return r?.queued ? `Saved on this device — ${r.name}'s sign-off sends when the connection is back (⏳ at the top)` : text;
 }

@@ -11,7 +11,8 @@ import {
   callAdminImportOldChecklists, callSignoffPeople,
 } from "./firebase.js";
 import { ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-storage.js";
-import { signOff } from "./signoff.js";
+import { signOff, signedNote } from "./signoff.js";
+import { offlineSign } from "./outbox.js";
 import { shiftNow } from "./shift.js";
 
 const DAY_MS = 86400000;
@@ -194,11 +195,11 @@ export function openChecklist(container, { me, unitId: id, onExit }) {
       what: `${unitLabel(unit())} · ${n} item${n === 1 ? "" : "s"}`,
       me: { emp: me.emp, name: me.name },
       others: async () => (await callSignoffPeople({ kind: "checklist" })).data.people,
-      action: async ({ signer, device }) => (await callSignChecklist({ unitId: id, itemIds: [...ui.checked], signer, device })).data,
+      action: offlineSign("signChecklist", { unitId: id, itemIds: [...ui.checked] }, { label: `Checklist · ${unitLabel(unit())}`, key: `checklist:${id}` }),
     });
     if (!r) return render();
     ui.checked.clear();
-    onExit(`${unitLabel(unit())} signed off by ${r.name} — ${r.count} item${r.count === 1 ? "" : "s"}${r.test ? " (test)" : ""}`);
+    onExit(signedNote(r, `${unitLabel(unit())} signed off by ${r.name} — ${r.count} item${r.count === 1 ? "" : "s"}${r.test ? " (test)" : ""}`));
   }
 
   function renderList() {

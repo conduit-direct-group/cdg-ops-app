@@ -29,6 +29,7 @@ const TEST_COLLECTIONS = [
   ["test_callTaps", "Call button taps"],
   ["test_incidents", "Near-miss & incident reports"],
   ["test_incidentActions", "Incident corrective actions"],
+  ["test_outboxReceipts", "Offline sign-off receipts"],
 ];
 const DAY_MS = 86400000;
 
