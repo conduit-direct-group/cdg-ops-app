@@ -315,10 +315,6 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
           ? el("p", { class: "message" }, `Suggested from “${existing.position || "no position"}”: ${existing.suggestedRoles.length ? roleNames(existing.suggestedRoles) : "no match — pick one"}. Tick the right role(s) — saving confirms them.`)
           : null,
         roleBoxes,
-        el("label", { class: "field-label", for: "f-team" }, "Team"),
-        picker({ id: "f-team", title: "Team", value: d.team, placeholder: "No team", options: [{ value: "", label: "No team" }, ...teams.map((t) => ({ value: t.id, label: `Team ${t.name}` }))], onChange: (v) => { d.team = v; render(); } }),
-        el("label", { class: "field-label", for: "f-home" }, "Home line"),
-        picker({ id: "f-home", title: "Home line", value: d.homeLineId, placeholder: "No home line", options: [{ value: "", label: "No home line" }, ...lines.map((l) => ({ value: l.id, label: l.name }))], onChange: (v) => { d.homeLineId = v; render(); } }),
         ui.org
           ? [
             el("label", { class: "field-label", for: "f-dept" }, "Department"),
@@ -327,7 +323,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
               ? el("p", { class: "card-note" }, `Suggested from their roles: ${deptName(ui.org, suggested)} `,
                   el("button", { class: "link-btn", type: "button", onclick: () => { d.department = suggested; render(); } }, "Use it"))
               : null,
-            el("label", { class: "check-row" }, el("input", { type: "checkbox", checked: d.head, disabled: !d.department, onchange: (e) => { d.head = e.target.checked; } }), el("span", {}, "⭐ Department head (one per department)")),
+            el("label", { class: "check-row" }, el("input", { type: "checkbox", checked: d.head, disabled: !d.department, onchange: (e) => { d.head = e.target.checked; } }), el("span", {}, d.department ? "⭐ Department head (one per department)" : "⭐ Department head — pick a department first")),
             el("label", { class: "field-label", for: "f-reports" }, "Reports to"),
             picker({ id: "f-reports", title: "Reports to", value: d.reportsTo, placeholder: "Automatic",
               options: [{ value: "", label: `Automatic${existing && auto.reportsTo && !auto.override ? ` (${personName(auto.reportsTo)})` : ""}` }, ...others.map((x) => ({ value: x.employeeNumber, label: `${x.name} (#${x.employeeNumber})` }))],
@@ -335,6 +331,10 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
             el("p", { class: "card-note" }, "Automatic: Production by shift (Operator → team Line Lead → team Supervisor → Production Manager); other departments → their head; heads → the Production Manager (or who's set in Admin → Departments). Pick a person to override it."),
           ]
           : el("p", { class: "card-note" }, "Department and reports to couldn't load — save the rest, then try again."),
+        el("label", { class: "field-label", for: "f-team" }, "Team"),
+        picker({ id: "f-team", title: "Team", value: d.team, placeholder: "No team", options: [{ value: "", label: "No team" }, ...teams.map((t) => ({ value: t.id, label: `Team ${t.name}` }))], onChange: (v) => { d.team = v; render(); } }),
+        el("label", { class: "field-label", for: "f-home" }, "Home line"),
+        picker({ id: "f-home", title: "Home line", value: d.homeLineId, placeholder: "No home line", options: [{ value: "", label: "No home line" }, ...lines.map((l) => ({ value: l.id, label: l.name }))], onChange: (v) => { d.homeLineId = v; render(); } }),
         // Links this person to their training record, so their own refreshers due show in "Needs you" on Home.
         existing && trainingRoster.length
           ? [el("label", { class: "field-label", for: "f-training" }, "Training record (name on the training roster)"),
