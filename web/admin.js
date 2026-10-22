@@ -10,6 +10,8 @@ import {
   callAdminUnlock,
   callAdminUpdateEmployee,
   callAdminEnableLogin,
+  callAdminOrg,
+  callAdminSaveOrg,
   db,
 } from "./firebase.js";
 import { doc, onSnapshot } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
@@ -26,6 +28,9 @@ function personLine(p) {
   return [`#${p.employeeNumber}`, p.rolesConfirmed ? roleNames(p.roles) : p.position, p.team ? `Team ${teamName(p.team)}` : "", p.homeLineId ? lineName(p.homeLineId) : "", p.trainingName ? "🎓 linked" : ""].filter(Boolean).join(" · ");
 }
 
+// Departments + reports to (launch list 1): the org part of a person, from adminOrg.
+const deptName = (org, id) => org?.departments.find((dep) => dep.id === id)?.name || "";
+
 // Opens the People screens inside `container`. `onExit` returns to the Admin menu.
 export function openAdmin(container, { myEmployeeNumber, onExit }) {
   const ui = {
@@ -35,7 +40,8 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
     tempPin: null, // { name, pin } — shown once, never stored
     justAdded: [], // [{ name, number, pin }] — PINs from "Save & add another", shown on the form until you leave it
     nextNumber: "",
-    filter: "all", // all | unconfirmed | noTeam | noLogin
+    filter: "all", // all | unconfirmed | noTeam | noLogin | noDept | noReports | noHead
+    org: null, // { departments, headsReportTo, noHead, byEmp: Map emp → { department, suggested, deptHead, isHead, override, reportsTo, source } }
     draft: null, // what's typed in the add/edit form, so a failed save doesn't wipe it
     message: "",
     messageKind: "",
@@ -57,9 +63,10 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
 
   async function load() {
     try {
-      const { data } = await callAdminListEmployees();
+      const [{ data }, org] = await Promise.all([callAdminListEmployees(), callAdminOrg().then((r) => r.data, () => null)]);
       ui.people = data.employees;
       ui.nextNumber = data.nextNumber || "";
+      ui.org = org ? { ...org, byEmp: new Map(org.people.map((x) => [x.emp, x])) } : null;
       ui.loadError = "";
     } catch (err) {
       ui.loadError = friendlyError(err);
@@ -116,14 +123,28 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
     unconfirmed: { label: "Role not confirmed", test: (p) => p.active && !p.rolesConfirmed },
     noTeam: { label: "No team set", test: (p) => p.active && !p.team },
     noLogin: { label: "No login yet", test: (p) => p.active && !p.loginEnabled },
+    noDept: { label: "No department", test: (p) => !!ui.org && p.active && !orgOf(p).department },
+    noReports: { label: "Missing reports to", test: (p) => !!ui.org && p.active && !!orgOf(p).department && orgOf(p).source === "missing" },
+    noHead: { label: "Department with no head", test: (p) => !!ui.org && p.active && ui.org.noHead.includes(orgOf(p).department) },
   };
+  const orgOf = (p) => ui.org?.byEmp.get(p.employeeNumber) || {};
+  const personName = (emp) => ui.people?.find((x) => x.employeeNumber === emp)?.name || (emp ? `#${emp}` : "");
+  // Department · ⭐ head · Reports to — three columns on wide screens, stacked on a phone.
+  function orgCols(p) {
+    if (!ui.org) return null;
+    const o = orgOf(p);
+    return el("span", { class: "org-cols" },
+      el("span", { class: o.department ? "org-col" : "org-col muted" }, o.department ? deptName(ui.org, o.department) : "No department"),
+      el("span", { class: "org-col org-head", "aria-label": o.isHead ? "Department head" : null }, o.isHead ? "⭐ Head" : ""),
+      el("span", { class: o.reportsTo || o.source === "top" ? "org-col" : "org-col muted" },
+        o.reportsTo ? `→ ${personName(o.reportsTo)}${o.source === "override" ? " (set)" : ""}` : o.source === "top" ? "Reports to no one (top)" : o.department ? "⚠ Reports to: missing" : ""));
+  }
   const visible = () => (ui.people || []).filter(FILTERS[ui.filter].test);
   function filterChips() {
     if (!ui.people) return null;
-    return el("div", { class: "chips" }, Object.entries(FILTERS).map(([id, f]) => {
-      const n = ui.people.filter(f.test).length;
-      return el("button", { class: ui.filter === id ? "chip on" : "chip", type: "button", onclick: () => { ui.filter = id; render(); } }, `${f.label} (${n})`);
-    }));
+    // One "Show" picker (7 filters would fill a phone screen as buttons).
+    return el("div", { class: "filter-pick" }, el("span", { class: "field-label" }, "Show"),
+      picker({ id: "people-filter", title: "Show", value: ui.filter, options: Object.entries(FILTERS).filter(([, f]) => f.test !== null).map(([id, f]) => ({ value: id, label: `${f.label} (${ui.people.filter(f.test).length})` })), onChange: (v) => { ui.filter = v; render(); } }));
   }
 
   function renderList() {
@@ -138,6 +159,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
               { class: "person-row", type: "button", onclick: () => { ui.selected = p.employeeNumber; show("person"); } },
               el("span", { class: "person-name" }, p.name),
               el("span", { class: "person-meta" }, personLine(p)),
+              orgCols(p),
               el("span", { class: "tags" }, tags(p))
             )
           );
@@ -160,7 +182,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
   // `keep` = same roles, team, and home line as the last one (Save & add another).
   function startAdd(keep = null) {
     if (!keep) ui.justAdded = [];
-    ui.draft = { number: ui.nextNumber, name: "", roles: keep?.roles || ["operator"], team: keep?.team || "", homeLineId: keep?.homeLineId || "" };
+    ui.draft = { number: ui.nextNumber, name: "", roles: keep?.roles || ["operator"], team: keep?.team || "", homeLineId: keep?.homeLineId || "", department: keep?.department || "", head: false, reportsTo: "" };
     show("add");
   }
 
@@ -169,6 +191,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
     ui.draft = {
       number: p.employeeNumber, name: p.name, position: p.position || "", roles: p.rolesConfirmed ? [...p.roles] : [...p.suggestedRoles],
       team: p.team || "", homeLineId: p.homeLineId || "", trainingName: p.trainingName || "",
+      department: orgOf(p).department || "", head: orgOf(p).deptHead === true, reportsTo: orgOf(p).override || "",
     };
     show("edit");
   }
@@ -211,11 +234,13 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
       e?.preventDefault();
       if (existing) {
         const ok = await act(() => callAdminUpdateEmployee({ employeeNumber: existing.employeeNumber, ...fields() }), () => save(null));
-        if (ok) show("person", "Saved", "ok");
+        ui.replacedNote = "";
+        if (ok && (await saveOrg(existing.employeeNumber))) show("person", `Saved${ui.replacedNote}`, "ok");
         return;
       }
       const r = await act(() => callAdminCreateEmployee({ employeeNumber: d.number, ...fields() }), () => save(null, again));
       if (!r) return;
+      if (!(await saveOrg(r.employeeNumber))) return;
       if (again) {
         ui.justAdded.unshift({ name: d.name.trim(), number: r.employeeNumber, pin: r.tempPin });
         toast(`${d.name.trim()} added — #${r.employeeNumber}`);
@@ -227,6 +252,34 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
       ui.selected = r.employeeNumber;
       show("tempPin");
     }
+    // Department, head, reports to — only when something changed. One head per department: if someone else is the
+    // head, ask "Replace [current head]?" first.
+    async function saveOrg(emp, replace = false) {
+      if (!ui.org) return true;
+      const o = ui.org.byEmp.get(emp) || {};
+      if ((o.department || "") === (d.department || "") && (o.deptHead === true) === d.head && (o.override || "") === (d.reportsTo || "")) return true;
+      try {
+        const { data: r } = await callAdminSaveOrg({ emp, department: d.department || null, head: d.head && !!d.department, reportsTo: d.reportsTo || null, replace });
+        await load();
+        ui.replacedNote = r.replaced ? ` — ${r.replaced} is no longer the ${deptName(ui.org, d.department)} head` : "";
+        return true;
+      } catch (err) {
+        const current = err?.details?.currentHead;
+        if (current && !replace) {
+          const ok = await confirmSheet({ title: `Replace ${current.name}?`, text: `${current.name} is the ${deptName(ui.org, d.department)} head. Make this person the head instead?`, confirmLabel: `Replace ${current.name}` });
+          if (ok) return saveOrg(emp, true);
+          d.head = false; // keep the current head; save the rest
+          return saveOrg(emp);
+        }
+        Object.assign(ui, { busy: false, message: current ? "Saved — but not as department head." : friendlyError(err), messageKind: "error", retry: null });
+        render();
+        return false;
+      }
+    }
+    const depts = (ui.org?.departments || []).filter((dep) => dep.active !== false || dep.id === d.department);
+    const suggested = existing ? orgOf(existing).suggested : null;
+    const auto = existing ? orgOf(existing) : {};
+    const others = (ui.people || []).filter((x) => x.active && (!existing || x.employeeNumber !== existing.employeeNumber));
     const teams = (data.teams || []).filter((t) => t.active !== false || t.id === d.team);
     const lines = (data.lines || []).filter((l) => l.active !== false || l.id === d.homeLineId);
 
@@ -266,6 +319,22 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
         picker({ id: "f-team", title: "Team", value: d.team, placeholder: "No team", options: [{ value: "", label: "No team" }, ...teams.map((t) => ({ value: t.id, label: `Team ${t.name}` }))], onChange: (v) => { d.team = v; render(); } }),
         el("label", { class: "field-label", for: "f-home" }, "Home line"),
         picker({ id: "f-home", title: "Home line", value: d.homeLineId, placeholder: "No home line", options: [{ value: "", label: "No home line" }, ...lines.map((l) => ({ value: l.id, label: l.name }))], onChange: (v) => { d.homeLineId = v; render(); } }),
+        ui.org
+          ? [
+            el("label", { class: "field-label", for: "f-dept" }, "Department"),
+            picker({ id: "f-dept", title: "Department", value: d.department, placeholder: "No department", options: [{ value: "", label: "No department" }, ...depts.map((dep) => ({ value: dep.id, label: dep.active === false ? `${dep.name} (retired)` : dep.name }))], onChange: (v) => { d.department = v; if (!v) d.head = false; render(); } }),
+            suggested && suggested !== d.department
+              ? el("p", { class: "card-note" }, `Suggested from their roles: ${deptName(ui.org, suggested)} `,
+                  el("button", { class: "link-btn", type: "button", onclick: () => { d.department = suggested; render(); } }, "Use it"))
+              : null,
+            el("label", { class: "check-row" }, el("input", { type: "checkbox", checked: d.head, disabled: !d.department, onchange: (e) => { d.head = e.target.checked; } }), el("span", {}, "⭐ Department head (one per department)")),
+            el("label", { class: "field-label", for: "f-reports" }, "Reports to"),
+            picker({ id: "f-reports", title: "Reports to", value: d.reportsTo, placeholder: "Automatic",
+              options: [{ value: "", label: `Automatic${existing && auto.reportsTo && !auto.override ? ` (${personName(auto.reportsTo)})` : ""}` }, ...others.map((x) => ({ value: x.employeeNumber, label: `${x.name} (#${x.employeeNumber})` }))],
+              onChange: (v) => { d.reportsTo = v; render(); } }),
+            el("p", { class: "card-note" }, "Automatic: Production by shift (Operator → team Line Lead → team Supervisor → Production Manager); other departments → their head; heads → the Production Manager (or who's set in Admin → Departments). Pick a person to override it."),
+          ]
+          : el("p", { class: "card-note" }, "Department and reports to couldn't load — save the rest, then try again."),
         // Links this person to their training record, so their own refreshers due show in "Needs you" on Home.
         existing && trainingRoster.length
           ? [el("label", { class: "field-label", for: "f-training" }, "Training record (name on the training roster)"),
@@ -352,11 +421,14 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
       messageBox(),
       p.locked ? el("button", { class: "btn", type: "button", onclick: () => unlock(), disabled: ui.busy }, "🔓 Unlock now") : null,
       p.position ? el("p", { class: "hint" }, p.position) : null,
+      ui.org ? el("div", { class: "card org-card" },
+        el("p", {}, el("strong", {}, "Department: "), orgOf(p).department ? `${deptName(ui.org, orgOf(p).department)}${orgOf(p).isHead ? " · ⭐ Head" : ""}` : "none yet"),
+        el("p", {}, el("strong", {}, "Reports to: "), orgOf(p).reportsTo ? `${personName(orgOf(p).reportsTo)}${orgOf(p).source === "override" ? " (set by an admin)" : " (automatic)"}` : orgOf(p).source === "top" ? "no one (top of the chart)" : "⚠ missing")) : null,
       !p.rolesConfirmed ? el("p", { class: "message" }, "Role not confirmed yet — tap Edit, tick the right role(s), and Save.") : null,
       p.loginEnabled
         ? el("button", { class: "btn secondary", type: "button", onclick: () => resetPin(), disabled: ui.busy || !p.active }, "🔑 Reset PIN")
         : el("button", { class: "btn", type: "button", onclick: () => enableLogin(), disabled: ui.busy || !p.active || !p.rolesConfirmed }, p.rolesConfirmed ? "🔑 Enable login" : "🔑 Enable login (confirm role first)"),
-      el("button", { class: "btn secondary", type: "button", onclick: startEdit, disabled: ui.busy }, "✎ Edit name, roles, team, home line"),
+      el("button", { class: "btn secondary", type: "button", onclick: startEdit, disabled: ui.busy }, "✎ Edit name, roles, team, home line, department"),
       isMe
         ? null
         : el(

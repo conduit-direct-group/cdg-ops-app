@@ -36,6 +36,7 @@ import { openMachines, canViewMachines } from "./machines.js";
 import { openTestReset } from "./testdata.js";
 import { openTrucks, canViewTrucks, canCheckTrucks } from "./trucks.js";
 import { openReels, openReelAdmin } from "./reels.js";
+import { openDepartmentsAdmin, openProfile } from "./departments.js";
 import { openWhoToCall, openCallAdmin, lineDownReminder } from "./whotocall.js";
 import { openIncidents, openRotationAdmin, openInjuryExport, openHrAccess } from "./incidents.js";
 import { openSilos, openSiloAdmin, UPDATE_ROLES as SILO_UPDATE_ROLES, ALERT_ROLES as SILO_ALERT_ROLES } from "./silos.js";
@@ -355,6 +356,7 @@ function openMore() {
     canViewTrucks(roles) && !canCheckTrucks(roles) ? row("🚚", "Trucks", () => openTrucksScreen()) : null,
     usesQc(roles) && !roles.includes("quality") ? row("🏷", "QC hold — flagged reels", () => openReelScreen()) : null,
     row("🦺", "Safety reports — near miss / incident", () => openIncidentScreen()),
+    row("👤", "My profile — who I report to, org chart", () => openProfileScreen()),
     row("📞", "Who to Call", () => openCallScreen()),
     row("📄", "Reference documents", () => openDocsScreen()),
     !m.admin && editableForms(m.roles).length ? row("📝", "Edit forms", () => openFormsScreen()) : null,
@@ -508,6 +510,14 @@ function openIncidentScreen(view = "home", id = null) {
 }
 
 // Who to Call (📞 in the top bar, or More). Maintenance's "No" opens the Fix Library; "Yes, but can't run" the request form.
+// More → My profile: who I report to, and the org chart (everyone; Departments + reports to, launch list 1).
+function openProfileScreen() {
+  if (closeModule) closeModule();
+  setNav("more");
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  closeModule = openProfile(screen, { me: me(), onExit: () => go("home"), backLabel: "Home" });
+}
+
 function openCallScreen() {
   if (closeModule) closeModule();
   setNav("more");
@@ -716,6 +726,7 @@ function renderAdminMenu() {
     el("button", { class: "btn", type: "button", onclick: () => openModule(openAdmin) }, "👥 People"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openLines) }, "🏭 Lines & machines"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openMachineTypes) }, "🔩 Machine types"),
+    el("button", { class: "btn", type: "button", onclick: () => openModule(openDepartmentsAdmin) }, "🏢 Departments"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openTeams) }, "🅰 Teams"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openRoles) }, "🏷 Roles"),
     el("button", { class: "btn", type: "button", onclick: () => openModule((c, o) => openChecklistAdmin(c, { ...o, me: me() })) }, "📋 Checklists"),

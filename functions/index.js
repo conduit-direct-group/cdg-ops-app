@@ -38,6 +38,7 @@ const callLib = require("./callsheet");
 const incidentsLib = require("./incidents");
 const rotationLib = require("./rotation");
 const hrLib = require("./hraccess");
+const deptLib = require("./departments");
 const crypto = require("node:crypto");
 const { getMessaging } = require("firebase-admin/messaging");
 const { defineSecret } = require("firebase-functions/params");
@@ -4006,3 +4007,96 @@ exports.adminEnsureOdooEquipment = onCall({ secrets: [odooKey] }, async (req) =>
 // ---------------------------------------------------------------------------
 
 Object.assign(exports, trainingApi({ db, auditLog, requireMember, requireAdmin, isTest, col }));
+
+// ---------------------------------------------------------------------------
+// Departments + reports to (Chris, 10-22-2026; launch list 1). Rules in departments.js. Set on Admin → People;
+// departments are a list in Admin → Departments (meta/departments). Read only through these functions: everyone sees
+// the org chart (names and titles only) and who they report to; admins see and change the rest.
+// ---------------------------------------------------------------------------
+
+const departmentsDoc = db.collection("meta").doc("departments");
+
+async function orgData() {
+  const [deptSnap, empSnaps, roleSnaps] = await Promise.all([departmentsDoc.get(), employees.get(), roles.get()]);
+  const departments = deptSnap.get("departments") || deptLib.startingDepartments();
+  const headsReportTo = deptSnap.get("headsReportTo") || null;
+  const roleName = new Map(roleSnaps.docs.map((d) => [d.id, d.get("name")]));
+  const people = empSnaps.docs.map((d) => ({
+    id: d.id, name: d.get("name") || `Employee ${d.id}`, roles: d.get("roles") || [], team: d.get("team") || null,
+    homeLineId: d.get("homeLineId") || null, active: d.get("active") !== false, position: d.get("position") || "",
+    department: d.get("department") || null, deptHead: d.get("deptHead") === true, reportsTo: d.get("reportsTo") || null,
+  }));
+  const reports = deptLib.reportsToAll(people, { headsReportTo });
+  // A title: the position, else the role names (Admin only when it's the only role).
+  const title = (x) => x.position || x.roles.filter((r) => r !== "admin").map((r) => roleName.get(r) || r).join(", ") || (x.roles.includes("admin") ? "Admin" : "");
+  const headIds = new Map(departments.map((dep) => [dep.id, deptLib.headOf(dep.id, people)?.id || null]));
+  return { departments, headsReportTo, people, reports, title, headIds };
+}
+
+// Anyone signed in: the org chart — names and titles only — and who I report to.
+exports.orgChart = onCall(async (req) => {
+  const me = await requireMember(req);
+  const o = await orgData();
+  const name = new Map(o.people.map((x) => [x.id, x.name]));
+  const on = o.people.filter((x) => x.active);
+  return {
+    departments: o.departments.filter((dep) => dep.active !== false).map((dep) => ({ id: dep.id, name: dep.name, head: o.headIds.get(dep.id) })),
+    people: on.map((x) => ({ emp: x.id, name: x.name, title: o.title(x), department: x.department, head: !!x.department && o.headIds.get(x.department) === x.id, reportsTo: o.reports.get(x.id)?.reportsTo || null }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    me: { emp: me.employeeNumber, reportsTo: o.reports.get(me.employeeNumber)?.reportsTo || null, reportsToName: name.get(o.reports.get(me.employeeNumber)?.reportsTo) || null },
+  };
+});
+
+// Admins: everyone's department, head, override, suggested department, and who they report to (and why).
+exports.adminOrg = onCall(async (req) => {
+  await requireAdmin(req);
+  const o = await orgData();
+  return {
+    departments: o.departments, headsReportTo: o.headsReportTo,
+    noHead: deptLib.departmentsWithoutHead(o.people, o.departments),
+    people: o.people.map((x) => ({
+      emp: x.id, department: x.department, suggested: deptLib.suggestDepartment(x.roles, o.departments), deptHead: x.deptHead,
+      isHead: !!x.department && o.headIds.get(x.department) === x.id, override: x.reportsTo,
+      reportsTo: o.reports.get(x.id)?.reportsTo || null, source: o.reports.get(x.id)?.source || "missing",
+    })),
+  };
+});
+
+// Admins: { emp, department, head, reportsTo (employee # or null = automatic), replace? }. One head per department:
+// ticking a second one is refused with the current head unless replace is true (then the old head is unticked).
+exports.adminSaveOrg = onCall(async (req) => {
+  const adminNumber = await requireAdmin(req);
+  const emp = String(req.data?.emp || "");
+  return db.runTransaction(async (tx) => {
+    const [deptSnap, all] = await Promise.all([tx.get(departmentsDoc), tx.get(employees)]);
+    const departments = deptSnap.get("departments") || deptLib.startingDepartments();
+    const people = all.docs.map((d) => ({ id: d.id, name: d.get("name"), active: d.get("active") !== false, department: d.get("department") || null, deptHead: d.get("deptHead") === true }));
+    if (!people.some((x) => x.id === emp)) throw new HttpsError("not-found", "That person isn't in the app.");
+    const { org, error } = deptLib.cleanOrg(req.data, { departments, people, emp });
+    if (error) throw new HttpsError("invalid-argument", error);
+    const current = org.head ? people.find((x) => x.id !== emp && x.active && x.department === org.department && x.deptHead) : null;
+    if (current && req.data?.replace !== true) {
+      const deptName = departments.find((dep) => dep.id === org.department)?.name || org.department;
+      throw new HttpsError("already-exists", `${current.name} is the ${deptName} head. Replace ${current.name}?`, { currentHead: { emp: current.id, name: current.name } });
+    }
+    if (current) tx.update(employees.doc(current.id), { deptHead: false });
+    tx.update(employees.doc(emp), { department: org.department, deptHead: org.head, reportsTo: org.reportsTo || FieldValue.delete() });
+    auditRecord(tx, "updated", "department", emp, adminNumber, { department: org.department, head: org.head, reportsTo: org.reportsTo, replaced: current?.id || null });
+    return { ok: true, replaced: current ? current.name : null };
+  });
+});
+
+// Admins: { departments: [{ id?, name, active }], headsReportTo: employee # or null } — Admin → Departments.
+exports.adminSaveDepartments = onCall(async (req) => {
+  const adminNumber = await requireAdmin(req);
+  const { departments, error } = deptLib.cleanDepartments(req.data?.departments);
+  if (error) throw new HttpsError("invalid-argument", error);
+  const to = req.data?.headsReportTo ? String(req.data.headsReportTo) : null;
+  if (to) {
+    const snap = await employees.doc(to).get();
+    if (!snap.exists || snap.get("active") === false) throw new HttpsError("invalid-argument", "Pick who department heads report to from the list.");
+  }
+  await departmentsDoc.set({ departments, headsReportTo: to, updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber });
+  await auditLog.add({ type: "updated", kind: "departments", recordId: "departments", by: adminNumber, at: FieldValue.serverTimestamp(), departments: departments.map((dep) => dep.name), headsReportTo: to });
+  return { ok: true };
+});
