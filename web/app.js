@@ -15,7 +15,7 @@ import { el, friendlyError, spinner, emptyState, toast, watchConnection } from "
 import { openAdmin } from "./admin.js";
 import { openLines, openRoles, openTeams, openMachineTypes } from "./setup.js";
 import { openFixLibrary } from "./fixlib.js";
-import { startData, stopData, data, onDataChange } from "./data.js";
+import { startData, stopData, data, onDataChange, lineName } from "./data.js";
 import { openIssueBoard, openReportForm } from "./issues.js";
 import { openChecklist, openChecklistAdmin, checklistUnits, unitStatus, statusTag as checklistTag } from "./checklists.js";
 import { openActivity } from "./activity.js";
