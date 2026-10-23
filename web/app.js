@@ -38,7 +38,7 @@ import { openTrucks, canViewTrucks, canCheckTrucks } from "./trucks.js";
 import { openReels, openReelAdmin } from "./reels.js";
 import { startOutbox } from "./outbox.js";
 import { openDowntime, usesDowntime } from "./downtime.js";
-import { openCrew, usesCrewBoard } from "./crew.js";
+import { openCrew, openCrewStationsAdmin, usesCrewBoard } from "./crew.js";
 import { openDepartmentsAdmin, openProfile } from "./departments.js";
 import { openWhoToCall, openCallAdmin, lineDownReminder } from "./whotocall.js";
 import { openIncidents, openRotationAdmin, openInjuryExport, openHrAccess } from "./incidents.js";
@@ -553,7 +553,7 @@ function openDowntimeScreen(back = () => go("home"), backLabel = "Home") {
   if (closeModule) closeModule();
   setNav(back === openChecklistsHub ? "checklists" : "more");
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
-  closeModule = openDowntime(screen, { me: me(), onExit: back, backLabel });
+  closeModule = openDowntime(screen, { me: me(), onExit: back, backLabel, onCrew: () => openCrewScreen() });
 }
 
 // Who's here today (Crew Board step 1): Home's Needs you item / Crew today card, and More.
@@ -561,7 +561,14 @@ function openCrewScreen(back = () => go("home"), backLabel = "Home") {
   if (closeModule) closeModule();
   setNav(back === openChecklistsHub ? "checklists" : "more");
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
-  closeModule = openCrew(screen, { onExit: back, backLabel });
+  closeModule = openCrew(screen, { onExit: back, backLabel, admin: isAdmin(), onSop: (key) => openSop(key, () => openCrewScreen(back, backLabel)) });
+}
+
+// One SOP from the Shop Map documents (a Crew Board station's SOP chip); closing it goes back.
+function openSop(key, back) {
+  if (closeModule) closeModule();
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  closeModule = openShopMap(screen, { startDoc: key, onExit: back, onFixes: null, onReport: null });
 }
 
 // Silo levels (Checklists page, Home's silo card / low silo item, or a low silo notification: ?silos=1).
@@ -763,6 +770,7 @@ function renderAdminMenu() {
     el("button", { class: "btn", type: "button", onclick: () => openModule(openReelAdmin) }, "🏷 QC hold lists"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openCallAdmin) }, "📞 Who to Call"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openRotationAdmin) }, "🗓 Shift rotation"),
+    el("button", { class: "btn", type: "button", onclick: () => openModule(openCrewStationsAdmin) }, "🧭 Crew Board stations"),
     me().hr ? el("button", { class: "btn", type: "button", onclick: () => openModule(openInjuryExport) }, "🗂 Export injury reports (PDF)") : null,
     me().hr ? el("button", { class: "btn", type: "button", onclick: () => openModule(openHrAccess) }, "🔒 HR access") : null,
     el("button", { class: "btn", type: "button", onclick: () => openModule(openTrainingAdmin) }, "🎓 Training setup"),

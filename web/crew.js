@@ -6,8 +6,8 @@
 //   Home: a Needs you item for the Line Leads and Supervisors of the team on shift; a "Crew today" headcount card for
 //   Supervisors and the Production Manager. More → Who's here today for everyone on the floor.
 
-import { el, breakable, friendlyError, spinner, emptyState, banner, toast, picker, choose, confirmSheet } from "./ui.js";
-import { callCrewToday, callCrewMark, callCrewSetup } from "./firebase.js";
+import { el, breakable, friendlyError, spinner, emptyState, banner, toast, picker, choose, confirmSheet, collapsible } from "./ui.js";
+import { callCrewToday, callCrewMark, callCrewSetup, callCrewSeat, callCrewCell, callAdminCrewStations, callAdminSaveCrewStations } from "./firebase.js";
 import { clock } from "./shift.js";
 
 const VIEW_ROLES = ["operator", "lead", "supervisor", "plant-manager", "admin"];
@@ -79,7 +79,7 @@ export function crewCard(onOpen, onRedraw) {
 
 // ---- the board ----------------------------------------------------------------------------------------------------
 
-export function openCrew(container, { onExit, backLabel = "Home" }) {
+export function openCrew(container, { onExit, backLabel = "Home", onSop = null, admin = false }) {
   const ui = { view: null, loadError: "", busy: false, message: "", messageKind: "", retry: null };
 
   async function load() {
@@ -152,6 +152,69 @@ export function openCrew(container, { onExit, backLabel = "Home" }) {
       v.canMark && p.added ? el("button", { class: "link-btn", type: "button", disabled: ui.busy, onclick: () => takeOff(p) }, "Take off this shift") : null);
   }
 
+  // ---- Stations (Crew Board step 2): all-shift seats, the A–E rotation, the level check, SOPs, warnings ----------
+  const seat = (seatId, emp) => act(() => callCrewSeat({ seat: seatId, emp: emp || null }), () => seat(seatId, emp), emp ? "Seated" : "Seat emptied");
+  async function changeCell(st, emp, name, block) {
+    const label = st.setup.rotation.blocks[block];
+    const v = await choose({ title: `${name} · ${label}`, options: [...st.setup.stations.map((x) => ({ value: x.id, label: x.name })), { value: "-", label: "No station this block" }] });
+    if (v == null) return;
+    const send = () => act(() => callCrewCell({ emp, block, station: v === "-" ? "" : v }), send, "Changed");
+    send();
+  }
+  const stationName = (st, id) => st.setup.stations.find((x) => x.id === id)?.name || "No station";
+  const sopChips = (station) => (station?.sops?.length
+    ? el("div", { class: "sop-chips" }, el("span", { class: "person-meta" }, "SOPs"), station.sops.map((code) => /^\d+$/.test(code) && onSop
+        ? el("button", { class: "chip small", type: "button", onclick: () => onSop(`cdgsop${code.padStart(4, "0")}`) }, code)
+        : el("span", { class: "tag" }, code)))
+    : null);
+  const fitNote = (f) => (f ? el("span", { class: f.kind === "below" ? "fit-note warn" : "fit-note" }, `${f.kind === "assist" ? "ℹ" : "⚠"} ${f.text}`) : null);
+
+  function seatPicker(v, st, seatId, title) {
+    const here = v.people.filter((p) => p.status === "here");
+    const taken = new Set(Object.entries(st.seats).filter(([k]) => k !== seatId).map(([, e]) => e));
+    const options = [{ value: "", label: "No one" }, ...here.map((p) => ({ value: p.emp, label: `${p.name}${st.levels[p.emp] ? ` · ${st.levels[p.emp]}` : ""}${taken.has(p.emp) ? " (moves here)" : ""}` }))];
+    return picker({ title, value: st.seats[seatId] || "", placeholder: "Pick someone who's here…", options, onChange: (e) => seat(seatId, e) });
+  }
+
+  function stationsPanel(v) {
+    const st = v.stations;
+    if (!st) return v.canMark && admin ? el("section", { class: "card" }, el("strong", {}, "🧭 Stations"), el("p", { class: "card-note" }, "The stations aren't set up yet — Admin → Crew Board stations.")) : null;
+    const nameOf = (emp) => v.people.find((p) => p.emp === emp)?.name || `#${emp}`;
+    const byId = (id) => st.setup.stations.find((x) => x.id === id);
+    const allShift = st.setup.allShift.map((id) => {
+      const s = byId(id);
+      const emp = st.seats[id];
+      return el("div", { class: "seat-row" },
+        el("div", { class: "seat-head" }, el("strong", {}, s.name), el("span", { class: "person-meta" }, `Ideal: ${s.idealLevel || s.minLevel} · all shift`)),
+        v.canMark ? seatPicker(v, st, id, s.name) : el("p", {}, emp ? nameOf(emp) : "No one yet"),
+        emp ? fitNote(st.fits[emp]?.[0]) : null,
+        sopChips(s));
+    });
+    const letters = st.setup.rotation.letters.map((l) => {
+      const emp = st.seats[l.letter];
+      const row = emp ? st.schedule[emp] || [] : l.stations;
+      return el("div", { class: "seat-row" },
+        el("div", { class: "seat-head" }, el("strong", {}, `${l.letter}${l.level ? ` · ${l.level}` : ""}`), emp && !v.canMark ? el("span", { class: "person-meta" }, nameOf(emp)) : null),
+        v.canMark ? seatPicker(v, st, l.letter, `Rotation ${l.letter}`) : null,
+        el("div", { class: "block-row" }, st.setup.rotation.blocks.map((b, i) => {
+          const f = emp ? st.fits[emp]?.[i] : null;
+          const body = [el("span", { class: "block-time" }, b), el("span", { class: "block-station" }, stationName(st, row[i])), f ? el("span", { class: "block-fit" }, f.kind === "assist" ? "ℹ assist only" : "⚠ level") : null];
+          return emp && v.canMark
+            ? el("button", { class: f?.kind === "below" ? "block warn" : "block", type: "button", disabled: ui.busy, onclick: () => changeCell(st, emp, nameOf(emp), i) }, body)
+            : el("div", { class: "block" }, body);
+        })),
+        emp ? (st.fits[emp] || []).filter(Boolean).filter((f, i, a) => a.findIndex((x) => x.text === f.text) === i).map(fitNote) : null);
+    });
+    return el("section", { class: "card stations-card" },
+      el("strong", {}, "🧭 Stations"),
+      st.warnings.length ? el("div", { class: "warn-list" }, st.warnings.map((w) => el("p", { class: w.kind === "late" ? "message error" : "message" }, `${w.kind === "late" ? "⚠ " : ""}${w.text}`))) : null,
+      v.canMark ? el("p", { class: "card-note" }, "Seat people marked Here. Tap a block to change it for that person.") : null,
+      el("h3", { class: "home-h2" }, "All shift"),
+      el("div", { class: "seat-list" }, allShift),
+      st.setup.rotation.letters.length ? [el("h3", { class: "home-h2" }, "Winder rotation"), el("div", { class: "seat-list" }, letters)] : null,
+      st.setup.rotation.note ? collapsible("crew-rotation-note", "How to rotate", el("p", { class: "card-note" }, st.setup.rotation.note)) : null);
+  }
+
   function board(v) {
     const c = v.counts;
     const due = dueState(v);
@@ -178,6 +241,7 @@ export function openCrew(container, { onExit, backLabel = "Home" }) {
         : emptyState(`No one is on Team ${v.team.name} yet`, "Admin → People sets each person's team." + (v.canMark ? " Add who's working below." : "")),
       v.canMark && v.others.length ? el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: addSomeone }, "+ Add someone who's covering") : null,
       !v.canMark ? el("p", { class: "hint" }, "Your Line Lead marks who's here at the start of the shift.") : null,
+      stationsPanel(v),
     ];
   }
 
@@ -202,4 +266,62 @@ export function openCrew(container, { onExit, backLabel = "Home" }) {
   const onBack = () => { if (navigator.onLine && ui.loadError) load(); };
   window.addEventListener("online", onBack);
   return () => window.removeEventListener("online", onBack);
+}
+
+// ---- Admin → Crew Board stations ------------------------------------------------------------------------------------
+// The stations, levels, SOPs, A–E rotation and call-off order (company data from the Shift Station Assignment sheet —
+// loaded from a file, never kept in the code). Shows what's saved; "Load from a file" replaces it after a preview.
+export function openCrewStationsAdmin(container, { onExit }) {
+  const ui = { setup: undefined, draft: null, draftText: "", loadError: "", busy: false, message: "", messageKind: "", retry: null };
+  async function load() {
+    ui.loadError = "";
+    render();
+    try { ui.setup = (await callAdminCrewStations()).data.setup; } catch (err) { ui.loadError = friendlyError(err); }
+    render();
+  }
+  async function readFile(file) {
+    try { ui.draftText = await file.text(); ui.draft = JSON.parse(ui.draftText); ui.message = ""; } catch { Object.assign(ui, { draft: null, message: "That file isn't a stations file (JSON).", messageKind: "error" }); }
+    render();
+  }
+  async function save() {
+    if (!navigator.onLine) { Object.assign(ui, { message: friendlyError({ code: "offline" }), messageKind: "error", retry: save }); return render(); }
+    Object.assign(ui, { busy: true, message: "" });
+    render();
+    try {
+      const { data: r } = await callAdminSaveCrewStations({ setup: ui.draft });
+      toast(`Saved — ${r.stations} stations`);
+      Object.assign(ui, { busy: false, draft: null });
+      await load();
+    } catch (err) { Object.assign(ui, { busy: false, message: friendlyError(err), messageKind: "error", retry: save }); render(); }
+  }
+  const summary = (s) => [
+    el("p", { class: "card-note" }, `Levels, lowest first: ${s.levels.join(" → ")}`),
+    el("div", { class: "seat-list" }, s.stations.map((x) => el("div", { class: "seat-row" },
+      el("div", { class: "seat-head" }, el("strong", {}, x.name), el("span", { class: "person-meta" }, `Ideal: ${x.idealLevel || x.minLevel}${s.allShift?.includes(x.id) ? " · all shift" : ""}`)),
+      x.sops?.length ? el("span", { class: "person-meta" }, `Key SOPs: ${x.sops.join(", ")}`) : null))),
+    s.rotation?.letters?.length
+      ? el("p", { class: "card-note" }, `Rotation (${s.rotation.blocks.join(" · ")}): ${s.rotation.letters.map((l) => `${l.letter} ${l.stations.map((id) => s.stations.find((x) => x.id === id)?.name || id).join(" → ")}`).join(" | ")}`)
+      : null,
+  ];
+  function render() {
+    container.replaceChildren(...[
+      el("button", { class: "link-btn", type: "button", onclick: onExit }, "← Admin"),
+      el("h1", {}, "🧭 Crew Board stations"),
+      el("p", { class: "hint" }, "From the Shift Station Assignment sheet: Ideal level and Key SOPs."),
+      banner(ui),
+      ui.loadError ? banner({ message: ui.loadError, messageKind: "error", retry: load }) : null,
+      ui.setup === undefined && !ui.loadError ? spinner("Loading…") : null,
+      ui.draft
+        ? el("section", { class: "card" }, el("strong", {}, "Preview — not saved yet"), ...(ui.draft.levels && ui.draft.stations ? summary(ui.draft) : [el("p", {}, "Can't read this file.")]),
+            el("div", { class: "btn-row" },
+              el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: save }, ui.busy ? "Saving…" : "✔ Save these stations"),
+              el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => { ui.draft = null; render(); } }, "Cancel")))
+        : ui.setup ? el("section", { class: "card" }, el("strong", {}, "Saved now"), ...summary(ui.setup))
+        : ui.setup === null ? emptyState("No stations yet", "Load the stations file (private, from the Shift Station Assignment sheet).") : null,
+      el("label", { class: "btn secondary file-btn" }, ui.setup ? "📂 Load a new stations file" : "📂 Load the stations file",
+        el("input", { type: "file", accept: "application/json,.json", hidden: true, onchange: (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) readFile(f); } })),
+    ].flat(3).filter(Boolean));
+  }
+  load();
+  return () => {};
 }

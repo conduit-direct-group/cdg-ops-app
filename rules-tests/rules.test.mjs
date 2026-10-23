@@ -149,11 +149,17 @@ test("open issues board: Maintenance, Production Manager, Admin only", async () 
 
 // ---- announcement tasks ---------------------------------------------------------------------------------------------
 
-test("announcement tasks: the person sees their own; supervisors, Production Manager, Admins see all; nobody writes", async () => {
+test("announcement tasks: the person sees their own; supervisors, Production Manager, Admins see all; a Line Lead only their own team's; nobody writes", async () => {
   await env.withSecurityRulesDisabled(async (ctx) => {
-    await setDoc(doc(ctx.firestore(), "annTasks", "t1"), { emp: "9001", status: "open", annTitle: "Wipe the panels" });
-    await setDoc(doc(ctx.firestore(), "annTasks", "t2"), { emp: "9005", status: "open", annTitle: "Other" });
+    await setDoc(doc(ctx.firestore(), "annTasks", "t1"), { emp: "9001", status: "open", annTitle: "Wipe the panels", team: "a" });
+    await setDoc(doc(ctx.firestore(), "annTasks", "t2"), { emp: "9005", status: "open", annTitle: "Other", team: "b" });
+    await setDoc(doc(ctx.firestore(), "employees", "9011"), { name: "Lead A", roles: ["lead"], active: true, team: "a" });
   });
+  await assertSucceeds(getDoc(doc(db(9011), "annTasks", "t1")));
+  await assertFails(getDoc(doc(db(9011), "annTasks", "t2")));
+  await assertSucceeds(getDocs(query(collection(db(9011), "annTasks"), where("team", "==", "a"))));
+  await assertFails(getDocs(query(collection(db(9011), "annTasks"), where("team", "==", "b"))));
+  await assertFails(getDocs(collection(db(9011), "annTasks")));
   await assertSucceeds(getDoc(doc(db(9001), "annTasks", "t1")));
   await assertFails(getDoc(doc(db(9001), "annTasks", "t2")));
   await assertSucceeds(getDocs(query(collection(db(9001), "annTasks"), where("emp", "==", "9001"))));
@@ -273,4 +279,14 @@ test("phones can't write anything — every change goes through the server", asy
     [9004, "announcements", "a9"], [9001, "announcementSigs", "a9__v1__9001"], [9001, "requests", "q9"], [9004, "meta", "rotation"],
   ];
   for (const [emp, c, id] of tries) await assertFails(setDoc(doc(db(emp), c, id), { emp: String(emp), ok: true }));
+});
+
+test("announcement \"opened\" records: your own only, and phones can't write them", async () => {
+  await env.withSecurityRulesDisabled(async (ctx) => {
+    await setDoc(doc(ctx.firestore(), "announcementOpens", "a1__v1__9001"), { annId: "a1", version: 1, emp: "9001" });
+  });
+  await assertSucceeds(getDoc(doc(db(9001), "announcementOpens", "a1__v1__9001")));
+  await assertFails(getDoc(doc(db(9006), "announcementOpens", "a1__v1__9001")));
+  await assertFails(getDoc(doc(db(9004), "announcementOpens", "a1__v1__9001")));
+  await assertFails(setDoc(doc(db(9001), "announcementOpens", "a2__v1__9001"), { annId: "a2", version: 1, emp: "9001" }));
 });

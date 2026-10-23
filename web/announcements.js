@@ -12,11 +12,11 @@ import { data, onDataChange, lineName } from "./data.js";
 import {
   storage, TEST_MODE, callAnnouncementPeople, callPostAnnouncement, callEndAnnouncement, callSignAnnouncement,
   callRecordReviewedInPerson, callAnnouncementTracking, callRemindAnnouncement, callSignoffPeople,
-  callAnnTaskPeople, callAssignAnnouncementTask, callRemoveAnnTask, callAnnTaskSigners,
+  callAnnTaskPeople, callAssignAnnouncementTask, callRemoveAnnTask, callAnnTaskSigners, callMarkAnnouncementOpened,
 } from "./firebase.js";
 import { dueByShiftEnd } from "./shift.js";
 import { ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-storage.js";
-import { signOff, signedNote } from "./signoff.js";
+import { signOff, signedNote, isLineTablet } from "./signoff.js";
 import { offlineSign } from "./outbox.js";
 
 // Same as the server (functions/announcements.js).
@@ -130,12 +130,17 @@ export function annTaskItems(emp, onOpen) {
   ];
 }
 
-// Important ones the crew doesn't sign: shown at the top until they open it once (Chris, 10-23-2026). Remembered on
-// this device per person (a convenience — nothing is signed).
-const seenKey = (emp, a) => `cdg-ann-seen:${emp}:${a.id}:v${version(a)}`;
-function wasSeen(emp, a) { try { return localStorage.getItem(seenKey(emp, a)) === "1"; } catch { return false; } }
-function markSeen(emp, a) { try { localStorage.setItem(seenKey(emp, a), "1"); } catch {} }
-const toSee = (emp) => (data.announcements || []).filter((a) => (a.audienceEmps || []).includes(emp) && !isEnded(a) && isRelay(a) && !iSign(a) && !wasSeen(emp, a));
+// Important ones the crew doesn't sign: shown at the top until they open it once (Chris, 10-23-2026). "Opened" is saved
+// per person on the server (markAnnouncementOpened), so it clears on all their devices. On a shared line tablet it
+// never clears — everyone who uses that tablet still sees it until the announcement ends.
+const openedNow = new Set(); // opened on this screen, before the server record arrives
+const wasSeen = (emp, a) => openedNow.has(`${a.id}__v${version(a)}`) || (data.myOpens || []).some((o) => o.annId === a.id && o.version === version(a) && o.emp === emp);
+function markSeen(emp, a) {
+  if (isLineTablet() || wasSeen(emp, a)) return;
+  openedNow.add(`${a.id}__v${version(a)}`);
+  callMarkAnnouncementOpened({ id: a.id }).catch(() => openedNow.delete(`${a.id}__v${version(a)}`)); // offline: shows again; opens again later
+}
+const toSee = (emp) => (data.announcements || []).filter((a) => (a.audienceEmps || []).includes(emp) && !isEnded(a) && isRelay(a) && !iSign(a) && (isLineTablet() || !wasSeen(emp, a)));
 
 // Home, right under the name (Chris, 10-23-2026): every announcement still to read, live as soon as it's posted, one
 // line each with its priority badge. Safety first, then Important, then overdue, then soonest due. Null when none.

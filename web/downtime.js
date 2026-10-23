@@ -84,7 +84,7 @@ export function downtimeItems(roles, myself, onOpen, onRedraw) {
 
 const lines = () => (data.lines || []).filter((l) => l.active !== false);
 
-export function openDowntime(container, { me, onExit, backLabel = "Home" }) {
+export function openDowntime(container, { me, onExit, backLabel = "Home", onCrew = null }) {
   const keepLine = stored(LINE_KEY);
   const ui = {
     lineId: lines().some((l) => l.id === keepLine) ? keepLine : null, reportId: null,
@@ -133,7 +133,7 @@ export function openDowntime(container, { me, onExit, backLabel = "Home" }) {
 
   function headerPayload(extra = {}) {
     const r = report();
-    return { ...(r.saved ? { reportId: r.id } : { lineId: r.lineId }), team: ui.head.team, size: headSize(), sdr: ui.head.sdr, ...extra };
+    return { ...(r.saved ? { reportId: r.id } : { lineId: r.lineId }), size: headSize(), sdr: ui.head.sdr, ...extra };
   }
 
   async function saveHeader(extra = {}, done = "Saved") {
@@ -237,18 +237,22 @@ export function openDowntime(container, { me, onExit, backLabel = "Home" }) {
     const r = report();
     const L = ui.view.lists;
     const h = ui.head;
-    const changed = !r.saved || headSize() !== (r.size || "") || h.sdr !== (r.sdr || "") || (r.needTeamPick && h.team !== r.team) || (ui.view.lists.saturdayTeams.includes(r.team) && h.team !== r.team);
-    const needTeam = r.needTeamPick || L.saturdayTeams.includes(r.team);
+    const changed = !r.saved || headSize() !== (r.size || "") || h.sdr !== (r.sdr || "");
     return el("section", { class: "card" },
       el("strong", {}, "Product running"),
       locked()
         ? el("p", {}, `${r.productSize} · Team ${r.team}`)
         : [
-          needTeam ? [label("Team (Saturday)"), chips(L.saturdayTeams, h.team, (v) => { h.team = v; })] : null,
+          // No team in the rotation today (Saturday): the team comes from Who's here today (Chris, 10-23-2026).
+          r.needTeamPick
+            ? el("div", { class: "message", role: "status" },
+                el("p", {}, "No team in the rotation today. Pick the team that's working on Who's here today first — the report uses it."),
+                onCrew ? el("button", { class: "btn secondary", type: "button", onclick: onCrew }, "👥 Open Who's here today") : null)
+            : null,
           label("Size"), chips([...L.sizes, "other"], h.size, (v) => { h.size = v; }, (x) => (x === "other" ? "Other size…" : x)),
           h.size === "other" ? el("input", { class: "field", value: h.otherSize, maxlength: "30", placeholder: "Specialty size, e.g. 3\"", oninput: (e) => { h.otherSize = e.target.value; } }) : null,
           label("Wall"), chips(L.sdrs, h.sdr, (v) => { h.sdr = v; }),
-          changed ? el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: () => saveHeader({}, "Product saved") }, ui.busy ? "Saving…" : r.saved ? "Save product change" : "Start the shift report") : null,
+          changed ? el("button", { class: "btn", type: "button", disabled: ui.busy || r.needTeamPick, onclick: () => saveHeader({}, "Product saved") }, ui.busy ? "Saving…" : r.saved ? "Save product change" : "Start the shift report") : null,
           r.saved ? el("p", { class: "card-note" }, "Change it when the product changes — new entries use the product shown here.") : el("p", { class: "card-note" }, "Pick the product first; then add changeovers, downtime, and scrap as they happen."),
         ]);
   }

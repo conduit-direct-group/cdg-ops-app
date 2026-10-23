@@ -5,7 +5,7 @@
 // (marked TEST), and practice checklist sign-offs sit on top of the real due dates. The live app never reads them.
 
 import { db, TEST_MODE } from "./firebase.js";
-import { collection, doc, onSnapshot, query, where } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
+import { collection, doc, getDoc, onSnapshot, query, where } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 
 const LISTS = ["roles", "lines", "machines", "fixCategories", "checklistTemplates", "requestTypes", "teams", "machineTypes", "formTemplates", "refDocs"];
 
@@ -198,6 +198,7 @@ export function startData(me) {
   stopFns.push(watchMerged("stationLists", recent("stationLists"), recent("test_stationLists"), (a, b) => (b.startMs || 0) - (a.startMs || 0)));
   stopFns.push(watchMerged("shopLists", shopQuery("shopTasks"), shopQuery("test_shopTasks"), (a, b) => (b.startMs || 0) - (a.startMs || 0)));
   stopFns.push(watchMySigs(me));
+  stopFns.push(watchMyOpens(me));
   stopFns.push(watchPlantStatus());
   if (me.safetyWatcher) {
     const urgent = (name) => query(collection(db, name), where("urgent", "==", true));
@@ -238,17 +239,38 @@ function watchAnnouncements(me) {
   return watchUnion("announcements", sources, (a, b) => time(b.createdAt) - time(a.createdAt));
 }
 
-// Announcement tasks still open or waiting for the second sign-off: my own, and (leads, supervisors, Production Manager,
-// Admins) everyone's. Tasks are made where they're assigned, so the test site reads only test_annTasks.
+// Announcement tasks: my own; Supervisors, Production Manager, Admins see everyone's; a Line Lead sees only their own
+// team's (Chris, 10-23-2026 — same as the database rules). Tasks are made where they're assigned, so the test site
+// reads only test_annTasks.
 function watchAnnTasks(me) {
   const c = collection(db, TEST_MODE ? "test_annTasks" : "annTasks");
-  const sources = [{ key: "my announcement tasks", source: query(c, where("emp", "==", me.emp)), test: TEST_MODE }];
-  if ((me.roles || []).some((r) => ["lead", "supervisor", "plant-manager", "admin"].includes(r))) {
+  const mine = { key: "my announcement tasks", source: query(c, where("emp", "==", me.emp)), test: TEST_MODE };
+  const sort = (a, b) => String(a.dueDate).localeCompare(String(b.dueDate));
+  const sources = [mine];
+  const seesAll = (me.roles || []).some((r) => ["supervisor", "plant-manager", "admin"].includes(r));
+  if (!seesAll && (me.roles || []).includes("lead")) {
+    let stop = () => {};
+    let cancelled = false;
+    getDoc(doc(db, "employees", me.emp)).then((snap) => {
+      if (cancelled) return;
+      const team = snap.exists() ? snap.data()?.team || null : null;
+      stop = watchUnion("annTasks", team ? [mine, { key: "my team's announcement tasks", source: query(c, where("team", "==", team)), test: TEST_MODE }] : [mine], sort);
+    }, () => { if (!cancelled) stop = watchUnion("annTasks", [mine], sort); });
+    return () => { cancelled = true; stop(); };
+  }
+  if (seesAll) {
     sources.push({ key: "open announcement tasks", source: query(c, where("status", "in", ["open", "done"])), test: TEST_MODE });
     // …and the last 30 days of finished ones, so a signed-off task still shows (green) on its announcement.
     sources.push({ key: "recent announcement tasks", source: query(c, where("createdAt", ">=", new Date(Date.now() - 30 * 86400000))), test: TEST_MODE });
   }
-  return watchUnion("annTasks", sources, (a, b) => String(a.dueDate).localeCompare(String(b.dueDate)));
+  return watchUnion("annTasks", sources, sort);
+}
+
+// Important announcements I opened (the crew doesn't sign those) — per person, on every device. Opening one on the
+// test site is practice, saved in test_announcementOpens.
+function watchMyOpens(me) {
+  const c = collection(db, TEST_MODE ? "test_announcementOpens" : "announcementOpens");
+  return watchUnion("myOpens", [{ key: "my opened announcements", source: query(c, where("emp", "==", me.emp)), test: TEST_MODE }], () => 0);
 }
 
 function watchMySigs(me) {

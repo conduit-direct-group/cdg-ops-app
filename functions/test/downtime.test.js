@@ -13,9 +13,6 @@ test("product size is saved like the workbook; line # and team", () => {
   assert.match(d.cleanProduct({ size: "1\"" }).error, /SDR/);
   assert.strictEqual(d.lineNumber("Line 2"), "2");
   assert.strictEqual(d.reportId("line-1", "2026-10-22", "nights"), "line-1__2026-10-22__nights");
-  assert.deepStrictEqual(d.teamFor("C", null), { team: "C" });
-  assert.deepStrictEqual(d.teamFor(null, "Sat B"), { team: "Sat B" });
-  assert.match(d.teamFor(null, "A").error, /Sat A/);
 });
 
 test("changeover, downtime, and scrap entries are checked", () => {

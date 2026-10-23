@@ -220,16 +220,27 @@ service cloud.firestore {
     match /test_announcementSigs/{id} {
       allow read: if member() && resource.data.emp == me();
     }
-    // Announcement tasks (assigned by a Line Lead or Supervisor): the person it's assigned to sees their own; Line Leads,
-    // Supervisors, the Production Manager, and Admins see all (to sign them off). Written only by the server.
+    // "Opened" records for Important announcements the crew doesn't sign: your own only (written by the server).
+    match /announcementOpens/{id} {
+      allow read: if member() && resource.data.emp == me();
+    }
+    match /test_announcementOpens/{id} {
+      allow read: if member() && resource.data.emp == me();
+    }
+    // Announcement tasks (assigned by a Line Lead or Supervisor): the person it's assigned to sees their own; Supervisors,
+    // the Production Manager, and Admins see all; a Line Lead sees only their own team's (Chris, 10-23-2026).
+    // Written only by the server.
     function annTaskReader() {
-      return member() && employee().roles.hasAny(['lead', 'supervisor', 'plant-manager', 'admin']);
+      return member() && employee().roles.hasAny(['supervisor', 'plant-manager', 'admin']);
+    }
+    function annTaskTeamLead() {
+      return member() && employee().roles.hasAny(['lead']) && resource.data.team != null && resource.data.team == employee().get('team', null);
     }
     match /annTasks/{id} {
-      allow read: if member() && (resource.data.emp == me() || annTaskReader());
+      allow read: if member() && (resource.data.emp == me() || annTaskReader() || annTaskTeamLead());
     }
     match /test_annTasks/{id} {
-      allow read: if member() && (resource.data.emp == me() || annTaskReader());
+      allow read: if member() && (resource.data.emp == me() || annTaskReader() || annTaskTeamLead());
     }
     // Every sign-off ever (checklists, announcements, …) — admins only.
     match /signoffs/{id} {

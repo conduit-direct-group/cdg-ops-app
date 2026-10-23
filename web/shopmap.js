@@ -132,7 +132,7 @@ function databaseSource(onLayout, onStations, onSops, onFail) {
   return () => stops.forEach((x) => x());
 }
 
-export function openShopMap(container, { onExit, onFixes, onReport, onMachine = null, onDocs = null, startStation = null, source = databaseSource }) {
+export function openShopMap(container, { onExit, onFixes, onReport, onMachine = null, onDocs = null, startStation = null, startDoc = null, source = databaseSource }) {
   const st = {
     ready: false, failed: false, view: "map", sel: null, sheetFull: false, doc: null, mode: "steps", stepIdx: 0,
     searchOpen: false, q: "", v: { s: 0.5, tx: 0, ty: 0 }, anim: false, zone: null, w: 0, vw: 390, vh: 800,
@@ -472,7 +472,8 @@ export function openShopMap(container, { onExit, onFixes, onReport, onMachine = 
   function renderDoc() {
     docLayer.hidden = !st.doc;
     if (!st.doc) return docLayer.replaceChildren();
-    const close = () => { st.doc = null; render(); };
+    // Opened straight to a document (a Crew Board SOP chip): closing it goes back there.
+    const close = () => { if (startDoc && st.doc === startDoc) return onExit(); st.doc = null; render(); };
     const back = el("button", { class: "sm-sqbtn big", type: "button", "aria-label": "Back", onclick: close }, "‹");
     if (st.doc.startsWith("video-")) {
       const s = D.byId[st.doc.slice(6)];
@@ -600,6 +601,7 @@ export function openShopMap(container, { onExit, onFixes, onReport, onMachine = 
     if (first) {
       fitStart();
       if (startStation && D.byId[startStation]) select(startStation);
+      if (startDoc && D.sops[startDoc]) Object.assign(st, { doc: startDoc, stepIdx: 0, mode: "steps" });
     }
     drawCanvas();
     render();

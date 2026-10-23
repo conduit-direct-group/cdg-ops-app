@@ -1538,3 +1538,25 @@ a.btn { text-decoration: none; }
 @media (min-width: 1200px) { .crew-list { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 .crew-person { display: flex; flex-direction: column; gap: var(--s2); margin: 0; }
 .crew-who { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+/* Crew Board step 2: stations, the winder rotation (one block per time slot), level notes, SOP chips */
+.stations-card { display: flex; flex-direction: column; gap: var(--s2); margin-top: var(--s4); }
+.stations-card .home-h2 { margin-top: var(--s3); }
+.warn-list { display: flex; flex-direction: column; gap: var(--s2); }
+.warn-list .message { margin: 0; }
+.seat-list { display: grid; grid-template-columns: 1fr; gap: var(--s2); }
+@media (min-width: 768px) { .seat-list { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 1200px) { .seat-list { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.seat-row { display: flex; flex-direction: column; gap: var(--s2); padding: var(--s3); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); min-width: 0; }
+.seat-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--s1) var(--s2); }
+.block-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: var(--s1); }
+.block { display: flex; flex-direction: column; gap: 2px; min-height: var(--tap); padding: var(--s2) 6px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-1); color: var(--white); font: inherit; text-align: left; }
+button.block { cursor: pointer; }
+button.block:active { background: var(--surface-3); }
+.block.warn { border-color: var(--orange); background: var(--orange-tint); }
+.block-time, .block-fit { color: var(--muted); font-size: var(--text-small); }
+.block-time { white-space: nowrap; }
+.block-station { font-weight: 600; overflow-wrap: anywhere; }
+.fit-note { font-size: var(--text-small); color: var(--muted); }
+.fit-note.warn { color: var(--white); padding: var(--s1) var(--s2); border-left: 3px solid var(--orange); background: var(--orange-tint); border-radius: 4px; }
+.sop-chips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); }
+.sop-chips .chip { min-height: 44px; padding: var(--s1) var(--s3); }

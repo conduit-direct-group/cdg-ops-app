@@ -3,7 +3,8 @@
 // No database code here, so it can be tested on its own.
 //
 //   shiftReports/{lineId__date__shiftId}   lineId, lineName, lineNumber, date (the day the shift started), shiftId,
-//                  shiftName, team ("A"… or "Sat A"/"Sat B" picked on Saturdays), size, sdr, productSize,
+//                  shiftName, team ("A"… — the rotation's, or on a day with none the team picked on Who's here today;
+//                  older reports may say "Sat A"/"Sat B"), size, sdr, productSize,
 //                  changeover (only on the first practice reports — changeovers are now their own entries), comments,
 //                  signed { by, byName, atMs, device } | null
 //   changeoverEvents/{auto} reportId + date, lineId, lineNumber, team, productSize, minutes, type, by, byName, atMs
@@ -30,8 +31,6 @@ const SCRAP_REASONS = [
   "Startup/Purge", "Color Change", "Sizing Out of Spec", "Material Defect", "Operator Error", "Contamination",
   "Equipment Malfunction", "Changeover Waste", "Water Temp/Level Issue", "Other",
 ];
-// Saturday has no team in the rotation; the lead picks one of these (Chris, 10-22-2026).
-const SATURDAY_TEAMS = ["Sat A", "Sat B"];
 const ENTER_ROLES = ["lead", "supervisor", "plant-manager", "admin"];
 const SIGN_ROLES = ["lead", "supervisor", "plant-manager"];
 const MAINTENANCE = ["none", "team", "called"];
@@ -56,13 +55,6 @@ const productSize = (size, sdr) => [clean(size, 30), clean(sdr, 20)].filter(Bool
 const lineNumber = (name) => (String(name || "").match(/\d+/) || [String(name || "")])[0];
 const canEnter = (roles) => (roles || []).some((r) => ENTER_ROLES.includes(r));
 const canSign = (roles) => (roles || []).some((r) => SIGN_ROLES.includes(r));
-
-// The team for a report: the rotation's team name, or on a day with none (Saturday) the one the lead picked.
-function teamFor(rotationTeam, picked) {
-  if (rotationTeam) return { team: rotationTeam };
-  if (SATURDAY_TEAMS.includes(picked)) return { team: picked };
-  return { error: "Pick Sat A or Sat B." };
-}
 
 // Product run: size + SDR from the QC hold lists (specialty sizes typed), saved as "1.25\" SDR 13.5".
 function cleanProduct(raw) {
@@ -182,7 +174,7 @@ function notReadyToSign(report, counts) {
 
 module.exports = {
   notReadyToSign,
-  CHANGEOVER_TYPES, DOWNTIME_REASONS, SCRAP_REASONS, SATURDAY_TEAMS, ENTER_ROLES, SIGN_ROLES, REEL_TO_SCRAP, SHEET_HEADERS,
-  reportId, productSize, lineNumber, canEnter, canSign, teamFor, cleanProduct, cleanChangeover, cleanDowntime, cleanScrap,
+  CHANGEOVER_TYPES, DOWNTIME_REASONS, SCRAP_REASONS, ENTER_ROLES, SIGN_ROLES, REEL_TO_SCRAP, SHEET_HEADERS,
+  reportId, productSize, lineNumber, canEnter, canSign, cleanProduct, cleanChangeover, cleanDowntime, cleanScrap,
   someoneContacted, maintenanceLog, downtimeNotes, reelScrap, duplicateTag, changeoverList, sheetRows,
 };

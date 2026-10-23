@@ -45,6 +45,7 @@ const deptLib = require("./departments");
 const crewLib = require("./crew");
 const verifyLib = require("./verify");
 const annTasksLib = require("./anntasks");
+const crewSeatsLib = require("./crewseats");
 const crypto = require("node:crypto");
 const { getMessaging } = require("firebase-admin/messaging");
 const { defineSecret } = require("firebase-functions/params");
@@ -2046,7 +2047,7 @@ async function peopleList() {
   return e.docs.map((d) => ({
     id: d.id, name: d.get("name") || `Employee ${d.id}`, roles: d.get("roles") || [], team: d.get("team") || null,
     homeLineId: d.get("homeLineId") || null, active: d.get("active") !== false, loginEnabled: login.has(d.id),
-    supervisesTeams: d.get("supervisesTeams") || [],
+    supervisesTeams: d.get("supervisesTeams") || [], position: d.get("position") || "", trainingName: d.get("trainingName") || null,
   }));
 }
 
@@ -2213,6 +2214,21 @@ exports.signAnnouncement = onCall(signable(async (req) => {
   });
   return { ok: true, already, name: signer.name, version, test };
 }));
+
+// "Opened" (Chris, 10-23-2026): someone who reads an Important announcement they don't sign (the crew) — saved per
+// person, so it leaves the top of their Home on every device. { id, version }. announcementOpens/{id}__v{n}__{emp}.
+exports.markAnnouncementOpened = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const { snap } = await findAnnouncement(test, String(req.data?.id || ""));
+  const a = snap.data();
+  if (!(a.audienceEmps || []).includes(me.employeeNumber)) throw new HttpsError("permission-denied", "This announcement isn't for you.");
+  const version = a.version || 1;
+  await col("announcementOpens", test).doc(`${snap.id}__v${version}__${me.employeeNumber}`).set({
+    annId: snap.id, version, emp: me.employeeNumber, at: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}),
+  }, { merge: true });
+  return { ok: true };
+});
 
 // Supervisor, Production Manager, Admin — for someone with no login yet: { id, emp, note, signer: { emp, pin }, device }.
 // Signed with the recorder's own PIN; the note says how it was reviewed.
@@ -4272,6 +4288,14 @@ async function reelScrapsFor(test, report) {
     .map((s) => ({ ...s, id: `reel-${s.reelId}`, team: report.team }));
 }
 
+// The team picked on Who's here today for this shift (name), or null.
+async function crewTeamName(test) {
+  const s = await crewShift(test);
+  if (!s?.teamId) return null;
+  const t = await teams.doc(s.teamId).get();
+  return t.exists ? t.get("name") || null : null;
+}
+
 // A report as saved, or a fresh one for the current shift on that line (not saved until something is entered).
 async function loadShiftReport(test, { lineId, reportId }) {
   if (reportId) {
@@ -4286,7 +4310,9 @@ async function loadShiftReport(test, { lineId, reportId }) {
   const id = downtimeLib.reportId(line.id, now.date, now.shift.id);
   const snap = await col("shiftReports", test).doc(id).get();
   if (snap.exists) return { id, saved: true, ...snap.data() };
-  const team = await rotationTeamName(now);
+  // The rotation's team; on a day with none (Saturday), the team picked on Who's here today (Chris, 10-23-2026 —
+  // Sat A / Sat B dropped). needTeamPick: neither yet, so the lead picks it on Who's here today first.
+  const team = (await rotationTeamName(now)) || (await crewTeamName(test));
   return {
     id, saved: false, lineId: line.id, lineName: line.get("name"), lineNumber: downtimeLib.lineNumber(line.get("name")),
     date: now.date, shiftId: now.shift.id, shiftName: now.shift.name || now.shift.id, startMs: now.startMs, endMs: now.endMs,
@@ -4330,14 +4356,14 @@ exports.shiftReport = onCall(async (req) => {
   return {
     ...view, test,
     canSign: downtimeLib.canSign(me.roles),
-    lists: { changeoverTypes: downtimeLib.CHANGEOVER_TYPES, downtimeReasons: downtimeLib.DOWNTIME_REASONS, scrapReasons: downtimeLib.SCRAP_REASONS, saturdayTeams: downtimeLib.SATURDAY_TEAMS, sizes: settings.sizes, sdrs: settings.sdrs },
+    lists: { changeoverTypes: downtimeLib.CHANGEOVER_TYPES, downtimeReasons: downtimeLib.DOWNTIME_REASONS, scrapReasons: downtimeLib.SCRAP_REASONS, sizes: settings.sizes, sdrs: settings.sdrs },
     recent: recentSnaps.docs.filter((d) => d.get("lineId") === report.lineId && d.id !== report.id)
       .map((d) => ({ id: d.id, date: d.get("date"), shiftName: d.get("shiftName"), team: d.get("team"), signed: !!d.get("signed"), verified: !!d.get("verified") }))
       .sort((a, b) => (a.id < b.id ? 1 : -1)),
   };
 });
 
-// The report's header: { lineId | reportId, team? (Saturday), size, sdr, changeover? ({ minutes, type } or null),
+// The report's header: { lineId | reportId, size, sdr, changeover? ({ minutes, type } or null),
 // comments? }. Creates the report the first time. Not after it's signed.
 exports.saveShiftReport = onCall(async (req) => {
   const me = await requireMember(req);
@@ -4347,9 +4373,8 @@ exports.saveShiftReport = onCall(async (req) => {
   if (report.signed) throw new HttpsError("failed-precondition", "This shift report is signed — it can't be changed.");
   const product = downtimeLib.cleanProduct(req.data);
   if (product.error) throw new HttpsError("invalid-argument", product.error);
-  const { team, error: teamError } = report.needTeamPick || downtimeLib.SATURDAY_TEAMS.includes(report.team)
-    ? downtimeLib.teamFor(null, req.data?.team) : { team: report.team };
-  if (teamError) throw new HttpsError("invalid-argument", teamError);
+  if (report.needTeamPick) throw new HttpsError("failed-precondition", "No team in the rotation today — pick the team that's working on Who's here today first.");
+  const team = report.team;
   let changeover = report.changeover || null;
   if (req.data?.changeover === null) changeover = null;
   else if (req.data?.changeover !== undefined) {
@@ -4711,6 +4736,7 @@ exports.crewToday = onCall(async (req) => {
     counts: crewLib.counts(list, marks),
     others: mark ? people.filter((p) => p.active && !onCrew.has(p.id) && (test || !deptLib.isPracticeAccount(p.name)))
       .map((p) => ({ emp: p.id, name: p.name, team: p.team ? teamName(p.team) : "" })).sort((a, b) => a.name.localeCompare(b.name)) : [],
+    ...(s.teamId ? await crewBoardView(test, s, people, list) : { stations: null }),
   };
 });
 
@@ -4745,7 +4771,10 @@ exports.crewMark = onCall(async (req) => {
       else delete marks[emp];
       changed = [emp];
     }
-    tx.set(s.ref, crewRecord(s, saved, { teamId: s.teamId, teamName: team.get("name") || s.teamId, added, marks, by: me.employeeNumber, test }));
+    // Marked Out: off any station seat (Crew Board step 2).
+    const seats = { ...(saved?.seats || {}) };
+    for (const [k, v] of Object.entries(seats)) if (marks[v]?.status !== "here") delete seats[k];
+    tx.set(s.ref, { ...crewRecord(s, saved, { teamId: s.teamId, teamName: team.get("name") || s.teamId, added, marks, by: me.employeeNumber, test }), seats });
     auditRecord(tx, "marked", "attendance", s.ref.id, me.employeeNumber, { emps: changed, status: mark?.status || null, test });
     return { ok: true, count: changed.length, counts: crewLib.counts(list, marks) };
   });
@@ -4784,6 +4813,7 @@ exports.crewSetup = onCall(async (req) => {
       if (!added.includes(remove)) throw new HttpsError("failed-precondition", "Only people added to this shift can be taken off. Admin → People sets each person's team.");
       added = added.filter((x) => x !== remove);
       delete marks[remove];
+      if (saved?.seats) for (const [k, v] of Object.entries(saved.seats)) if (v === remove) delete saved.seats[k]; // off their station too
     }
     tx.set(s.ref, crewRecord(s, saved, { teamId, teamName: team.get("name") || teamId, added, marks, by: me.employeeNumber, test }));
     auditRecord(tx, "updated", "attendance", s.ref.id, me.employeeNumber, { teamId, add, remove, test });
@@ -4922,4 +4952,177 @@ exports.annTaskSigners = onCall(async (req) => {
   const people = (await peopleList()).filter((p) => p.active && p.loginEnabled && p.id !== me.employeeNumber);
   const list = req.data?.step === "verify" ? people.filter((p) => !annTasksLib.secondSigner(p, task).error) : people.filter((p) => p.id === task.emp);
   return { people: list.map((p) => ({ emp: p.id, name: p.name })) };
+});
+
+// ---------------------------------------------------------------------------
+// Crew Board step 2 — stations (Decision 69; levels and SOPs from the Shift Station Assignment sheet, Chris 10-23-2026).
+// Rules in crewseats.js. The station setup (company data) is in meta/crewStations — server-only, loaded by an admin.
+// Each shift's seats live on the Who's here today record: seats { seat: emp }, cells { emp: [station per block] },
+// alerted { lineOpOut } (the Production Manager is told once per shift).
+// ---------------------------------------------------------------------------
+
+const crewStationsDoc = db.collection("meta").doc("crewStations");
+const trainingT = require("./training");
+
+async function crewSetupNow() {
+  const snap = await crewStationsDoc.get();
+  return snap.exists ? snap.get("setup") || null : null;
+}
+
+// Each person's level for the training check: their training-roster position (with the coordinator's override), else
+// their position in People. people = peopleList(). → Map emp → position text.
+async function crewPositions(people, test) {
+  const out = new Map(people.map((p) => [p.id, p.position || ""]));
+  try {
+    const ref = await db.collection("trainingRef").doc("data").get();
+    if (!ref.exists) return out;
+    const data = JSON.parse(ref.get("json"));
+    const shared = await col("trainingShared", test).doc("state").get();
+    const wb = shared.exists && shared.get("wbData") ? JSON.parse(shared.get("wbData")) : null;
+    if (wb?.roster?.length && wb.rev === data.rev) Object.assign(data, wb);
+    const roster = new Map((data.roster || []).map((r) => [r.name, r]));
+    const wanted = people.map((p) => ({ p, r: roster.get(p.trainingName || p.name) })).filter((x) => x.r);
+    const docs = wanted.length ? await db.getAll(...wanted.map((x) => col("trainingPeople", test).doc(trainingT.personId(x.r.name)))) : [];
+    wanted.forEach(({ p, r }, i) => {
+      const ov = docs[i]?.exists ? docs[i].get("posOv") : null;
+      const pos = ov && ov.from === r.position ? ov.to : r.position;
+      if (pos) out.set(p.id, pos);
+    });
+  } catch (err) {
+    console.error("crew positions: training roster not read", err);
+  }
+  return out;
+}
+
+// Lines running now (names), from the line status the Home bar uses.
+async function runningLineNames(test) {
+  const [ls, status] = await Promise.all([lines.get(), col("meta", test).doc("plantStatus").get()]);
+  const down = (status.exists && status.get("down")) || {};
+  return ls.docs.filter((d) => d.get("active") !== false && !down[d.id]).map((d) => d.get("name"));
+}
+
+// The board's stations part for crewToday: setup (for the screen), seats, schedule, fits, warnings.
+async function crewBoardView(test, s, people, list) {
+  const setup = await crewSetupNow();
+  if (!setup) return { stations: null };
+  const marks = s.saved?.marks || {};
+  const here = list.filter((p) => marks[p.id]?.status === "here").map((p) => p.id);
+  const seats = s.saved?.seats || {};
+  const sched = crewSeatsLib.schedule(setup, seats, s.saved?.cells || {});
+  const [positions, runningLines] = await Promise.all([crewPositions(people, test), runningLineNames(test)]);
+  const fits = {};
+  for (const [emp, row] of Object.entries(sched)) {
+    fits[emp] = row.map((id) => crewSeatsLib.fit(setup, crewSeatsLib.stationOf(setup, id), positions.get(emp) || ""));
+  }
+  return {
+    stations: {
+      setup: { levels: setup.levels, stations: setup.stations, allShift: setup.allShift, rotation: setup.rotation },
+      seats, schedule: sched, fits,
+      levels: Object.fromEntries(list.map((p) => [p.id, positions.get(p.id) || ""])),
+      warnings: crewSeatsLib.warnings(setup, { here, seats, sched, runningLines }),
+    },
+  };
+}
+
+// After a change to the seats: tell the Production Manager once per shift when a line operator is out.
+async function crewLineOpAlert(test, s, me) {
+  const fresh = await s.ref.get();
+  const saved = fresh.data() || {};
+  const setup = await crewSetupNow();
+  if (!setup || saved.alerted?.lineOpOut) return;
+  const people = await peopleList();
+  const list = crewListFor(people, saved.teamId, saved.added || [], test);
+  const here = list.filter((p) => saved.marks?.[p.id]?.status === "here").map((p) => p.id);
+  const w = crewSeatsLib.warnings(setup, { here, seats: saved.seats || {}, sched: crewSeatsLib.schedule(setup, saved.seats || {}, saved.cells || {}) });
+  if (!w.some((x) => x.key === "line-op-out")) return;
+  await s.ref.update({ "alerted.lineOpOut": Date.now() });
+  const pms = people.filter((p) => p.active && p.roles.includes("plant-manager")).map((p) => p.id);
+  await pushTo(test ? [me.employeeNumber] : pms, {
+    title: `${test ? "[TEST] " : ""}👥 Line operator out — ${saved.shiftName || "this shift"}`, body: setup.callOffs?.lineOperatorOut || "A line seat can't be filled.", url: "/?crew=1",
+  });
+}
+
+// Admins: the station setup — { setup } (null until loaded).
+exports.adminCrewStations = onCall(async (req) => {
+  await requireAdmin(req);
+  return { setup: await crewSetupNow() };
+});
+
+// Admins: save the station setup (Admin → Crew Board stations, from the private sheet file): { setup }.
+exports.adminSaveCrewStations = onCall(async (req) => {
+  const adminNumber = await requireAdmin(req);
+  const { setup, error } = crewSeatsLib.cleanSetup(req.data?.setup);
+  if (error) throw new HttpsError("invalid-argument", error);
+  await crewStationsDoc.set({ setup, updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber });
+  await auditLog.add({ type: "updated", kind: "crew stations", recordId: "crewStations", by: adminNumber, at: FieldValue.serverTimestamp(), stations: setup.stations.length });
+  return { ok: true, stations: setup.stations.length };
+});
+
+// Line Leads, Supervisors, Production Manager, Admins: { seat, emp } (emp null = empty the seat). Only people marked
+// Here; seating someone moves them off any other seat. They get a notification with their station(s).
+exports.crewSeat = onCall(async (req) => {
+  const me = await requireMember(req);
+  requireCrewMarker(me);
+  const test = isTest(req);
+  const setup = await crewSetupNow();
+  if (!setup) throw new HttpsError("failed-precondition", "The stations aren't set up yet (Admin → Crew Board stations).");
+  const s = await crewShift(test);
+  if (!s?.teamId) throw new HttpsError("failed-precondition", "Pick the team that's working first.");
+  const seat = String(req.data?.seat || "");
+  if (!crewSeatsLib.seatIds(setup).includes(seat)) throw new HttpsError("invalid-argument", "Pick a station from the list.");
+  const emp = req.data?.emp ? String(req.data.emp) : null;
+  const sched = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(s.ref);
+    const saved = snap.exists ? snap.data() : {};
+    if (emp && saved.marks?.[emp]?.status !== "here") throw new HttpsError("failed-precondition", "Mark them Here first.");
+    const seats = { ...(saved.seats || {}) };
+    const cells = { ...(saved.cells || {}) };
+    if (emp) for (const [k, v] of Object.entries(seats)) if (v === emp) delete seats[k];
+    if (seats[seat]) delete cells[seats[seat]];
+    if (emp) { seats[seat] = emp; delete cells[emp]; } else delete seats[seat];
+    tx.update(s.ref, { seats, cells, updatedAtMs: Date.now(), updatedBy: me.employeeNumber });
+    auditRecord(tx, "seated", "crew station", s.ref.id, me.employeeNumber, { seat, emp, test });
+    return crewSeatsLib.schedule(setup, seats, cells);
+  });
+  if (emp) {
+    const name = (id) => crewSeatsLib.stationOf(setup, id)?.name || "no station";
+    const body = setup.allShift.includes(seat)
+      ? `${name(seat)} — all shift`
+      : (sched[emp] || []).map((id, i) => `${setup.rotation.blocks[i]}: ${name(id)}`).join(" → ");
+    await pushTo(test ? [me.employeeNumber] : [emp], { title: `${test ? "[TEST] " : ""}👥 Your station today`, body, url: "/?crew=1" });
+  }
+  await crewLineOpAlert(test, s, me);
+  return { ok: true };
+});
+
+// The lead's change to one block: { emp, block, station } (station "" = off a station that block).
+exports.crewCell = onCall(async (req) => {
+  const me = await requireMember(req);
+  requireCrewMarker(me);
+  const test = isTest(req);
+  const setup = await crewSetupNow();
+  if (!setup) throw new HttpsError("failed-precondition", "The stations aren't set up yet (Admin → Crew Board stations).");
+  const s = await crewShift(test);
+  if (!s) throw new HttpsError("failed-precondition", "No shift is running right now.");
+  const emp = String(req.data?.emp || "");
+  const block = Number(req.data?.block);
+  const station = String(req.data?.station ?? "");
+  if (!Number.isInteger(block) || block < 0 || block >= setup.rotation.blocks.length) throw new HttpsError("invalid-argument", "Pick a block.");
+  if (station && !crewSeatsLib.stationOf(setup, station)) throw new HttpsError("invalid-argument", "Pick a station from the list.");
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(s.ref);
+    const saved = snap.exists ? snap.data() : {};
+    const sched = crewSeatsLib.schedule(setup, saved.seats || {}, saved.cells || {});
+    if (!sched[emp]) throw new HttpsError("failed-precondition", "Seat them first.");
+    const row = [...sched[emp]];
+    row[block] = station;
+    tx.update(s.ref, { [`cells.${emp}`]: row, updatedAtMs: Date.now(), updatedBy: me.employeeNumber });
+    auditRecord(tx, "moved", "crew station", s.ref.id, me.employeeNumber, { emp, block, station, test });
+  });
+  if (emp !== me.employeeNumber) {
+    await pushTo(test ? [me.employeeNumber] : [emp], {
+      title: `${test ? "[TEST] " : ""}👥 Station changed`, body: `${setup.rotation.blocks[block]}: ${crewSeatsLib.stationOf(setup, station)?.name || "no station"}`, url: "/?crew=1",
+    });
+  }
+  return { ok: true };
 });
