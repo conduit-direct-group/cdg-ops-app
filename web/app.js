@@ -44,6 +44,7 @@ import { openWhoToCall, openCallAdmin, lineDownReminder } from "./whotocall.js";
 import { openIncidents, openRotationAdmin, openInjuryExport, openHrAccess } from "./incidents.js";
 import { openWriteups, canWriteUps } from "./writeups.js";
 import { openRetentionAdmin } from "./retention.js";
+import { openMessages, noticeNewMessages, unreadMessages } from "./messages.js";
 import { openSilos, openSiloAdmin, UPDATE_ROLES as SILO_UPDATE_ROLES, ALERT_ROLES as SILO_ALERT_ROLES } from "./silos.js";
 
 const screen = document.getElementById("screen");
@@ -287,6 +288,7 @@ function renderHome() {
       downtime: () => openDowntimeScreen(),
       crew: () => openCrewScreen(),
       incidents: (view, id) => openIncidentScreen(view, id),
+      messages: () => openMessagesScreen(),
     },
   });
   return [
@@ -295,6 +297,7 @@ function renderHome() {
         el("h1", {}, `Hi, ${name}`),
         roles ? el("p", { class: "roles" }, `Employee ${state.claims.emp} · ${roles}`) : null),
       p.annBar,
+      p.msgBar,
       p.viewAs,
       p.status),
     // Line tablets: a line down an hour with nobody tapping Call Maintenance (this tablet's line when it has one).
@@ -361,6 +364,7 @@ function openMore() {
   const act = (fn) => () => { close(); fn(); };
   const row = (icon, label, fn, cls = "") => el("button", { class: `more-item ${cls}`, type: "button", onclick: act(fn) }, el("span", { "aria-hidden": "true" }, icon), el("span", {}, label));
   const items = [
+    row("💬", (() => { const n = unreadMessages(m.emp); return n ? `Messages (${n} new)` : "Messages"; })(), () => openMessagesScreen()),
     usesCrewBoard(roles) ? row("👥", "Who's here today", () => openCrewScreen()) : null,
     usesHandoffs(roles) ? row("📝", "Shift handoff", () => openHandoffScreen()) : null,
     runsShopList(roles) ? row("🧹", "Keep the Shop Clean", () => openShopScreen()) : null,
@@ -647,7 +651,7 @@ function refreshPushState() {
   pushState().then((s) => { pushNow = s; });
 }
 // The bar's Announcements badge follows the live data.
-onDataChange(() => { if (state.user) { renderNav(); noticeNewAnnouncements(state.claims?.emp); } });
+onDataChange(() => { if (state.user) { renderNav(); noticeNewAnnouncements(state.claims?.emp); noticeNewMessages(state.claims?.emp, onMessagesScreen); } });
 
 // Signing out also stops this person's notifications on a shared line tablet.
 async function signOutNow() {
@@ -757,10 +761,25 @@ function openIssues() {
 }
 
 // Report a problem -> Odoo request. `machineTypes` narrows the machine list (from a Fix Library category).
-function openReport(machineTypes = null, back = () => go("home"), machineId = null) {
+function openReport(machineTypes = null, back = () => go("home"), machineId = null, description = "") {
   if (closeModule) closeModule();
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
-  closeModule = openReportForm(screen, { me: me(), machineTypes, machineId, onExit: back, onDone: me().fixer ? () => openIssues() : null });
+  closeModule = openReportForm(screen, { me: me(), machineTypes, machineId, description, onExit: back, onDone: me().fixer ? () => openIssues() : null });
+}
+
+// Messages (Decision 102): More → Messages, Home's new-messages line, a message notification (?messages=1).
+// "Send as Maintenance Request" on a message opens the request with the message's words (and machine, if named).
+let onMessagesScreen = false;
+function openMessagesScreen() {
+  if (closeModule) closeModule();
+  setNav("more");
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  const close = openMessages(screen, {
+    me: me(), onExit: () => go("home"), backLabel: "Home",
+    onMaintenance: usesMachines(me().roles) ? (machineId, text) => openReport(null, () => openMessagesScreen(), machineId, text) : null,
+  });
+  onMessagesScreen = true;
+  closeModule = () => { onMessagesScreen = false; close(); };
 }
 
 
@@ -976,8 +995,12 @@ onAuthStateChanged(auth, async (user) => {
     const reelsLink = params.get("reels"); // QC hold
     const incidentLink = params.get("incident"); // a safety report notification
     const actionsLink = params.get("actions"); // a safety action assigned to me
-    if (cat || machine || req || issuesLink || ann || handoff || shop || lineLog || docs || machinePage || trucksLink || silosLink || reelsLink || incidentLink || actionsLink) history.replaceState(null, "", location.pathname);
-    if (ann) openAnn(ann);
+    const messagesLink = params.get("messages"); // a message notification
+    const crewLink = params.get("crew"); // a Crew Board notification (your station, line operator out)
+    if (cat || machine || req || issuesLink || ann || handoff || shop || lineLog || docs || machinePage || trucksLink || silosLink || reelsLink || incidentLink || actionsLink || messagesLink || crewLink) history.replaceState(null, "", location.pathname);
+    if (messagesLink) openMessagesScreen();
+    else if (crewLink) openCrewScreen();
+    else if (ann) openAnn(ann);
     else if (handoff) openHandoffScreen(handoff);
     else if (shop) openShopScreen(shop);
     else if (lineLog) openLineCheckScreen(lineLog.split("__")[2] || null, lineLog);

@@ -192,10 +192,10 @@ export function openIssueBoard(container, { me, onExit, onReport }) {
 
 // `machineTypes` (optional) narrows the machine buttons, e.g. from the Fix Library's Die category.
 // `machineId` (optional) starts with that machine picked (from a machine's page in the Fix Library).
-export function openReportForm(container, { me, onExit, onDone, machineTypes = null, machineId = null }) {
+export function openReportForm(container, { me, onExit, onDone, machineTypes = null, machineId = null, description = "" }) {
   const preset = machineId ? data.machines?.find((m) => m.id === machineId) : null;
   const d = {
-    lineId: preset ? preset.lineId || "none" : null, machineId: preset ? preset.id : null, lineDown: null, description: "", unsafe: false, severity: "normal",
+    lineId: preset ? preset.lineId || "none" : null, machineId: preset ? preset.id : null, lineDown: null, description, unsafe: false, severity: "normal",
     failureCategory: "", rootCause: "", actions: "", photos: [],
   };
   const ui = { busy: false, upload: "", message: "", messageKind: "", retry: null, sent: null };
