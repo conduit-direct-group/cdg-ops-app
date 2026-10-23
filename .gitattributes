@@ -1,0 +1,2 @@
+# The commit checks are shell scripts: keep Unix line endings so they run on Windows too.
+tools/hooks/* text eol=lf
