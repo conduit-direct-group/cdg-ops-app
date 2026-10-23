@@ -12,6 +12,7 @@ import { ref, getBytes, uploadBytes } from "firebase/storage";
 let env;
 const PEOPLE = {
   9001: ["operator"], 9002: ["training-safety"], 9003: ["plant-manager"], 9004: ["admin"], 9005: ["maintenance"], 9006: ["supervisor"],
+  9011: ["lead"], 9012: ["shipping"], 9013: ["office"],
 };
 const as = (emp, pinTemp = false) => env.authenticatedContext(`emp_${emp}`, { emp: String(emp), pinTemp });
 const db = (emp) => as(emp).firestore();
@@ -161,4 +162,115 @@ test("announcement tasks: the person sees their own; supervisors, Production Man
   await assertSucceeds(getDoc(doc(db(9003), "annTasks", "t2")));
   await assertFails(getDoc(doc(db(9002), "annTasks", "t2")));
   await assertFails(setDoc(doc(db(9006), "annTasks", "t3"), { emp: "9001", status: "verified" }));
+});
+
+// ---- more coverage (10-23-2026): every feature's read rules, server-only data, and no phone writes ----------------
+// 9011 Line Lead, 9012 Logistics & Distribution, 9013 Office.
+
+const seed = (fn) => env.withSecurityRulesDisabled(async (ctx) => { await fn(ctx.firestore()); });
+
+test("shift handoffs: Line Leads, Supervisors, Production Manager, Admins — not operators, Maintenance, Training & Safety", async () => {
+  await seed(async (d) => {
+    for (const c of ["handoffs", "test_handoffs"]) await setDoc(doc(d, c, "h1"), { status: "sent", team: "a", toTeam: "b", createdBy: "9011" });
+  });
+  for (const c of ["handoffs", "test_handoffs"]) {
+    for (const emp of [9011, 9006, 9003, 9004]) await assertSucceeds(getDoc(doc(db(emp), c, "h1")));
+    for (const emp of [9001, 9005, 9002, 9013]) await assertFails(getDoc(doc(db(emp), c, "h1")));
+  }
+});
+
+test("Keep the Shop Clean: leads and managers, plus the people given a task on that list — no one else", async () => {
+  await seed(async (d) => { await setDoc(doc(d, "shopTasks", "s1"), { assignees: ["9001"], assign: { t1: "9001" } }); });
+  await assertSucceeds(getDoc(doc(db(9001), "shopTasks", "s1")));
+  await assertFails(getDoc(doc(db(9005), "shopTasks", "s1")));
+  await assertSucceeds(getDoc(doc(db(9011), "shopTasks", "s1")));
+  await assertSucceeds(getDoc(doc(db(9006), "shopTasks", "s1")));
+});
+
+test("every sign-off ever (history): Admins only", async () => {
+  await seed(async (d) => {
+    for (const c of ["signoffs", "checklistSignoffs", "test_signoffs", "test_checklistSignoffs"]) await setDoc(doc(d, c, "x1"), { emp: "9001", kind: "checklist" });
+  });
+  for (const c of ["signoffs", "checklistSignoffs", "test_signoffs", "test_checklistSignoffs"]) {
+    await assertSucceeds(getDoc(doc(db(9004), c, "x1")));
+    for (const emp of [9001, 9006, 9003]) await assertFails(getDoc(doc(db(emp), c, "x1")));
+  }
+});
+
+test("trucks: Logistics, Production Manager, Sales, Admin — and a role an admin turns on in Roles", async () => {
+  await seed(async (d) => { await setDoc(doc(d, "trucks", "t1"), { date: "2026-10-23", carrier: "X" }); });
+  await assertSucceeds(getDoc(doc(db(9012), "trucks", "t1")));
+  await assertSucceeds(getDoc(doc(db(9003), "trucks", "t1")));
+  await assertFails(getDoc(doc(db(9001), "trucks", "t1")));
+  await assertFails(getDoc(doc(db(9006), "trucks", "t1")));
+  await seed(async (d) => { await setDoc(doc(d, "meta", "truckAccess"), { roles: ["supervisor"] }); });
+  await assertSucceeds(getDoc(doc(db(9006), "trucks", "t1")));
+});
+
+test("machine parts & specs: Maintenance, Production Manager, Admin — and a role turned on in Roles", async () => {
+  await seed(async (d) => { await setDoc(doc(d, "machineSpecs", "M-001"), { parts: [] }); });
+  await assertSucceeds(getDoc(doc(db(9005), "machineSpecs", "M-001")));
+  await assertSucceeds(getDoc(doc(db(9003), "machineSpecs", "M-001")));
+  await assertFails(getDoc(doc(db(9001), "machineSpecs", "M-001")));
+  await assertFails(getDoc(doc(db(9011), "machineSpecs", "M-001")));
+  await seed(async (d) => { await setDoc(doc(d, "meta", "machineAccess"), { roles: ["lead"] }); });
+  await assertSucceeds(getDoc(doc(db(9011), "machineSpecs", "M-001")));
+});
+
+test("announcements: the people it's for, the people tracking it, Production Manager / Office / Admin — signatures your own only", async () => {
+  await seed(async (d) => {
+    await setDoc(doc(d, "announcements", "a1"), { title: "x", audienceEmps: ["9001"], trackers: ["9006"] });
+    await setDoc(doc(d, "announcementSigs", "a1__v1__9001"), { annId: "a1", emp: "9001" });
+  });
+  await assertSucceeds(getDoc(doc(db(9001), "announcements", "a1")));
+  await assertSucceeds(getDoc(doc(db(9006), "announcements", "a1")));
+  for (const emp of [9003, 9013, 9004]) await assertSucceeds(getDoc(doc(db(emp), "announcements", "a1")));
+  await assertFails(getDoc(doc(db(9005), "announcements", "a1")));
+  await assertSucceeds(getDoc(doc(db(9001), "announcementSigs", "a1__v1__9001")));
+  await assertFails(getDoc(doc(db(9006), "announcementSigs", "a1__v1__9001")));
+  await assertFails(getDoc(doc(db(9004), "announcementSigs", "a1__v1__9001")));
+});
+
+test("Need something? requests: the sender, the people it was sent to, Admins — urgent ones also to safety watchers", async () => {
+  await seed(async (d) => {
+    await setDoc(doc(d, "requests", "r1"), { createdBy: "9001", recipients: ["9012"], urgent: false });
+    await setDoc(doc(d, "requests", "r2"), { createdBy: "9001", recipients: ["9012"], urgent: true });
+  });
+  await assertSucceeds(getDoc(doc(db(9001), "requests", "r1")));
+  await assertSucceeds(getDoc(doc(db(9012), "requests", "r1")));
+  await assertSucceeds(getDoc(doc(db(9004), "requests", "r1")));
+  await assertFails(getDoc(doc(db(9005), "requests", "r1")));
+  await assertFails(getDoc(doc(db(9006), "requests", "r1")));
+  await assertSucceeds(getDoc(doc(db(9006), "requests", "r2")));
+});
+
+test("floor lists everyone signed in reads — but not a turned-off account or someone on a temporary PIN", async () => {
+  const lists = ["stationLists", "checklistUnits", "reels", "siloLevels", "lineLogs", "plantLogs"];
+  await seed(async (d) => { for (const c of lists) await setDoc(doc(d, c, "x1"), { ok: true }); });
+  for (const c of lists) {
+    await assertSucceeds(getDoc(doc(db(9001), c, "x1")));
+    await assertFails(getDoc(doc(db(9007), c, "x1")));
+    await assertFails(getDoc(doc(as(9001, true).firestore(), c, "x1")));
+  }
+});
+
+test("server-only data can't be read from any phone — not even by an Admin: Who's here today, Downtime reports, offline receipts, silo history, push tokens, departments", async () => {
+  const docs = [
+    ["attendance", "2026-10-23__days"], ["test_attendance", "2026-10-23__days"], ["shiftReports", "r1"], ["test_shiftReports", "r1"],
+    ["downtimeEvents", "e1"], ["scrapEntries", "e1"], ["changeoverEvents", "e1"], ["outboxReceipts", "c1"], ["test_outboxReceipts", "c1"],
+    ["siloReadings", "s1"], ["pushTokens", "9001"], ["meta", "departments"], ["meta", "counters"],
+  ];
+  await seed(async (d) => { for (const [c, id] of docs) await setDoc(doc(d, c, id), { marks: { 9001: { status: "out", reason: "Sick" } } }); });
+  for (const [c, id] of docs) {
+    for (const emp of [9001, 9006, 9003, 9004]) await assertFails(getDoc(doc(db(emp), c, id)));
+  }
+});
+
+test("phones can't write anything — every change goes through the server", async () => {
+  const tries = [
+    [9011, "handoffs", "h9"], [9011, "shopTasks", "s9"], [9001, "stationLists", "x9"], [9001, "checklistUnits", "u9"],
+    [9006, "attendance", "a9"], [9011, "shiftReports", "r9"], [9001, "reels", "r9"], [9012, "trucks", "t9"],
+    [9004, "announcements", "a9"], [9001, "announcementSigs", "a9__v1__9001"], [9001, "requests", "q9"], [9004, "meta", "rotation"],
+  ];
+  for (const [emp, c, id] of tries) await assertFails(setDoc(doc(db(emp), c, id), { emp: String(emp), ok: true }));
 });
