@@ -24,6 +24,7 @@ export function breakable(text) {
 
 // Turns server and network errors into plain words.
 export function friendlyError(err) {
+  if (err?.plain) return err.message; // already plain words (e.g. the offline sign-off outbox)
   const code = err?.code || "";
   if (code === "offline" || !navigator.onLine) {
     return "You're offline. This needs a connection — try again once you're back on Wi-Fi.";

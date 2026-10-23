@@ -36,6 +36,7 @@ import { openMachines, canViewMachines } from "./machines.js";
 import { openTestReset } from "./testdata.js";
 import { openTrucks, canViewTrucks, canCheckTrucks } from "./trucks.js";
 import { openReels, openReelAdmin } from "./reels.js";
+import { startOutbox } from "./outbox.js";
 import { openWhoToCall, openCallAdmin, lineDownReminder } from "./whotocall.js";
 import { openIncidents, openRotationAdmin, openInjuryExport, openHrAccess } from "./incidents.js";
 import { openSilos, openSiloAdmin, UPDATE_ROLES as SILO_UPDATE_ROLES, ALERT_ROLES as SILO_ALERT_ROLES } from "./silos.js";
@@ -43,6 +44,7 @@ import { openSilos, openSiloAdmin, UPDATE_ROLES as SILO_UPDATE_ROLES, ALERT_ROLE
 const screen = document.getElementById("screen");
 const deviceBadge = document.getElementById("device-badge");
 watchConnection(document.getElementById("offline-banner"));
+startOutbox(document.getElementById("outbox-btn"));
 
 // Test site: a solid orange bar on every screen, so nobody mistakes it for the real app.
 document.getElementById("test-banner").hidden = !TEST_MODE;

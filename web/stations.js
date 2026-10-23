@@ -7,7 +7,8 @@ import { el, friendlyError, spinner, emptyState, banner, toast, collapsible } fr
 import { dueByShiftEnd } from "./shift.js";
 import { data, onDataChange } from "./data.js";
 import { TEST_MODE, callStartStationList, callSaveStationList, callSignStationList } from "./firebase.js";
-import { signOff } from "./signoff.js";
+import { signOff, signedNote } from "./signoff.js";
+import { offlineSign } from "./outbox.js";
 
 const TASKLIST_ROLES = ["lead", "supervisor", "plant-manager", "admin"];
 const SHIFT_FORM = "clean-shop"; // shift times are kept on the Keep the Shop Clean form
@@ -106,9 +107,9 @@ export function openStations(container, { me, startForm = null, onExit }) {
     const r = await signOff({
       title: "Sign off", what: `${l.formName} · ${l.shift.name} shift · ${dayLabel(l.date)}`,
       me: { emp: me.emp, name: me.name },
-      action: async ({ signer, device }) => (await callSignStationList({ id: l.id, values: ui.values, signer, device })).data,
+      action: offlineSign("signStationList", { id: l.id, values: ui.values }, { label: `${l.formName} · ${l.shift.name} shift`, key: `station:${l.id}` }),
     });
-    if (r) toast(`${r.form} signed off by ${r.name}${r.test ? " (test)" : ""}`);
+    if (r) toast(signedNote(r, `${r.form} signed off by ${r.name}${r.test ? " (test)" : ""}`));
   }
 
   function field(f, signed) {

@@ -12,7 +12,8 @@ import {
   callReceiveHandoff, callHandoffReceivers,
 } from "./firebase.js";
 import { collection, query, where, onSnapshot } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
-import { signOff } from "./signoff.js";
+import { signOff, signedNote } from "./signoff.js";
+import { offlineSign } from "./outbox.js";
 
 export const HANDOFF_ROLES = ["lead", "supervisor", "plant-manager", "admin"];
 const BACKUP_ROLES = ["supervisor", "plant-manager", "admin"];
@@ -270,10 +271,10 @@ export function openHandoff(container, { me, startId = null, onExit }) {
       const r = await signOff({
         title: "Sign the handoff", what: `Team ${teamName(ui.header.team)} → Team ${teamName(ui.header.toTeam)} · ${fmtDay(ui.header.date)}`,
         me: { emp: me.emp, name: me.name },
-        action: async ({ signer, device }) => (await callSendHandoff({ id: h.id, ...ui.header, values: ui.values, signer, device })).data,
+        action: offlineSign("sendHandoff", { id: h.id, ...ui.header, values: ui.values }, { label: `Shift handoff · Team ${teamName(ui.header.team)} → Team ${teamName(ui.header.toTeam)}`, key: `handoff:${h.id}` }),
       });
       if (!r) return;
-      toast(r.test ? "Sent (test) — only you get the notification" : r.leads ? `Sent — Team ${teamName(ui.header.toTeam)}'s Line Lead${r.leads === 1 ? "" : "s"} notified` : "Sent — but no Line Lead is set on that team yet (Admin → People)");
+      toast(r.queued ? signedNote(r) : r.test ? "Sent (test) — only you get the notification" : r.leads ? `Sent — Team ${teamName(ui.header.toTeam)}'s Line Lead${r.leads === 1 ? "" : "s"} notified` : "Sent — but no Line Lead is set on that team yet (Admin → People)");
       show("open", { id: h.id, values: null });
     }
     async function discard() {
@@ -344,9 +345,9 @@ export function openHandoff(container, { me, startId = null, onExit }) {
         title: "Sign received", what: `Handoff from Team ${teamName(h.team)} · ${fmtDay(h.date)}`,
         me: { emp: me.emp, name: me.name },
         others: async () => (await callHandoffReceivers({ id: h.id })).data.people,
-        action: async ({ signer, device }) => (await callReceiveHandoff({ id: h.id, signer, device })).data,
+        action: offlineSign("receiveHandoff", { id: h.id }, { label: `Handoff received · from Team ${teamName(h.team)}`, key: `handoff-rx:${h.id}` }),
       });
-      if (r) toast(`Received — signed by ${r.name}${r.test ? " (test)" : ""}`);
+      if (r) toast(signedNote(r, `Received — signed by ${r.name}${r.test ? " (test)" : ""}`));
     }
     const [label, cls] = STATUS[h.status] || STATUS.draft;
     return [

@@ -9,7 +9,8 @@ import { data, onDataChange } from "./data.js";
 import { db, storage, TEST_MODE, callReportIncident, callMyIncidents, callSaveIncidentFollowUp, callAddIncidentAction, callCompleteIncidentAction, callCloseIncident, callMarkIncidentShared, callIncidentPeople, callAdminSaveRotation, callSignIncident, callIncidentFiles, callExportInjuryReports, callSetHrAccess, callHrAccessList, callAdminListEmployees } from "./firebase.js";
 import { collection, doc, getDoc, getDocs, query, where } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 import { ref, uploadBytesResumable } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-storage.js";
-import { signOff, deviceInfo } from "./signoff.js";
+import { signOff, signedNote, deviceInfo } from "./signoff.js";
+import { offlineSign } from "./outbox.js";
 import { sigPad } from "./sigpad.js";
 
 export const FOLLOW_ROLES = ["training-safety", "plant-manager", "admin"];
@@ -309,9 +310,9 @@ export function openIncidents(container, { me, start = "home", startId = null, o
       title: "Close report (PIN)", what: `${TYPE_LABEL[inc.type]} · ${fmtWhen(inc.occurredAt)}`,
       me: follower() && me.roles.some((r) => ["training-safety", "plant-manager", "admin"].includes(r)) ? { emp: me.emp, name: me.name } : null,
       others: async () => ui.people?.closers || [],
-      action: async ({ signer, device }) => (await callCloseIncident({ id: inc.id, signer, device })).data,
+      action: offlineSign("closeIncident", { id: inc.id }, { label: `Close safety report · ${TYPE_LABEL[inc.type]}`, key: `incident:${inc.id}` }),
     });
-    if (out) { toast(`Closed by ${out.name}${out.test ? " (test)" : ""}`); loadOne(); }
+    if (out) { toast(signedNote(out, `Closed by ${out.name}${out.test ? " (test)" : ""}`)); loadOne(); }
   }
   async function share() {
     const inc = ui.one.inc;

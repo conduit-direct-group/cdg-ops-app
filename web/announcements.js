@@ -14,7 +14,8 @@ import {
   callRecordReviewedInPerson, callAnnouncementTracking, callRemindAnnouncement, callSignoffPeople,
 } from "./firebase.js";
 import { ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-storage.js";
-import { signOff } from "./signoff.js";
+import { signOff, signedNote } from "./signoff.js";
+import { offlineSign } from "./outbox.js";
 
 // Same as the server (functions/announcements.js).
 const DEFAULT_POSTER_ROLES = ["admin", "plant-manager", "supervisor", "training-safety", "office"];
@@ -189,10 +190,10 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
       what: `${a.title}${version(a) > 1 ? ` · version ${version(a)}` : ""}`,
       me: { emp: me.emp, name: me.name },
       others: async () => (await callSignoffPeople({ kind: "announcement", id: a.id })).data.people,
-      action: async ({ signer, device }) => (await callSignAnnouncement({ id: a.id, version: version(a), signer, device })).data,
+      action: offlineSign("signAnnouncement", { id: a.id, version: version(a) }, { label: `Read & understood · ${a.title}`, key: `ann:${a.id}` }),
     });
     if (!r) return;
-    toast(`${r.already ? "Already signed" : "Signed"} — ${r.name}${r.test ? " (test)" : ""}`);
+    toast(signedNote(r, `${r.already ? "Already signed" : "Signed"} — ${r.name}${r.test ? " (test)" : ""}`));
     ui.track = null;
     render();
   }
@@ -373,11 +374,11 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
         title: "Record: reviewed in person",
         what: `${x.name} · ${a.title}`,
         me: { emp: me.emp, name: me.name },
-        action: async ({ signer, device }) => (await callRecordReviewedInPerson({ id: a.id, emp: x.id, note: x.note, signer, device })).data,
+        action: offlineSign("recordReviewedInPerson", { id: a.id, emp: x.id, note: x.note }, { label: `Reviewed in person · ${x.name} · ${a.title}` }),
         doneLabel: "Saving…",
       });
       if (!r) return render();
-      toast(`Recorded — ${r.name} reviewed in person${r.test ? " (test)" : ""}`);
+      toast(signedNote(r, `Recorded — ${r.name} reviewed in person${r.test ? " (test)" : ""}`));
       show("read", { id: a.id, track: null });
     }
     return [
