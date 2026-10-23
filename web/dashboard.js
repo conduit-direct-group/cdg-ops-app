@@ -17,6 +17,7 @@ import { stationItems } from "./stations.js";
 import { lineCheckItems } from "./linecheck.js";
 import { db, TEST_MODE, callAdminListEmployees, callAnnouncementSummary } from "./firebase.js";
 import { siloItems, siloCard } from "./silos.js";
+import { downtimeItems } from "./downtime.js";
 import { reelItems, reelCard } from "./reels.js";
 import { incidentItems, incidentCard } from "./incidents.js";
 import { collection, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
@@ -286,6 +287,7 @@ function needsItems(ctx, roles) {
 
   items.push(...siloItems(roles, go.silos, ctx.emp));
   items.push(...reelItems(roles, () => go.reels("list")));
+  items.push(...downtimeItems(roles, data.myself, go.downtime, () => redraw?.()));
   items.push(...incidentItems(roles, { emp: ctx.emp }, go.incidents));
   items.push(...handoffItems(me, go.handoff));
   items.push(...shopItems(me, roles, go.shop));

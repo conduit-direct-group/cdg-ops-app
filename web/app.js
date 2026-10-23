@@ -37,6 +37,7 @@ import { openTestReset } from "./testdata.js";
 import { openTrucks, canViewTrucks, canCheckTrucks } from "./trucks.js";
 import { openReels, openReelAdmin } from "./reels.js";
 import { startOutbox } from "./outbox.js";
+import { openDowntime, usesDowntime } from "./downtime.js";
 import { openWhoToCall, openCallAdmin, lineDownReminder } from "./whotocall.js";
 import { openIncidents, openRotationAdmin, openInjuryExport, openHrAccess } from "./incidents.js";
 import { openSilos, openSiloAdmin, UPDATE_ROLES as SILO_UPDATE_ROLES, ALERT_ROLES as SILO_ALERT_ROLES } from "./silos.js";
@@ -279,6 +280,7 @@ function renderHome() {
       lineCheck: (lineId, logId) => openLineCheckScreen(lineId, logId),
       silos: () => openSiloScreen(),
       reels: (view) => openReelScreen(view),
+      downtime: () => openDowntimeScreen(),
       incidents: (view, id) => openIncidentScreen(view, id),
     },
   });
@@ -356,6 +358,7 @@ function openMore() {
     roles.some((r) => ["training-safety", "admin"].includes(r)) ? row("🎓", "Training", () => { location.href = "training.html"; }) : null,
     canViewTrucks(roles) && !canCheckTrucks(roles) ? row("🚚", "Trucks", () => openTrucksScreen()) : null,
     usesQc(roles) && !roles.includes("quality") ? row("🏷", "QC hold — flagged reels", () => openReelScreen()) : null,
+    usesDowntime(roles) ? row("⏱", "Downtime & scrap shift report", () => openDowntimeScreen()) : null,
     row("🦺", "Safety reports — near miss / incident", () => openIncidentScreen()),
     row("📞", "Who to Call", () => openCallScreen()),
     row("📄", "Reference documents", () => openDocsScreen()),
@@ -409,6 +412,7 @@ function openChecklistsHub() {
           ? el("button", { class: "btn big secondary", type: "button", onclick: () => openLineCheckScreen() }, "📈 Line Check Log") : null,
         stationForms().length ? el("button", { class: "btn big secondary", type: "button", onclick: () => openStationScreen() }, "📋 Station checklists") : null,
         el("button", { class: "btn big secondary", type: "button", onclick: () => openReelScreen("flag", openChecklistsHub, "Checklists") }, "🏷 Flag a reel"),
+        usesDowntime(shownRoles()) ? el("button", { class: "btn big secondary", type: "button", onclick: () => openDowntimeScreen(openChecklistsHub, "Checklists") }, "⏱ Downtime & scrap") : null,
         shownRoles().some((r) => SILO_UPDATE_ROLES.includes(r)) ? el("button", { class: "btn big secondary", type: "button", onclick: () => openSiloScreen(openChecklistsHub, "Checklists") }, "🛢 Update silo levels") : null),
       el("h2", {}, "Machine checklists"),
       loading ? spinner() : !units.length ? emptyState("No machine checklists yet", "An admin sets them up in Admin → Checklists.") : null,
@@ -528,6 +532,14 @@ function openReelScreen(view = "list", back = () => go("home"), backLabel = "Hom
   setNav(shownRoles().includes("quality") ? "qc" : back === openChecklistsHub ? "checklists" : "more");
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openReels(screen, { me: me(), start: view, onExit: back, backLabel });
+}
+
+// Downtime & scrap shift report (Line Leads, Supervisors, Production Manager, Admins): Checklists page and More.
+function openDowntimeScreen(back = () => go("home"), backLabel = "Home") {
+  if (closeModule) closeModule();
+  setNav(back === openChecklistsHub ? "checklists" : "more");
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  closeModule = openDowntime(screen, { me: me(), onExit: back, backLabel });
 }
 
 // Silo levels (Checklists page, Home's silo card / low silo item, or a low silo notification: ?silos=1).
