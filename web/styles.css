@@ -1488,3 +1488,28 @@ a.btn { text-decoration: none; }
 .dt-tags, .dt-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s3); }
 .dt-note { display: block; color: var(--muted); font-size: var(--text-small); font-weight: normal; overflow-wrap: anywhere; white-space: pre-line; }
 .entry-form { border-top: 1px solid var(--line); margin-top: var(--s3); padding-top: var(--s2); }
+
+/* Departments + reports to: People columns, Admin → Departments, profile, org chart */
+.org-cols { display: flex; flex-wrap: wrap; gap: 0 var(--s3); color: var(--white); font-size: var(--text-small); margin-top: var(--s1); }
+.org-col.muted { color: var(--muted); }
+.org-head:empty { display: none; }
+.org-card p, .profile-card p { margin: var(--s1) 0; }
+.dept-rows { display: flex; flex-direction: column; gap: var(--s2); margin: var(--s2) 0; }
+.dept-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s1) var(--s3); align-items: center; }
+.dept-row .dept-head { grid-column: 1 / -1; color: var(--muted); font-size: var(--text-small); }
+@media (min-width: 768px) { .dept-row { grid-template-columns: minmax(0, 2fr) auto minmax(0, 1.4fr); } .dept-row .dept-head { grid-column: auto; } }
+.profile-name { font-size: var(--text-section); }
+.profile-reports { font-size: var(--text-section); }
+.org-tree { display: flex; flex-direction: column; gap: var(--s2); margin: var(--s3) 0; }
+.org-node > summary { display: flex; align-items: center; gap: var(--s2); min-height: var(--tap); padding: var(--s2) var(--s3); background: var(--surface-1); border-radius: var(--radius); cursor: pointer; list-style: none; }
+.org-node > summary::-webkit-details-marker { display: none; }
+.org-node > summary::before { content: "▸"; color: var(--orange); }
+.org-node[open] > summary::before { content: "▾"; }
+.org-kids { display: flex; flex-direction: column; gap: var(--s1); margin: var(--s1) 0 0 var(--s4); padding-left: var(--s3); border-left: 2px solid var(--line); }
+.org-kids.flat { margin-left: 0; border-left: 0; padding-left: 0; }
+.org-leaf { padding: var(--s2) var(--s3); background: var(--surface-1); border-radius: var(--radius); }
+.org-person { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.org-person.me strong { color: var(--orange); }
+.org-title { color: var(--muted); font-size: var(--text-small); overflow-wrap: anywhere; }
+.org-count { margin-left: auto; padding: 0 var(--s2); border-radius: var(--radius); background: var(--surface-3); font-size: var(--text-small); }
+.filter-pick { margin: var(--s2) 0; }
