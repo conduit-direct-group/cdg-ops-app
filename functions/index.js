@@ -46,6 +46,7 @@ const crewLib = require("./crew");
 const verifyLib = require("./verify");
 const annTasksLib = require("./anntasks");
 const crewSeatsLib = require("./crewseats");
+const writeupsLib = require("./writeups");
 const crypto = require("node:crypto");
 const { getMessaging } = require("firebase-admin/messaging");
 const { defineSecret } = require("firebase-functions/params");
@@ -5124,5 +5125,132 @@ exports.crewCell = onCall(async (req) => {
       title: `${test ? "[TEST] " : ""}👥 Station changed`, body: `${setup.rotation.blocks[block]}: ${crewSeatsLib.stationOf(setup, station)?.name || "no station"}`, url: "/?crew=1",
     });
   }
+  return { ok: true };
+});
+
+// ---------------------------------------------------------------------------
+// Write-ups (Decision 52; who writes and sees: Chris, 10-23-2026). Rules in writeups.js. Server-only collection — every
+// read goes through these functions, so only the writer and people with HR access ever get one, and every view and
+// print is in the activity log. Steps: the writer fills the form and signs with their PIN → the employee reads it, adds
+// comments, and signs with their own PIN on the writer's device — or the writer marks "Refused to sign".
+// ---------------------------------------------------------------------------
+
+async function requireWriteupAccess(req) {
+  const me = await requireMember(req);
+  if (!me.hr && !writeupsLib.canWrite(me.roles)) throw new HttpsError("permission-denied", "Write-ups are for Supervisors, the Production Manager, and Admins.");
+  return me;
+}
+
+// The record, if this person may see it (otherwise "not found" — not even whether it exists).
+async function writeupFor(me, id, test) {
+  if (typeof id !== "string" || !/^[A-Za-z0-9]{1,40}$/.test(id)) throw new HttpsError("invalid-argument", "Pick a write-up.");
+  const snap = await col("writeups", test).doc(id).get();
+  if (!snap.exists || !writeupsLib.canSee(me, snap.data())) throw new HttpsError("not-found", "That write-up isn't there, or it isn't yours to see.");
+  return snap;
+}
+
+// { canWrite, hr, types, people: [{ emp, name, team }] } — people to pick (active, not yourself).
+exports.writeupStart = onCall(async (req) => {
+  const me = await requireWriteupAccess(req);
+  const test = isTest(req);
+  const teams = await db.collection("teams").get();
+  const teamName = new Map(teams.docs.map((d) => [d.id, d.get("name") || d.id]));
+  const people = (await peopleList())
+    .filter((p) => p.active && p.id !== me.employeeNumber && (test || !deptLib.isPracticeAccount(p.name)))
+    .map((p) => ({ emp: p.id, name: p.name, team: p.team ? teamName.get(p.team) || "" : "" }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return { canWrite: writeupsLib.canWrite(me.roles), hr: me.hr, types: writeupsLib.TYPES, people, test };
+});
+
+// The list: everything for HR access; your own for writers. { items: [summary] }
+exports.writeupList = onCall(async (req) => {
+  const me = await requireWriteupAccess(req);
+  const test = isTest(req);
+  const c = col("writeups", test);
+  const snap = me.hr ? await c.orderBy("date", "desc").limit(500).get() : await c.where("writerEmp", "==", me.employeeNumber).get();
+  const items = snap.docs.map((d) => writeupsLib.summary(d.id, d.data())).sort((a, b) => b.date.localeCompare(a.date));
+  return { items, hr: me.hr, test };
+});
+
+// One write-up: { writeup }. Logged as viewed.
+exports.writeupGet = onCall(async (req) => {
+  const me = await requireWriteupAccess(req);
+  const test = isTest(req);
+  const snap = await writeupFor(me, req.data?.id, test);
+  await auditLog.add({ type: "viewed", kind: "write-up", recordId: snap.id, by: me.employeeNumber, at: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}) });
+  const w = snap.data();
+  return { writeup: { id: snap.id, ...w, createdAt: null, updatedAt: null } };
+});
+
+// Save as PDF / print: logged. { id }
+exports.writeupPrinted = onCall(async (req) => {
+  const me = await requireWriteupAccess(req);
+  const test = isTest(req);
+  const snap = await writeupFor(me, req.data?.id, test);
+  await auditLog.add({ type: "printed", kind: "write-up", recordId: snap.id, by: me.employeeNumber, at: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}) });
+  return { ok: true };
+});
+
+// The writer saves the form and signs with their own PIN. { writeup: form, signer, device } → { id }
+exports.saveWriteup = onCall(async (req) => {
+  const me = await requireMember(req);
+  if (!writeupsLib.canWrite(me.roles)) throw new HttpsError("permission-denied", "Write-ups are written by Supervisors, the Production Manager, and Admins.");
+  const test = isTest(req);
+  const { writeup, error } = writeupsLib.cleanWriteup(req.data?.writeup, plantToday());
+  if (error) throw new HttpsError("invalid-argument", error);
+  if (writeup.emp === me.employeeNumber) throw new HttpsError("invalid-argument", "You can't write yourself up.");
+  const signer = await requireSignature(req.data);
+  if (signer.employeeNumber !== me.employeeNumber) throw new HttpsError("permission-denied", "The writer signs with their own PIN.");
+  const person = await employees.doc(writeup.emp).get();
+  if (!person.exists || person.get("active") === false) throw new HttpsError("invalid-argument", "Pick the employee from the list.");
+  const c = col("writeups", test);
+  const earlier = await c.where("emp", "==", writeup.emp).get();
+  const device = annLib.cleanDevice(req.data?.device);
+  const ref = c.doc();
+  await db.runTransaction(async (tx) => {
+    tx.create(ref, {
+      ...writeup, empName: person.get("name") || `Employee ${writeup.emp}`,
+      prior: writeupsLib.priorList(earlier.docs.map((d) => d.data()), writeup.date),
+      writerEmp: me.employeeNumber, writerName: me.name, writerSig: { emp: me.employeeNumber, name: me.name, atMs: Date.now(), device },
+      status: "waiting", employeeComments: "", createdAt: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}),
+    });
+    logSignoff(tx, test, { kind: "write-up (writer)", refId: ref.id, emp: me.employeeNumber, name: me.name, method: "pin", device, signedOn: me.employeeNumber });
+    auditRecord(tx, "created", "write-up", ref.id, me.employeeNumber, test ? { test: true } : {});
+  });
+  return { id: ref.id };
+});
+
+// The employee reads it, adds comments, and signs with their own PIN on the writer's device. { id, comments, signer, device }
+exports.writeupEmployeeSign = onCall(async (req) => {
+  const me = await requireWriteupAccess(req);
+  const test = isTest(req);
+  const snap = await writeupFor(me, req.data?.id, test);
+  const signer = await requireSignature(req.data);
+  const device = annLib.cleanDevice(req.data?.device);
+  const comments = writeupsLib.clean(req.data?.comments, writeupsLib.MAX.comments);
+  await db.runTransaction(async (tx) => {
+    const fresh = await tx.get(snap.ref);
+    const w = fresh.data();
+    if (w.status !== "waiting") throw new HttpsError("failed-precondition", "This write-up is already signed or marked refused.");
+    if (signer.employeeNumber !== w.emp) throw new HttpsError("permission-denied", `Only ${w.empName} can sign this one, with their own PIN.`);
+    tx.update(snap.ref, { status: "signed", employeeComments: comments, employeeSig: { emp: signer.employeeNumber, name: signer.name, atMs: Date.now(), device }, updatedAt: FieldValue.serverTimestamp() });
+    logSignoff(tx, test, { kind: "write-up (employee)", refId: snap.id, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber });
+    auditRecord(tx, "signed", "write-up", snap.id, signer.employeeNumber, test ? { test: true } : {});
+  });
+  return { ok: true };
+});
+
+// The employee won't sign: the writer (or HR access) records it, with any comments the employee gave. { id, comments }
+exports.writeupRefused = onCall(async (req) => {
+  const me = await requireWriteupAccess(req);
+  const test = isTest(req);
+  const snap = await writeupFor(me, req.data?.id, test);
+  const comments = writeupsLib.clean(req.data?.comments, writeupsLib.MAX.comments);
+  await db.runTransaction(async (tx) => {
+    const fresh = await tx.get(snap.ref);
+    if (fresh.get("status") !== "waiting") throw new HttpsError("failed-precondition", "This write-up is already signed or marked refused.");
+    tx.update(snap.ref, { status: "refused", employeeComments: comments, refused: { by: me.employeeNumber, byName: me.name, atMs: Date.now() }, updatedAt: FieldValue.serverTimestamp() });
+    auditRecord(tx, "refused to sign", "write-up", snap.id, me.employeeNumber, test ? { test: true } : {});
+  });
   return { ok: true };
 });

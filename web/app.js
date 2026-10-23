@@ -42,6 +42,7 @@ import { openCrew, openCrewStationsAdmin, usesCrewBoard } from "./crew.js";
 import { openDepartmentsAdmin, openProfile } from "./departments.js";
 import { openWhoToCall, openCallAdmin, lineDownReminder } from "./whotocall.js";
 import { openIncidents, openRotationAdmin, openInjuryExport, openHrAccess } from "./incidents.js";
+import { openWriteups, canWriteUps } from "./writeups.js";
 import { openSilos, openSiloAdmin, UPDATE_ROLES as SILO_UPDATE_ROLES, ALERT_ROLES as SILO_ALERT_ROLES } from "./silos.js";
 
 const screen = document.getElementById("screen");
@@ -365,6 +366,7 @@ function openMore() {
     usesQc(roles) && !roles.includes("quality") ? row("🏷", "QC hold — flagged reels", () => openReelScreen()) : null,
     usesDowntime(roles) ? row("⏱", "Downtime & scrap shift report", () => openDowntimeScreen()) : null,
     row("🦺", "Safety reports — near miss / incident", () => openIncidentScreen()),
+    canWriteUps(roles, m.hr) ? row("🧾", "Write-ups", () => openWriteupsScreen()) : null,
     row("👤", "My profile — who I report to, org chart", () => openProfileScreen()),
     row("📞", "Who to Call", () => openCallScreen()),
     row("📄", "Reference documents", () => openDocsScreen()),
@@ -521,6 +523,14 @@ function openIncidentScreen(view = "home", id = null) {
 
 // Who to Call (📞 in the top bar, or More). Maintenance's "No" opens the Fix Library; "Yes, but can't run" the request form.
 // More → My profile: who I report to, and the org chart (everyone; Departments + reports to, launch list 1).
+// More → Write-ups (Supervisors, Production Manager, Admins write them; the writer and HR access see them).
+function openWriteupsScreen() {
+  if (closeModule) closeModule();
+  setNav("more");
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  closeModule = openWriteups(screen, { me: me(), onExit: () => go("home"), backLabel: "Home" });
+}
+
 function openProfileScreen() {
   if (closeModule) closeModule();
   setNav("more");

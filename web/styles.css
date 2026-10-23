@@ -1560,3 +1560,19 @@ button.block:active { background: var(--surface-3); }
 .fit-note.warn { color: var(--white); padding: var(--s1) var(--s2); border-left: 3px solid var(--orange); background: var(--orange-tint); border-radius: 4px; }
 .sop-chips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); }
 .sop-chips .chip { min-height: 44px; padding: var(--s1) var(--s3); }
+
+/* Write-ups (Decision 52): list, form, the printable write-up */
+.wu-list { display: grid; grid-template-columns: 1fr; gap: var(--s2); margin: var(--s3) 0; }
+@media (min-width: 768px) { .wu-list { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 1200px) { .wu-list { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.wu-item { display: flex; flex-direction: column; gap: var(--s1); margin: 0; width: 100%; min-height: var(--tap); text-align: left; color: var(--white); font: inherit; cursor: pointer; }
+.wu-item:active { background: var(--surface-3); }
+.wu-item-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s1) var(--s2); }
+.wu-status { font-size: var(--text-small); }
+.wu-status.center { text-align: center; margin: 0 0 var(--s3); }
+.wu-form { display: flex; flex-direction: column; max-width: 720px; }
+.wu-form .btn[type=submit] { margin-top: var(--s4); }
+.wu-hand { display: flex; flex-direction: column; gap: var(--s2); border-color: var(--orange); }
+.wu-doc .print-table td { white-space: pre-line; }
+.wu-sigs { margin-top: var(--s3); }
+@media (min-width: 760px) { main[data-width="wide"] .wu-status.center { text-align: left; } }

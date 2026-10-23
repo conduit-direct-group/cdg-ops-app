@@ -25,6 +25,7 @@ const TEST_COLLECTIONS = [
   ["test_trucks", "Trucks"],
   ["test_siloLevels", "Silo levels"],
   ["test_siloReadings", "Silo readings"],
+  ["test_writeups", "Write-ups"],
   ["test_reels", "Flagged reels"],
   ["test_callTaps", "Call button taps"],
   ["test_incidents", "Near-miss & incident reports"],

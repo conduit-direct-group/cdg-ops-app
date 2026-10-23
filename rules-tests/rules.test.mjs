@@ -272,6 +272,15 @@ test("server-only data can't be read from any phone — not even by an Admin: Wh
   }
 });
 
+test("write-ups and the Crew Board station setup are server-only — not even HR access or an Admin reads them from a phone", async () => {
+  const docs = [["writeups", "w1"], ["test_writeups", "w1"], ["meta", "crewStations"]];
+  await seed(async (d) => { for (const [c, id] of docs) await setDoc(doc(d, c, id), { emp: "9003", writerEmp: "9006", description: "made-up" }); });
+  for (const [c, id] of docs) {
+    for (const emp of [9001, 9003, 9006, 9009]) await assertFails(getDoc(doc(db(emp), c, id)));
+  }
+  await assertFails(setDoc(doc(db(9009), "writeups", "w2"), { emp: "9003", writerEmp: "9009" }));
+});
+
 test("phones can't write anything — every change goes through the server", async () => {
   const tries = [
     [9011, "handoffs", "h9"], [9011, "shopTasks", "s9"], [9001, "stationLists", "x9"], [9001, "checklistUnits", "u9"],
