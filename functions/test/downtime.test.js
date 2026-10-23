@@ -69,3 +69,10 @@ test("workbook rows: data columns only, in column order", () => {
   assert.deepStrictEqual(rows.scrap, [["2026-10-22", "1", "A", "1.25\" SDR 13.5", 300, "Startup/Purge", ""]]);
   for (const k of Object.keys(rows)) assert.strictEqual(d.SHEET_HEADERS[k].length, (rows[k][0] || d.SHEET_HEADERS[k]).length);
 });
+
+test("before signing, downtime and scrap each need entries or None this shift", () => {
+  assert.ok(d.notReadyToSign({}, { downtime: 0, scrap: 0 }).includes("downtime and scrap"));
+  assert.ok(d.notReadyToSign({ none: { downtime: { by: "1" } } }, { downtime: 0, scrap: 0 }).includes("scrap"));
+  assert.strictEqual(d.notReadyToSign({ none: { scrap: { by: "1" } } }, { downtime: 2, scrap: 0 }), null);
+  assert.strictEqual(d.notReadyToSign({}, { downtime: 1, scrap: 3 }), null);
+});

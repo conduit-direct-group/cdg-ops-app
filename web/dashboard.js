@@ -8,7 +8,8 @@
 
 import { el, picker, choose } from "./ui.js";
 import { data, lineName } from "./data.js";
-import { overdueUnits, unitLabel } from "./checklists.js";
+import { overdueUnits, unitLabel, checklistUnits, pendingFor } from "./checklists.js";
+import { dueByShiftEnd } from "./shift.js";
 import { myOpenRequests } from "./requests.js";
 import { announcementItems } from "./announcements.js";
 import { handoffItems } from "./handoff.js";
@@ -302,10 +303,16 @@ function needsItems(ctx, roles) {
   if (machines && data.checklistUnits && data.lines && data.checklistTemplates) {
     const home = roles.some((r) => ["operator", "lead"].includes(r)) && !roles.some((r) => ISSUE_ROLES.includes(r)) ? data.myself?.homeLineId || null : null;
     const late = overdueUnits().filter((u) => !home || u.lineId === home || u.lineId === null);
+    // Green only when nothing is overdue and every sign-off is verified (two-step sign-off); verify by the end of the shift.
+    const waiting = checklistUnits().filter((u) => pendingFor(u).length && (!home || u.lineId === home || u.lineId === null));
+    const due = dueByShiftEnd();
     items.push(late.length
       ? { key: "checklists", icon: "📋", title: `Machine checklists overdue: ${late.length}`, detail: late.slice(0, 2).map(unitLabel).join(" · ") + (late.length > 2 ? ` +${late.length - 2}` : ""), state: "late",
           onOpen: pickThen("Overdue checklists", late.map((u) => ({ value: u.id, label: unitLabel(u) })), go.checklist) }
-      : { key: "checklists", icon: "📋", title: "Machine checklists", detail: "all up to date", state: "done", onOpen: go.checklists });
+      : waiting.length
+        ? { key: "checklists", icon: "📋", title: `Machine checklists — ${waiting.length} need${waiting.length === 1 ? "s" : ""} Verified`, detail: `${waiting.slice(0, 2).map(unitLabel).join(" · ")}${waiting.length > 2 ? ` +${waiting.length - 2}` : ""} · ${due.detail}`, state: due.state,
+            onOpen: pickThen("Checklists to verify", waiting.map((u) => ({ value: u.id, label: unitLabel(u) })), go.checklist) }
+        : { key: "checklists", icon: "📋", title: "Machine checklists", detail: "all up to date and verified", state: "done", onOpen: go.checklists });
   }
 
   // "Need something?" requests sent to me (admins: every open one). Safety concerns are their own item above.

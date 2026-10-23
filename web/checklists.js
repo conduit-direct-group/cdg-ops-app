@@ -8,7 +8,7 @@ import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, pi
 import { data, onDataChange, lineName } from "./data.js";
 import {
   storage, TEST_MODE, callSignChecklist, callAdminSaveChecklist, callAdminSetChecklistMedia, callAdminStartChecklists,
-  callAdminImportOldChecklists, callSignoffPeople,
+  callAdminImportOldChecklists, callSignoffPeople, callChecklistVerifiers,
 } from "./firebase.js";
 import { ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-storage.js";
 import { signOff, signedNote } from "./signoff.js";
@@ -64,6 +64,9 @@ export function doneFor(u, now = Date.now()) {
   return base ? Object.fromEntries((u.template.items || []).map((i) => [i.id, raw[i.id]?.at > base ? raw[i.id] : { at: base, byName: "start of shift (test site)" }])) : raw;
 }
 
+// Sign-offs on this checklist waiting for Verified (two-step sign-off, functions/verify.js), oldest first.
+export const pendingFor = (u) => [...(data.checklistPending?.[u.id] || [])].sort((a, b) => (a.at || 0) - (b.at || 0));
+
 export function unitStatus(u, now = Date.now()) {
   const done = doneFor(u, now);
   const dueMs = (u.template.everyDays || 14) * DAY_MS;
@@ -88,7 +91,7 @@ export function unitStatus(u, now = Date.now()) {
     }
   }
   const total = (u.template.items || []).length;
-  return { overdue: never > 0 || late > 0, never, late, total, daysLeft: Number.isFinite(soonestDue) ? Math.ceil((soonestDue - now) / DAY_MS) : null, lastAt, lastBy };
+  return { overdue: never > 0 || late > 0, pending: pendingFor(u).length, never, late, total, daysLeft: Number.isFinite(soonestDue) ? Math.ceil((soonestDue - now) / DAY_MS) : null, lastAt, lastBy };
 }
 
 export function overdueUnits() {
@@ -107,6 +110,7 @@ export function statusTag(s) {
     const n = s.never + s.late;
     return el("span", { class: "tag off" }, `⚠ ${s.never === s.total ? "Not done yet" : `${n} item${n === 1 ? "" : "s"} overdue`}`);
   }
+  if (s.pending) return el("span", { class: "tag" }, `Done — ${s.pending} sign-off${s.pending === 1 ? "" : "s"} need${s.pending === 1 ? "s" : ""} Verified`);
   const text = s.daysLeft <= 0 ? "Due today" : s.daysLeft === 1 ? "Due in 1 day" : `Due in ${s.daysLeft} days`;
   return el("span", { class: s.daysLeft <= 3 ? "tag warn" : "tag" }, text);
 }
@@ -199,7 +203,31 @@ export function openChecklist(container, { me, unitId: id, onExit }) {
     });
     if (!r) return render();
     ui.checked.clear();
-    onExit(signedNote(r, `${unitLabel(unit())} signed off by ${r.name} — ${r.count} item${r.count === 1 ? "" : "s"}${r.test ? " (test)" : ""}`));
+    onExit(signedNote(r, `${unitLabel(unit())} signed off by ${r.name} — ${r.count} item${r.count === 1 ? "" : "s"}${r.test ? " (test)" : ""} — needs Verified`));
+  }
+
+  // Verified: someone other than the person who signed it.
+  async function verify(p) {
+    const canMe = me.roles.some((x) => ["supervisor", "plant-manager", "lead"].includes(x)) && p.by !== me.emp;
+    const r = await signOff({
+      title: "Verified", what: `${unitLabel(unit())} · ${p.items.length} item${p.items.length === 1 ? "" : "s"} · signed by ${p.byName}`,
+      me: canMe ? { emp: me.emp, name: me.name } : null,
+      others: async () => (await callChecklistVerifiers({ unitId: id, signoffId: p.id })).data.people,
+      action: offlineSign("verifyChecklist", { unitId: id, signoffId: p.id }, { label: `Checklist verified · ${unitLabel(unit())}`, key: `checklist-verify:${p.id}` }),
+    });
+    if (r) toast(signedNote(r, `Verified by ${r.name}${r.role ? ` (${r.role})` : ""}${r.test ? " (test)" : ""}`));
+  }
+  function pendingCard(u) {
+    const list = pendingFor(u);
+    if (!list.length) return null;
+    const names = new Map((u.template.items || []).map((i) => [i.id, i.text]));
+    return el("section", { class: "card" },
+      el("strong", {}, `Waiting for Verified (${list.length})`),
+      el("p", { class: "card-note" }, "A Supervisor verifies — or, with no Supervisor on shift, the Production Manager or a Line Lead. Not the person who signed it."),
+      list.map((p) => el("div", { class: "sub-section" },
+        el("span", { class: "person-name" }, `Signed by ${p.byName} · ${fmtDate(p.at)}${p.test ? " (test)" : ""}`),
+        el("span", { class: "person-meta" }, p.items.map((i) => names.get(i) || i).join(" · ")),
+        el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: () => verify(p) }, "✍ Verified"))));
   }
 
   function renderList() {
@@ -215,6 +243,7 @@ export function openChecklist(container, { me, unitId: id, onExit }) {
       el("h1", {}, unitLabel(u)),
       el("p", { class: "hint" }, `Check what you did. Each item is due every ${u.template.everyDays || 14} days.`),
       banner(ui),
+      pendingCard(u),
       el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => { items.forEach((i) => (allOn ? ui.checked.delete(i.id) : ui.checked.add(i.id))); render(); } }, allOn ? "Uncheck all" : "✔ Check all"),
       el(
         "div",

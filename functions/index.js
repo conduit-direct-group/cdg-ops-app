@@ -1529,12 +1529,14 @@ exports.signChecklist = onCall(signable(async (req) => {
   const at = Date.now();
   const done = Object.fromEntries(itemIds.map((id) => [id, { at, by: me.employeeNumber, byName: me.name }]));
   const batch = db.batch();
+  const signoffRef = col("checklistSignoffs", test).doc();
+  // pending: sign-offs waiting for Verified (two-step sign-off, verify.js); due dates count from Done.
   batch.set(
     col("checklistUnits", test).doc(unit.id),
-    { templateId: unit.templateId, lineId: unit.lineId, items: done, updatedAt: FieldValue.serverTimestamp() },
+    { templateId: unit.templateId, lineId: unit.lineId, items: done, pending: { [signoffRef.id]: { items: itemIds, by: me.employeeNumber, byName: me.name, at } }, updatedAt: FieldValue.serverTimestamp() },
     { merge: true }
   );
-  batch.create(col("checklistSignoffs", test).doc(), {
+  batch.create(signoffRef, {
     unitId: unit.id, templateId: unit.templateId, lineId: unit.lineId, items: itemIds,
     by: me.employeeNumber, byName: me.name, method: "pin", device, signedOn: signedIn.employeeNumber,
     at: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}),
@@ -1543,6 +1545,41 @@ exports.signChecklist = onCall(signable(async (req) => {
   await batch.commit();
   return { ok: true, count: itemIds.length, name: me.name, test };
 }));
+
+// Verified, for one sign-off waiting on a checklist: { unitId, signoffId, signer: { emp, pin }, device }. A Supervisor —
+// or, with no Supervisor on shift, the Production Manager or a Line Lead. Not the person who signed it.
+exports.verifyChecklist = onCall(signable(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const signer = await requireSignature(req.data);
+  const device = annLib.cleanDevice(req.data?.device);
+  const unitRef = col("checklistUnits", test).doc(String(req.data?.unitId || "x"));
+  const signoffId = String(req.data?.signoffId || "");
+  const supervisorOnShift = await supervisorOnShiftNow(test);
+  const w = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(unitRef);
+    const p = snap.exists ? snap.get("pending")?.[signoffId] : null;
+    if (!p) throw new HttpsError("failed-precondition", "That sign-off is already verified (or no longer waiting).");
+    const who = requireVerifier(signer, supervisorOnShift, [p.by]);
+    const stamp = verifyStamp(signer, who, device);
+    tx.update(unitRef, { [`pending.${signoffId}`]: FieldValue.delete(), updatedAt: FieldValue.serverTimestamp() });
+    tx.update(col("checklistSignoffs", test).doc(signoffId), { verified: stamp });
+    logSignoff(tx, test, { kind: "checklist-verify", refId: unitRef.id, version: null, items: p.items, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber, role: who.role, backup: who.backup });
+    return who;
+  });
+  return { ok: true, name: signer.name, role: w.roleName, backup: w.backup, test };
+}));
+
+// Who can verify on this device's sheet (line tablets): { unitId, signoffId } -> who may verify right now, with a login.
+exports.checklistVerifiers = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const snap = await col("checklistUnits", test).doc(String(req.data?.unitId || "x")).get();
+  const p = snap.exists ? snap.get("pending")?.[String(req.data?.signoffId || "")] : null;
+  const people = (await peopleList()).filter((x) => x.active && x.loginEnabled && x.id !== me.employeeNumber);
+  const list = verifyLib.verifiers(people, { supervisorOnShift: await supervisorOnShiftNow(test), doers: [p?.by].filter(Boolean) });
+  return { people: list.map((x) => ({ emp: x.id, name: x.name })) };
+});
 
 function requireTemplate(data, existing) {
   const { template, error } = checklistsLib.cleanTemplate(data, existing);
@@ -2556,11 +2593,46 @@ exports.receiveHandoff = onCall(signable(async (req) => {
     if (h.status !== "sent") throw new HttpsError("failed-precondition", "This handoff hasn't been sent yet.");
     if (!formsLib.canReceive(person, h)) throw new HttpsError("permission-denied", `${signer.name} isn't a Line Lead on the incoming team.`);
     if (signer.employeeNumber === h.createdBy) throw new HttpsError("permission-denied", "The person who wrote it can't also sign it received.");
-    tx.update(ref, { status: "received", receivedBy: { emp: signer.employeeNumber, name: signer.name, device, at: new Date() }, receivedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+    // needsVerify: waits for Verified (two-step sign-off, verify.js) — listed on Home for whoever may verify.
+    tx.update(ref, { status: "received", needsVerify: true, receivedBy: { emp: signer.employeeNumber, name: signer.name, device, at: new Date() }, receivedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
     logSignoff(tx, test, { kind: "handoff-received", refId: ref.id, version: h.formRev, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber });
   });
   return { ok: true, name: signer.name, test };
 }));
+
+// Verified, once received: { id, signer: { emp, pin }, device }. A Supervisor — or, with no Supervisor on shift, the
+// Production Manager or a Line Lead. Not the person who wrote it or the one who received it.
+exports.verifyHandoff = onCall(signable(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const signer = await requireSignature(req.data);
+  const device = annLib.cleanDevice(req.data?.device);
+  const ref = handoffCol(test).doc(String(req.data?.id || ""));
+  const supervisorOnShift = await supervisorOnShiftNow(test);
+  const w = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "That handoff no longer exists.");
+    const h = snap.data();
+    if (h.status !== "received") throw new HttpsError("failed-precondition", "It isn't signed received yet.");
+    if (h.verified) throw new HttpsError("failed-precondition", `Already verified by ${h.verified.name}.`);
+    const who = requireVerifier(signer, supervisorOnShift, [h.createdBy, h.receivedBy?.emp].filter(Boolean));
+    tx.update(ref, { verified: verifyStamp(signer, who, device), needsVerify: false, updatedAt: FieldValue.serverTimestamp() });
+    logSignoff(tx, test, { kind: "handoff-verify", refId: ref.id, version: h.formRev, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber, role: who.role, backup: who.backup });
+    return who;
+  });
+  return { ok: true, name: signer.name, role: w.roleName, backup: w.backup, test };
+}));
+
+// Who can verify on this device's sheet (line tablets): { id } -> who may verify right now, with a login.
+exports.handoffVerifiers = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const snap = await handoffCol(test).doc(String(req.data?.id || "")).get();
+  if (!snap.exists) throw new HttpsError("not-found", "That handoff no longer exists.");
+  const people = (await peopleList()).filter((p) => p.active && p.loginEnabled && p.id !== me.employeeNumber);
+  const list = verifyLib.verifiers(people, { supervisorOnShift: await supervisorOnShiftNow(test), doers: [snap.get("createdBy"), snap.get("receivedBy")?.emp].filter(Boolean) });
+  return { people: list.map((p) => ({ emp: p.id, name: p.name })) };
+});
 
 // Names that can sign received on this device (line tablets): the incoming team's Line Leads. { id }
 exports.handoffReceivers = onCall(async (req) => {
@@ -4259,7 +4331,7 @@ exports.shiftReport = onCall(async (req) => {
     canSign: downtimeLib.canSign(me.roles),
     lists: { changeoverTypes: downtimeLib.CHANGEOVER_TYPES, downtimeReasons: downtimeLib.DOWNTIME_REASONS, scrapReasons: downtimeLib.SCRAP_REASONS, saturdayTeams: downtimeLib.SATURDAY_TEAMS, sizes: settings.sizes, sdrs: settings.sdrs },
     recent: recentSnaps.docs.filter((d) => d.get("lineId") === report.lineId && d.id !== report.id)
-      .map((d) => ({ id: d.id, date: d.get("date"), shiftName: d.get("shiftName"), team: d.get("team"), signed: !!d.get("signed") }))
+      .map((d) => ({ id: d.id, date: d.get("date"), shiftName: d.get("shiftName"), team: d.get("team"), signed: !!d.get("signed"), verified: !!d.get("verified") }))
       .sort((a, b) => (a.id < b.id ? 1 : -1)),
   };
 });
@@ -4342,6 +4414,8 @@ exports.saveShiftEntry = onCall(async (req) => {
       ...(req.data?.id ? {} : { productSize: r.productSize, atMs: Date.now() }), by: me.employeeNumber, byName: me.name, updatedAtMs: Date.now(),
       ...(test ? { test: true } : {}),
     }, { merge: true });
+    // An entry added after "None this shift" was tapped: it isn't none any more.
+    if (r.none?.[kind]) tx.update(reportRef, { [`none.${kind}`]: FieldValue.delete() });
     auditRecord(tx, req.data?.id ? "updated" : "added", `shift ${kind}`, ref.id, me.employeeNumber, { reportId: reportRef.id, test });
     return { id: ref.id };
   });
@@ -4356,10 +4430,18 @@ exports.signShiftReport = onCall(signable(async (req) => {
   if (!downtimeLib.canSign(signer.roles)) throw new HttpsError("permission-denied", `${signer.name} can't sign shift reports — a Line Lead or Supervisor signs.`);
   const device = annLib.cleanDevice(req.data?.device);
   const ref = col("shiftReports", test).doc(String(req.data?.reportId || "x"));
+  const first = await ref.get();
+  const reelScraps = first.exists ? (await reelScrapsFor(test, { id: first.id, ...first.data() })).length : 0;
   return db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     if (!snap.exists) throw new HttpsError("failed-precondition", "Save the product size first.");
     if (snap.get("signed")) throw new HttpsError("failed-precondition", `Already signed by ${snap.get("signed").byName}.`);
+    const [events, scraps] = await Promise.all([
+      tx.get(col("downtimeEvents", test).where("reportId", "==", ref.id)),
+      tx.get(col("scrapEntries", test).where("reportId", "==", ref.id)),
+    ]);
+    const notReady = downtimeLib.notReadyToSign(snap.data(), { downtime: events.size, scrap: scraps.size + reelScraps });
+    if (notReady) throw new HttpsError("failed-precondition", notReady);
     const comments = req.data?.comments === undefined ? snap.get("comments") || "" : String(req.data.comments || "").replace(/\r\n/g, "\n").trim().slice(0, 2000);
     tx.update(ref, { comments, signed: { by: signer.employeeNumber, byName: signer.name, atMs: Date.now(), device } });
     logSignoff(tx, test, { kind: "shift-report", refId: ref.id, version: 1, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber });
@@ -4367,6 +4449,67 @@ exports.signShiftReport = onCall(signable(async (req) => {
     return { ok: true, name: signer.name };
   });
 }));
+
+// "None this shift" for downtime or scrap: { reportId, kind: "downtime" | "scrap", none: true | false }. Only while the
+// section has no entries (flagged reels count as scrap). Not after the report is signed.
+exports.markShiftNone = onCall(async (req) => {
+  const me = await requireMember(req);
+  requireEnter(me);
+  const test = isTest(req);
+  const kind = req.data?.kind === "downtime" || req.data?.kind === "scrap" ? req.data.kind : null;
+  if (!kind) throw new HttpsError("invalid-argument", "Downtime or scrap?");
+  const ref = col("shiftReports", test).doc(String(req.data?.reportId || "x"));
+  const first = await ref.get();
+  if (!first.exists) throw new HttpsError("failed-precondition", "Save the product size first.");
+  const reelScraps = kind === "scrap" ? (await reelScrapsFor(test, { id: first.id, ...first.data() })).length : 0;
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (snap.get("signed")) throw new HttpsError("failed-precondition", "This shift report is signed — it can't be changed.");
+    if (req.data?.none === true) {
+      const entries = await tx.get(col(kind === "downtime" ? "downtimeEvents" : "scrapEntries", test).where("reportId", "==", ref.id));
+      if (entries.size + reelScraps) throw new HttpsError("failed-precondition", `There's ${kind} on this report already — remove it first, or leave it.`);
+      tx.update(ref, { [`none.${kind}`]: { by: me.employeeNumber, byName: me.name, atMs: Date.now() }, updatedAtMs: Date.now() });
+    } else {
+      tx.update(ref, { [`none.${kind}`]: FieldValue.delete(), updatedAtMs: Date.now() });
+    }
+    auditRecord(tx, req.data?.none === true ? "none" : "undo none", `shift ${kind}`, ref.id, me.employeeNumber, { test });
+  });
+  return { ok: true };
+});
+
+// Verified (the second step, verify.js) once the report is signed: { reportId, signer: { emp, pin }, device }. A
+// Supervisor — or, with no Supervisor on shift, the Production Manager or a Line Lead. Not the person who signed it.
+exports.verifyShiftReport = onCall(signable(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const signer = await requireSignature(req.data);
+  const device = annLib.cleanDevice(req.data?.device);
+  const ref = col("shiftReports", test).doc(String(req.data?.reportId || "x"));
+  const supervisorOnShift = await supervisorOnShiftNow(test);
+  const w = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "That shift report isn't here.");
+    const r = snap.data();
+    if (!r.signed) throw new HttpsError("failed-precondition", "It isn't signed yet.");
+    if (r.verified) throw new HttpsError("failed-precondition", `Already verified by ${r.verified.name}.`);
+    const who = requireVerifier(signer, supervisorOnShift, [r.signed.by]);
+    tx.update(ref, { verified: verifyStamp(signer, who, device) });
+    logSignoff(tx, test, { kind: "shift-report-verify", refId: ref.id, version: 1, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber, role: who.role, backup: who.backup });
+    return who;
+  });
+  return { ok: true, name: signer.name, role: w.roleName, backup: w.backup, test };
+}));
+
+// Who can verify on this device's sheet (line tablets): { reportId } -> who may verify right now, with a login.
+exports.shiftReportVerifiers = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const snap = await col("shiftReports", test).doc(String(req.data?.reportId || "x")).get();
+  if (!snap.exists) throw new HttpsError("not-found", "That shift report isn't here.");
+  const people = (await peopleList()).filter((p) => p.active && p.loginEnabled && p.id !== me.employeeNumber);
+  const list = verifyLib.verifiers(people, { supervisorOnShift: await supervisorOnShiftNow(test), doers: [snap.get("signed")?.by].filter(Boolean) });
+  return { people: list.map((p) => ({ emp: p.id, name: p.name })) };
+});
 
 // Supervisors, Production Manager, Admins: { from, to } ("YYYY-MM-DD", up to 92 days) → the workbook rows for
 // each tab (Changeover Log, Downtime Log, Scrap Log), data columns only — for Export to Excel until SharePoint is

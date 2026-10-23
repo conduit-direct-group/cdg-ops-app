@@ -82,14 +82,22 @@ function watchChecklistUnits() {
   const merge = () => {
     if (parts["units:real"] === undefined || (TEST_MODE && parts["units:test"] === undefined)) return;
     const out = {};
-    for (const u of parts["units:real"] || []) out[u.id] = { ...(u.items || {}) };
+    // checklistPending = { [unitId]: [{ id, items, by, byName, at, test? }] } — sign-offs waiting for Verified.
+    const pending = {};
+    const addPending = (u, test) => {
+      for (const [id, p] of Object.entries(u.pending || {})) (pending[u.id] = pending[u.id] || []).push({ id, ...p, ...(test ? { test: true } : {}) });
+    };
+    // Pending sign-offs are verified where they were made: the test site shows only its practice ones.
+    for (const u of parts["units:real"] || []) { out[u.id] = { ...(u.items || {}) }; if (!TEST_MODE) addPending(u, false); }
     for (const u of parts["units:test"] || []) {
       out[u.id] = { ...(out[u.id] || {}) };
       for (const [k, v] of Object.entries(u.items || {})) {
         if (!out[u.id][k] || (v.at || 0) > (out[u.id][k].at || 0)) out[u.id][k] = { ...v, test: true };
       }
+      addPending(u, true);
     }
     data.checklistUnits = out;
+    data.checklistPending = pending;
     changed();
   };
   const stops = [listen(collection(db, "checklistUnits"), (docs) => { parts["units:real"] = docs || []; merge(); }, "checklists")];
@@ -171,8 +179,12 @@ export function startData(me) {
   if ((me.roles || []).some((r) => ["lead", "supervisor", "plant-manager", "admin"].includes(r))) {
     const open = (name) => query(collection(db, name), where("status", "in", ["draft", "sent"]));
     stopFns.push(watchMerged("handoffsOpen", open("handoffs"), open("test_handoffs"), (a, b) => String(b.date).localeCompare(String(a.date))));
+    // Received ones waiting for Verified (two-step sign-off).
+    const toVerify = (name) => query(collection(db, name), where("needsVerify", "==", true));
+    stopFns.push(watchMerged("handoffsToVerify", toVerify("handoffs"), toVerify("test_handoffs"), (a, b) => String(b.date).localeCompare(String(a.date))));
   } else {
     data.handoffsOpen = [];
+    data.handoffsToVerify = [];
   }
   // Keep the Shop Clean: recent shift lists (leads and managers see all; everyone else, the ones they have a task on).
   const sinceDay = new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10);

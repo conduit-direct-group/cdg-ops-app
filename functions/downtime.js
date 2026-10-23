@@ -169,7 +169,19 @@ const SHEET_HEADERS = {
   scrap: ["Date", "Line #", "Team", "Product Size", "Scrap Feet", "Reason", "Notes"],
 };
 
+// Before signing, downtime and scrap each need entries or a "None this shift" tap (Chris, 10-23-2026), so an empty
+// section means "nothing happened", not "forgot". counts = { downtime, scrap } (scrap includes flagged reels).
+// report.none = { downtime?: {by, byName, atMs}, scrap?: {…} }. Returns the plain message, or null when ready.
+function notReadyToSign(report, counts) {
+  const left = [];
+  if (!counts.downtime && !report.none?.downtime) left.push("downtime");
+  if (!counts.scrap && !report.none?.scrap) left.push("scrap");
+  if (!left.length) return null;
+  return `Add the ${left.join(" and ")}, or tap “None this shift” for ${left.length === 1 ? "it" : "each"} — then sign.`;
+}
+
 module.exports = {
+  notReadyToSign,
   CHANGEOVER_TYPES, DOWNTIME_REASONS, SCRAP_REASONS, SATURDAY_TEAMS, ENTER_ROLES, SIGN_ROLES, REEL_TO_SCRAP, SHEET_HEADERS,
   reportId, productSize, lineNumber, canEnter, canSign, teamFor, cleanProduct, cleanChangeover, cleanDowntime, cleanScrap,
   someoneContacted, maintenanceLog, downtimeNotes, reelScrap, duplicateTag, changeoverList, sheetRows,

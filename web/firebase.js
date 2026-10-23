@@ -137,6 +137,10 @@ export const callMarkShopTaskDone = call("markShopTaskDone");
 export const callCheckShopTasks = call("checkShopTasks");
 export const callShopTaskSigners = call("shopTaskSigners");
 export const callRedoShopTask = call("redoShopTask");
+export const callMarkShiftNone = call("markShiftNone");
+export const callShiftReportVerifiers = call("shiftReportVerifiers");
+export const callHandoffVerifiers = call("handoffVerifiers");
+export const callChecklistVerifiers = call("checklistVerifiers");
 export const callRedoStationList = call("redoStationList");
 export const callStationVerifiers = call("stationVerifiers");
 // Station checklists (Reel Building, Reclamation)

@@ -6,10 +6,11 @@
 
 import { el, friendlyError, spinner, emptyState, banner, toast, picker, choose, collapsible } from "./ui.js";
 import { data } from "./data.js";
-import { TEST_MODE, callShiftReport, callSaveShiftReport, callSaveShiftEntry, callExportShiftReports, callSignoffPeople } from "./firebase.js";
+import { TEST_MODE, callShiftReport, callSaveShiftReport, callSaveShiftEntry, callExportShiftReports, callSignoffPeople, callMarkShiftNone, callShiftReportVerifiers } from "./firebase.js";
 import { signOff, signedNote } from "./signoff.js";
 import { offlineSign } from "./outbox.js";
 import { openReportForm } from "./issues.js";
+import { dueByShiftEnd } from "./shift.js";
 
 export const DOWNTIME_ROLES = ["lead", "supervisor", "plant-manager", "admin"];
 const SIGN_ROLES = ["lead", "supervisor", "plant-manager"];
@@ -26,9 +27,12 @@ const fmtDay = (day) => new Date(`${day}T12:00:00`).toLocaleDateString("en-US", 
 const fmtTime = (ms) => new Date(ms).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 const plainNum = (n) => Number(n).toLocaleString("en-US");
 
-// Gray until the last hour, red in the last hour or after, green once signed (Home color rule).
+// Gray until the last hour, red in the last hour or after, green once signed and verified (two-step sign-off).
+const verifiedText = (v) => `${v.name}${v.roleName ? ` (${v.roleName}${v.backup ? " — no Supervisor on shift" : ""})` : ""}`;
+const lastHour = (r, now = Date.now()) => !!r.endMs && now >= r.endMs - 3600000;
 function signTag(r, now = Date.now()) {
-  if (r.signed) return el("span", { class: "tag ok" }, `✓ Signed by ${r.signed.byName}`);
+  if (r.verified) return el("span", { class: "tag ok" }, `✓ Signed by ${r.signed.byName} · verified by ${verifiedText(r.verified)}`);
+  if (r.signed) return el("span", { class: lastHour(r, now) ? "tag off" : "tag" }, `Signed by ${r.signed.byName} — needs Verified`);
   if (r.endMs && now >= r.endMs - 3600000) return el("span", { class: "tag off" }, `⚠ Not signed — due ${fmtTime(r.endMs)}`);
   return el("span", { class: "tag" }, r.endMs ? `Not signed — due by ${fmtTime(r.endMs)}` : "Not signed");
 }
@@ -66,14 +70,15 @@ export function downtimeItems(roles, myself, onOpen, onRedraw) {
   if (!roles.some((r) => HOME_ROLES.includes(r))) return [];
   const lineId = homeLine(myself);
   const base = { key: "downtime", icon: "⏱", onOpen };
-  if (!lineId) return [{ ...base, title: "Downtime & scrap shift report", detail: "pick your line to start", state: "due" }];
+  if (!lineId) { const due = dueByShiftEnd(); return [{ ...base, title: "Downtime & scrap shift report", detail: `pick your line to start · ${due.detail}`, state: due.state }]; }
   if (home.lineId !== lineId || Date.now() - home.at > HOME_REFRESH_MS || (home.report?.endMs && Date.now() > home.report.endMs)) refreshHome(lineId, onRedraw);
   const r = home.lineId === lineId ? home.report : null;
   const name = lines().find((l) => l.id === lineId)?.name || "";
   if (!r) return [{ ...base, title: `Downtime & scrap — ${name}`, detail: home.error ? "couldn't check — tap to open" : "checking…", state: "due" }];
   const counts = `${home.events} downtime · ${plainNum(home.feet)} ft scrap`;
-  if (r.signed) return [{ ...base, title: `Downtime & scrap — ${name}`, detail: `signed by ${r.signed.byName} · ${counts}`, state: "done" }];
-  const late = r.endMs && Date.now() >= r.endMs - 3600000;
+  const late = lastHour(r);
+  if (r.verified) return [{ ...base, title: `Downtime & scrap — ${name}`, detail: `signed by ${r.signed.byName} · verified by ${r.verified.name} · ${counts}`, state: "done" }];
+  if (r.signed) return [{ ...base, title: `Downtime & scrap — ${name}: needs Verified`, detail: `signed by ${r.signed.byName} · ${late ? "due" : "due by"} ${fmtTime(r.endMs)}`, state: late ? "late" : "due" }];
   return [{ ...base, title: `Downtime & scrap — ${name}: not signed`, detail: `${r.saved ? counts : "not started"} · ${late ? "due" : "due by"} ${fmtTime(r.endMs)}`, state: late ? "late" : "due" }];
 }
 
@@ -162,6 +167,28 @@ export function openDowntime(container, { me, onExit, backLabel = "Home" }) {
       action: offlineSign("signShiftReport", { reportId: r.id, comments: ui.comments ?? r.comments ?? "" }, { label: `Shift report · ${r.lineName} · ${r.shiftName}`, key: `shift-report:${r.id}` }),
     });
     if (out) { toast(signedNote(out, `Signed by ${out.name}${TEST_MODE ? " (test)" : ""}`)); ui.comments = undefined; await load(); }
+  }
+
+  // Verified: someone other than the person who signed it (verify.js on the server).
+  async function verify() {
+    const r = report();
+    const canMe = me.roles.some((x) => ["supervisor", "plant-manager", "lead"].includes(x)) && r.signed?.by !== me.emp;
+    const out = await signOff({
+      title: "Verified", what: `Downtime & scrap · ${r.lineName} · ${fmtDay(r.date)} · ${r.shiftName} · signed by ${r.signed.byName}`,
+      me: canMe ? { emp: me.emp, name: me.name } : null,
+      others: async () => (await callShiftReportVerifiers({ reportId: r.id })).data.people,
+      action: offlineSign("verifyShiftReport", { reportId: r.id }, { label: `Shift report verified · ${r.lineName} · ${r.shiftName}`, key: `shift-report-verify:${r.id}` }),
+    });
+    if (out) { toast(signedNote(out, `Verified by ${out.name}${out.role ? ` (${out.role})` : ""}${TEST_MODE ? " (test)" : ""}`)); await load(); }
+  }
+
+  // "None this shift" for downtime or scrap (or undo it).
+  const markNone = (kind, none) => act(() => callMarkShiftNone({ reportId: report().id, kind, none }), () => markNone(kind, none), none ? `No ${kind} this shift` : "Undone");
+  function noneRow(kind, empty) {
+    const n = report().none?.[kind];
+    if (n) return el("p", { class: "none-row" }, el("span", {}, `✓ None this shift — ${n.byName}`), locked() ? null : el("button", { class: "link-btn", type: "button", disabled: ui.busy, onclick: () => markNone(kind, false) }, "Undo"));
+    if (!empty || locked()) return null;
+    return el("button", { class: "btn secondary", type: "button", disabled: ui.busy || !report().saved, onclick: () => markNone(kind, true) }, kind === "downtime" ? "✓ No downtime this shift" : "✓ No scrap this shift");
   }
 
   // "+ New Maintenance Request" opens the usual form; back here, the newest request on the line is picked.
@@ -316,7 +343,8 @@ export function openDowntime(container, { me, onExit, backLabel = "Home" }) {
           el("button", { class: "link-btn", type: "button", onclick: () => { ui.form = { kind: "downtime", id: e.id, minutes: String(e.minutes), reason: e.reason, called: e.called, calledWho: e.calledWho || "", maintenance: e.maintenance, issueId: e.issueId || null, fix: e.fix }; render(); } }, "Edit"),
           el("button", { class: "link-btn", type: "button", onclick: () => removeEntry("downtime", e) }, "Remove"))))) : null,
       f && !f.id ? downtimeForm(f) : null,
-      !events.length && !f ? el("p", { class: "card-note" }, locked() ? "No downtime this shift." : "None yet — add each stop as it happens.") : null,
+      !events.length && !f && !report().none?.downtime ? el("p", { class: "card-note" }, locked() ? "No downtime this shift." : "None yet — add each stop as it happens, or tap “No downtime this shift.”") : null,
+      f ? null : noneRow("downtime", !events.length),
       locked() || f ? null : el("button", { class: "btn secondary", type: "button", disabled: ui.busy || !report().saved, onclick: () => { ui.form = { kind: "downtime", minutes: "", reason: "", called: null, calledWho: "", maintenance: "", issueId: null, fix: "" }; render(); } }, "+ Add downtime"));
   }
 
@@ -346,15 +374,24 @@ export function openDowntime(container, { me, onExit, backLabel = "Home" }) {
           el("button", { class: "link-btn", type: "button", onclick: () => { ui.form = { kind: "scrap", id: s.id, feet: String(s.feet), reason: s.reason, tag: s.tag || "", notes: s.notes || "" }; render(); } }, "Edit"),
           el("button", { class: "link-btn", type: "button", onclick: () => removeEntry("scrap", s) }, "Remove"))))) : null,
       f && !f.id ? scrapForm(f) : null,
-      !scraps.length && !f ? el("p", { class: "card-note" }, locked() ? "No scrap this shift." : "None yet. Flagged reels decided Scrap or Regrind show up here on their own.") : null,
+      !scraps.length && !f && !report().none?.scrap ? el("p", { class: "card-note" }, locked() ? "No scrap this shift." : "None yet. Flagged reels decided Scrap or Regrind show up here on their own. No scrap? Tap “No scrap this shift.”") : null,
+      f ? null : noneRow("scrap", !scraps.length),
       locked() || f ? null : el("button", { class: "btn secondary", type: "button", disabled: ui.busy || !report().saved, onclick: () => { ui.form = { kind: "scrap", feet: "", reason: "", tag: "", notes: "" }; render(); } }, "+ Add scrap"));
   }
 
   function signCard() {
     const r = report();
-    if (locked()) return el("section", { class: "card" }, el("strong", {}, "Signed"), el("p", {}, signTag(r)), r.comments ? el("p", { class: "dt-note" }, r.comments) : null);
+    if (locked()) {
+      return el("section", { class: "card" }, el("strong", {}, r.verified ? "Signed and verified" : "Signed — needs Verified"), el("p", {}, signTag(r)), r.comments ? el("p", { class: "dt-note" }, r.comments) : null,
+        r.verified ? null : [
+          el("button", { class: "btn big", type: "button", disabled: ui.busy, onclick: verify }, "✍ Verified"),
+          el("p", { class: "hint" }, "A Supervisor verifies — or, with no Supervisor on shift, the Production Manager or a Line Lead. Not the person who signed it.")]);
+    }
+    const missing = [!(ui.view.events || []).length && !r.none?.downtime && "downtime", !(ui.view.scraps || []).length && !r.none?.scrap && "scrap"].filter(Boolean);
     return el("section", { class: "card" },
       el("strong", {}, "✍ Sign at end of shift"),
+      lastHour(r) ? el("p", { class: "message error", role: "alert" }, `⚠ Last hour of the shift — fill it in and sign by ${fmtTime(r.endMs)}.`) : null,
+      missing.length ? el("p", { class: "hint" }, `Before signing: add the ${missing.join(" and ")}, or tap “None this shift.”`) : null,
       label("Additional comments"),
       el("textarea", { class: "field", rows: "3", maxlength: "2000", placeholder: "Anything the next shift or the office should know", oninput: (e) => { ui.comments = e.target.value; } }, ui.comments ?? r.comments ?? ""),
       el("button", { class: "btn big", type: "button", disabled: ui.busy || !r.saved, onclick: sign }, "✍ Sign with PIN"));
@@ -368,7 +405,7 @@ export function openDowntime(container, { me, onExit, backLabel = "Home" }) {
       recent.length ? collapsible("dt-recent", `Earlier shifts on this line (${recent.length})`,
         el("div", { class: "person-list" }, recent.map((p) => el("button", { class: "person-row", type: "button", onclick: () => { ui.reportId = p.id; load(); } },
           el("span", { class: "person-name" }, `${fmtDay(p.date)} · ${p.shiftName}${p.team ? ` · Team ${p.team}` : ""}`),
-          el("span", { class: "tags" }, el("span", { class: p.signed ? "tag ok" : "tag" }, p.signed ? "✓ Signed" : "Not signed")))))) : null,
+          el("span", { class: "tags" }, el("span", { class: p.verified ? "tag ok" : "tag" }, p.verified ? "✓ Signed and verified" : p.signed ? "Signed — needs Verified" : "Not signed")))))) : null,
       canExport ? collapsible("dt-export", "⬇ Export to Excel",
         el("p", { class: "card-note" }, "One sheet per workbook tab (Changeover Log, Downtime Log, Scrap Log), data columns only — paste the rows into the matching tab. Until SharePoint is connected, this is how entries reach your workbook."),
         el("div", { class: "spec-fields" },

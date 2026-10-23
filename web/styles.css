@@ -1499,6 +1499,7 @@ a.btn { text-decoration: none; }
 .dt-tags, .dt-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s3); }
 .dt-note { display: block; color: var(--muted); font-size: var(--text-small); font-weight: normal; overflow-wrap: anywhere; white-space: pre-line; }
 .entry-form { border-top: 1px solid var(--line); margin-top: var(--s3); padding-top: var(--s2); }
+.none-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s3); margin: var(--s2) 0; color: var(--muted); }
 
 /* Departments + reports to: People columns, Admin → Departments, profile, org chart */
 .org-cols { display: flex; flex-wrap: wrap; gap: 0 var(--s3); color: var(--white); font-size: var(--text-small); margin-top: var(--s1); }

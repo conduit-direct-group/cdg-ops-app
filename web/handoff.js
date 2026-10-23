@@ -1,7 +1,9 @@
 // Shift Handoff Notes (Decision 60) — the Line Lead Pass Down, in the app. The fields come from the handoff form
 // (Admin → Forms); each handoff keeps the revision it was started on. What the app already knows (lines down,
 // open maintenance issues, overdue checklists) is shown read-only and captured when it's sent.
-// The outgoing lead signs with PIN; a Line Lead on the incoming team signs received (it's on their Home until then).
+// The outgoing lead signs with PIN; a Line Lead on the incoming team signs received (it's on their Home until then);
+// then someone else signs Verified (two-step sign-off, functions/verify.js: a Supervisor, or with no Supervisor on shift
+// the Production Manager or a Line Lead — not the writer or the receiver).
 // Readers: Line Leads, Supervisors, Production Manager, Admin.
 
 import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, picker, collapsible } from "./ui.js";
@@ -9,7 +11,7 @@ import { dueByShiftEnd } from "./shift.js";
 import { data, onDataChange, lineName } from "./data.js";
 import {
   db, TEST_MODE, callHandoffAutoFill, callStartHandoff, callSaveHandoffDraft, callSendHandoff, callDiscardHandoff,
-  callReceiveHandoff, callHandoffReceivers,
+  callReceiveHandoff, callHandoffReceivers, callHandoffVerifiers,
 } from "./firebase.js";
 import { collection, query, where, onSnapshot } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 import { signOff, signedNote } from "./signoff.js";
@@ -34,6 +36,13 @@ export function toReceive(me) {
   return (data.handoffsOpen || []).filter((h) => h.status === "sent" && h.toTeam === myTeam() && h.createdBy !== me.emp);
 }
 export const myDraft = (me) => (data.handoffsOpen || []).find((h) => h.status === "draft" && h.createdBy === me.emp) || null;
+// Received handoffs waiting for Verified that I could verify (not my own writing or receiving; the server checks the rest).
+const VERIFY_ROLES = ["supervisor", "plant-manager", "lead"];
+export function toVerify(me) {
+  if (!(me.roles || []).some((r) => VERIFY_ROLES.includes(r))) return [];
+  return (data.handoffsToVerify || []).filter((h) => !h.verified && h.createdBy !== me.emp && h.receivedBy?.emp !== me.emp);
+}
+const verifiedText = (v) => `${v.name}${v.roleName ? ` (${v.roleName}${v.backup ? " — no Supervisor on shift" : ""})` : ""}`;
 
 // Home items (Decision 66): a handoff to sign received, and your own unsent one — due by the end of the shift
 // (gray), red in its last hour.
@@ -48,13 +57,20 @@ export function handoffItems(me, onOpen) {
   }
   const draft = myDraft(me);
   if (draft) out.push({ key: "handoff-draft", icon: "📝", title: "Your shift handoff — not sent yet", ...due, onOpen: () => onOpen(draft.id) });
+  const verify = toVerify(me);
+  if (verify.length) {
+    out.push({ key: "handoff-verify", icon: "📝", ...due, onOpen: () => onOpen(verify.length === 1 ? verify[0].id : null),
+      title: verify.length === 1 ? `Shift handoff Team ${teamName(verify[0].team)} → Team ${teamName(verify[0].toTeam)} — needs Verified` : `${verify.length} shift handoffs need Verified` });
+  }
   return out;
 }
 
 
-const STATUS = { draft: ["Not sent yet", "tag warn"], sent: ["Sent — waiting for received", "tag warn"], received: ["✓ Received", "tag ok"], discarded: ["Discarded", "tag"] };
+// Green only once received and verified (two-step sign-off).
+const STATUS = { draft: ["Not sent yet", "tag warn"], sent: ["Sent — waiting for received", "tag warn"], received: ["Received — needs Verified", "tag warn"], verified: ["✓ Received and verified", "tag ok"], discarded: ["Discarded", "tag"] };
+const statusOf = (h) => STATUS[h.status === "received" && h.verified ? "verified" : h.status] || STATUS.draft;
 function handoffRow(h, onclick, lineId = null) {
-  const [label0, cls] = STATUS[h.status] || STATUS.draft;
+  const [label0, cls] = statusOf(h);
   const label = h.status === "sent" ? `Sent — waiting for Team ${teamName(h.toTeam)} to sign received` : label0;
   const lineBits = lineId ? lineSummary(h, lineId) : "";
   return el("button", { class: "person-row", type: "button", onclick },
@@ -120,7 +136,7 @@ export function openHandoff(container, { me, startId = null, onExit }) {
   const say = (message, retry = null) => { Object.assign(ui, { message, messageKind: "error", retry, busy: false }); render(); };
   const show = (view, extra = {}) => { Object.assign(ui, { view, busy: false, message: "", retry: null, ...extra }); render(); window.scrollTo(0, 0); };
   const back = (label, onclick) => el("button", { class: "link-btn no-print", type: "button", onclick, disabled: ui.busy }, `← ${label}`);
-  const find = (id) => (data.handoffsOpen || []).find((h) => h.id === id) || (ui.history || []).find((h) => h.id === id);
+  const find = (id) => (data.handoffsOpen || []).find((h) => h.id === id) || (data.handoffsToVerify || []).find((h) => h.id === id) || (ui.history || []).find((h) => h.id === id);
   const activeTeams = () => (data.teams || []).filter((t) => t.active !== false);
 
   function loadAuto() {
@@ -183,6 +199,7 @@ export function openHandoff(container, { me, startId = null, onExit }) {
       banner(ui),
       loading ? spinner() : null,
       waiting.length ? [el("h2", {}, `To read and sign received (${waiting.length})`), el("div", { class: "person-list" }, waiting.map((h) => handoffRow(h, () => show("open", { id: h.id }))))] : null,
+      !loading && toVerify(me).length ? [el("h2", {}, `Needs Verified (${toVerify(me).length})`), el("div", { class: "person-list" }, toVerify(me).map((h) => handoffRow(h, () => show("open", { id: h.id }))))] : null,
       draft
         ? el("section", { class: "card" }, el("strong", {}, "Your handoff isn't sent yet"), el("div", { class: "person-list" }, handoffRow(draft, () => show("open", { id: draft.id, values: null }))))
         : !loading
@@ -349,7 +366,18 @@ export function openHandoff(container, { me, startId = null, onExit }) {
       });
       if (r) toast(signedNote(r, `Received — signed by ${r.name}${r.test ? " (test)" : ""}`));
     }
-    const [label, cls] = STATUS[h.status] || STATUS.draft;
+    const canVerify = h.status === "received" && !h.verified;
+    async function verify() {
+      const mine = h.createdBy === me.emp || h.receivedBy?.emp === me.emp;
+      const r = await signOff({
+        title: "Verified", what: `Handoff Team ${teamName(h.team)} → Team ${teamName(h.toTeam)} · ${fmtDay(h.date)}`,
+        me: me.roles.some((x) => VERIFY_ROLES.includes(x)) && !mine ? { emp: me.emp, name: me.name } : null,
+        others: async () => (await callHandoffVerifiers({ id: h.id })).data.people,
+        action: offlineSign("verifyHandoff", { id: h.id }, { label: `Handoff verified · Team ${teamName(h.team)} → Team ${teamName(h.toTeam)}`, key: `handoff-verify:${h.id}` }),
+      });
+      if (r) toast(signedNote(r, `Verified by ${r.name}${r.role ? ` (${r.role})` : ""}${r.test ? " (test)" : ""}`));
+    }
+    const [label, cls] = statusOf(h);
     return [
       back("Shift handoff", () => show("home")),
       el("h1", { class: "fix-title" }, `Team ${teamName(h.team)} → Team ${teamName(h.toTeam)}`),
@@ -358,7 +386,10 @@ export function openHandoff(container, { me, startId = null, onExit }) {
       banner(ui),
       el("section", { class: "card sign-card" },
         el("p", {}, h.sentBy ? `✍ Sent by ${h.sentBy.name} · ${fmtWhen(h.sentBy.at)}${h.sentBy.device?.label ? ` · ${h.sentBy.device.label}` : ""}` : "Not sent yet"),
-        el("p", {}, h.receivedBy ? `✍ Received by ${h.receivedBy.name} · ${fmtWhen(h.receivedBy.at)}${h.receivedBy.device?.label ? ` · ${h.receivedBy.device.label}` : ""}` : "")),
+        el("p", {}, h.receivedBy ? `✍ Received by ${h.receivedBy.name} · ${fmtWhen(h.receivedBy.at)}${h.receivedBy.device?.label ? ` · ${h.receivedBy.device.label}` : ""}` : ""),
+        h.verified ? el("p", {}, `✓ Verified by ${verifiedText(h.verified)} · ${fmtWhen(h.verified.at)}`) : null),
+      canVerify ? el("button", { class: "btn big", type: "button", onclick: verify }, "✍ Verified") : null,
+      canVerify ? el("p", { class: "hint" }, "A Supervisor verifies — or, with no Supervisor on shift, the Production Manager or a Line Lead. Not the person who wrote it or received it.") : null,
       h.status === "sent" ? waitingNote(h) : null,
       canReceive ? el("button", { class: "btn big", type: "button", onclick: receive }, "✍ Sign received") : null,
       canReceive ? el("p", { class: "hint" }, `You'll confirm with your PIN${TEST_MODE ? " — test site, practice only" : ""}.`) : null,
