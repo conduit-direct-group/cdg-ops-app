@@ -7,7 +7,7 @@
 //   Supervisors and the Production Manager. More → Who's here today for everyone on the floor.
 
 import { el, breakable, friendlyError, spinner, emptyState, banner, toast, picker, choose, confirmSheet, collapsible } from "./ui.js";
-import { callCrewToday, callCrewMark, callCrewSetup, callCrewSeat, callCrewCell, callAdminCrewStations, callAdminSaveCrewStations } from "./firebase.js";
+import { callCrewMyStation, callCrewToday, callCrewMark, callCrewSetup, callCrewSeat, callCrewCell, callAdminCrewStations, callAdminSaveCrewStations } from "./firebase.js";
 import { clock } from "./shift.js";
 
 const VIEW_ROLES = ["operator", "lead", "supervisor", "plant-manager", "admin"];
@@ -75,6 +75,55 @@ export function crewCard(onOpen, onRedraw) {
   return { ...base, title, num: c.here,
     line: [`here`, c.out && `${c.out} out`, c.unmarked && `${c.unmarked} not marked`].filter(Boolean).join(" · "),
     alert: c.unmarked > 0 && Date.now() >= v.shift.dueMs };
+}
+
+// ---- Home: "Your station today" (Crew Board step 3) — for anyone the lead has seated --------------------------------
+// Checked every 5 minutes (and when a new block starts). Nothing shows when you aren't seated, on a line tablet (shared by
+// the crew), or if it can't be checked — it's information, not a duty, so it has no status color.
+
+const STATION_REFRESH_MS = 5 * 60000;
+const mine = { view: null, at: 0, loading: false, waiting: new Set() };
+
+function refreshMine(onRedraw) {
+  if (onRedraw) mine.waiting.add(onRedraw);
+  if (mine.loading) return;
+  const v = mine.view;
+  const blockMs = v?.seated ? (v.shift.endMs - v.shift.startMs) / v.blocks.length : 0;
+  const newBlock = v?.seated && Math.floor((Date.now() - v.shift.startMs) / blockMs) !== v.current;
+  if (Date.now() - mine.at < STATION_REFRESH_MS && !newBlock && !(v?.shift && Date.now() >= v.shift.endMs)) return;
+  mine.loading = true;
+  callCrewMyStation().then(({ data }) => { mine.view = data; }).catch(() => {})
+    .finally(() => {
+      Object.assign(mine, { at: Date.now(), loading: false });
+      const fns = [...mine.waiting];
+      mine.waiting.clear();
+      fns.forEach((f) => f());
+    });
+}
+
+export function stationPanel({ onOpen, onSop, onRedraw }) {
+  refreshMine(onRedraw);
+  const v = mine.view;
+  if (!v?.seated) return null;
+  const now = v.current >= 0 ? v.blocks[v.current] : null;
+  const showing = now || v.blocks[0];
+  const sops = showing.station?.sops || [];
+  return el("section", { class: "card my-station", "aria-label": "Your station today" },
+    el("div", { class: "my-station-head" },
+      el("h2", { class: "home-h2" }, `🧭 Your station today · ${v.shift.shiftName}`),
+      el("button", { class: "link-btn", type: "button", onclick: onOpen }, "Whole crew →")),
+    el("p", { class: "my-station-now" },
+      v.allShift ? "" : el("span", { class: "person-meta" }, now ? `Now · ${now.label}` : "First"),
+      el("strong", {}, showing.station?.name || "No station this block"),
+      v.allShift ? el("span", { class: "person-meta" }, "all shift") : null),
+    !v.allShift && v.blocks.length > 1
+      ? el("div", { class: "block-row" }, v.blocks.map((b, i) => el("div", { class: i === v.current ? "block now" : "block" },
+          el("span", { class: "block-time" }, b.label),
+          el("span", { class: "block-station" }, b.station?.name || "No station"))))
+      : null,
+    sops.length ? el("div", { class: "sop-chips" }, el("span", { class: "person-meta" }, "SOPs"), sops.map((code) => /^\d+$/.test(code) && onSop
+      ? el("button", { class: "chip small", type: "button", onclick: () => onSop(`cdgsop${code.padStart(4, "0")}`) }, code)
+      : el("span", { class: "tag" }, code))) : null);
 }
 
 // ---- the board ----------------------------------------------------------------------------------------------------

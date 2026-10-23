@@ -1576,3 +1576,11 @@ button.block:active { background: var(--surface-3); }
 .wu-doc .print-table td { white-space: pre-line; }
 .wu-sigs { margin-top: var(--s3); }
 @media (min-width: 760px) { main[data-width="wide"] .wu-status.center { text-align: left; } }
+
+/* Your station today (Crew Board step 3, Home) — information, not a duty: no status color; the block running now has the orange outline */
+.my-station { display: flex; flex-direction: column; gap: var(--s2); margin: 0 0 var(--s3); }
+.my-station-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--s1) var(--s3); }
+.my-station-head .home-h2 { margin: 0; }
+.my-station-now { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s1) var(--s2); margin: 0; }
+.my-station-now strong { font-size: var(--text-section); }
+.block.now { border-color: var(--orange); border-width: var(--border-width); }

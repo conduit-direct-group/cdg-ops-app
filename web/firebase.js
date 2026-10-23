@@ -91,6 +91,7 @@ export const callAdminOrg = call("adminOrg");
 export const callAdminSaveOrg = call("adminSaveOrg");
 export const callAdminSaveDepartments = call("adminSaveDepartments");
 export const callCrewToday = call("crewToday");
+export const callCrewMyStation = call("crewMyStation");
 export const callCrewMark = call("crewMark");
 export const callCrewSetup = call("crewSetup");
 export const callCrewSeat = call("crewSeat");

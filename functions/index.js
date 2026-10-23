@@ -4737,9 +4737,16 @@ exports.crewToday = onCall(async (req) => {
     counts: crewLib.counts(list, marks),
     others: mark ? people.filter((p) => p.active && !onCrew.has(p.id) && (test || !deptLib.isPracticeAccount(p.name)))
       .map((p) => ({ emp: p.id, name: p.name, team: p.team ? teamName(p.team) : "" })).sort((a, b) => a.name.localeCompare(b.name)) : [],
-    ...(s.teamId ? await crewBoardView(test, s, people, list) : { stations: null }),
+    ...(s.teamId ? crewBoardFor(await crewBoardView(test, s, people, list), mark, me.employeeNumber) : { stations: null }),
   };
 });
+
+// Training levels and level notes are for the people who seat the crew; everyone else sees only their own.
+function crewBoardFor(view, mark, emp) {
+  if (mark || !view.stations) return view;
+  const st = view.stations;
+  return { stations: { ...st, levels: st.levels[emp] ? { [emp]: st.levels[emp] } : {}, fits: st.fits[emp] ? { [emp]: st.fits[emp] } : {} } };
+}
 
 // Line Leads, Supervisors, Production Manager, Admins: { emp, status: "here" | "out" | null, reason (Out) } or
 // { all: true } (everyone not marked yet → Here).
@@ -5253,4 +5260,22 @@ exports.writeupRefused = onCall(async (req) => {
     auditRecord(tx, "refused to sign", "write-up", snap.id, me.employeeNumber, test ? { test: true } : {});
   });
   return { ok: true };
+});
+
+// ---------------------------------------------------------------------------
+// Crew Board step 3 — "Your station today" on everyone's Home (Decision 69 part 3). Light on purpose: one record and
+// the station setup, no people list. Anyone signed in; only their own stations.
+// ---------------------------------------------------------------------------
+
+// { noShift } | { shift, seated: false } | { shift, seated: true, seat, allShift, blocks: [{ label, station }], current }
+exports.crewMyStation = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const s = await crewShift(test);
+  if (!s) return { noShift: true, test };
+  const shift = { shiftName: s.now.shift.name || s.now.shift.id, startMs: s.now.startMs, endMs: s.now.endMs };
+  const setup = s.saved?.seats ? await crewSetupNow() : null;
+  const mine = setup ? crewSeatsLib.myStations(setup, s.saved.seats, s.saved.cells || {}, me.employeeNumber) : null;
+  if (!mine) return { test, shift, seated: false };
+  return { test, shift, seated: true, ...mine, current: crewSeatsLib.blockAt(s.now.startMs, s.now.endMs, mine.blocks.length, Date.now()) };
 });

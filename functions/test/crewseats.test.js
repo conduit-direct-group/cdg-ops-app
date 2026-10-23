@@ -59,3 +59,25 @@ test("warnings: call-off order when short, a line seat nobody can fill, and a ru
   const w3 = c.warnings(setup, { here: ["2", "3"], seats, sched: c.schedule(setup, seats), runningLines: ["Line 1"] });
   assert.ok(!w3.some((w) => w.text.startsWith("Spool 2")));
 });
+
+test("step 3: my stations for the shift — all-shift seat, rotation letter, a lead's change, not seated", () => {
+  const { setup } = c.cleanSetup(raw);
+  const seats = { chief: "9001", A: "9002", B: "9003" };
+  assert.deepStrictEqual(c.myStations(setup, seats, {}, "9001"), {
+    seat: "Chief", allShift: true,
+    blocks: [{ label: "First half", station: { id: "chief", name: "Chief", sops: ["0001"] } }, { label: "Second half", station: { id: "chief", name: "Chief", sops: ["0001"] } }],
+  });
+  const a = c.myStations(setup, seats, { 9002: ["", "rover"] }, "9002");
+  assert.strictEqual(a.seat, "Rotation A");
+  assert.deepStrictEqual(a.blocks.map((b) => b.station?.name || null), [null, "Rover"]);
+  assert.strictEqual(c.myStations(setup, seats, {}, "9099"), null);
+});
+
+test("step 3: the block running now splits the shift evenly", () => {
+  const start = 0, end = 12 * 3600000;
+  assert.strictEqual(c.blockAt(start, end, 3, 0), 0);
+  assert.strictEqual(c.blockAt(start, end, 3, 4 * 3600000), 1);
+  assert.strictEqual(c.blockAt(start, end, 3, end - 1), 2);
+  assert.strictEqual(c.blockAt(start, end, 3, end), -1);
+  assert.strictEqual(c.blockAt(start, end, 3, -1), -1);
+});

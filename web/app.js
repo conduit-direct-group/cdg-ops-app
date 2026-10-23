@@ -38,7 +38,7 @@ import { openTrucks, canViewTrucks, canCheckTrucks } from "./trucks.js";
 import { openReels, openReelAdmin } from "./reels.js";
 import { startOutbox } from "./outbox.js";
 import { openDowntime, usesDowntime } from "./downtime.js";
-import { openCrew, openCrewStationsAdmin, usesCrewBoard } from "./crew.js";
+import { openCrew, openCrewStationsAdmin, usesCrewBoard, stationPanel } from "./crew.js";
 import { openDepartmentsAdmin, openProfile } from "./departments.js";
 import { openWhoToCall, openCallAdmin, lineDownReminder } from "./whotocall.js";
 import { openIncidents, openRotationAdmin, openInjuryExport, openHrAccess } from "./incidents.js";
@@ -300,6 +300,10 @@ function renderHome() {
     isLineTablet() ? lineDownReminder(lineTabletLine()) : null,
     m.admin && state.viewAs ? el("p", { class: "view-note" }, `👁 Viewing as ${roleNames.get(state.viewAs) || state.viewAs} — lists show your own account's data.`) : null,
     messageBox(),
+    // Crew Board step 3: where the lead put you this shift (not on a shared line tablet).
+    !isLineTablet() && usesCrewBoard(m.roles)
+      ? stationPanel({ onOpen: () => openCrewScreen(), onSop: (key) => openSop(key, () => go("home")), onRedraw: () => { if (state.step === "home") render(); } })
+      : null,
     el("div", { class: p.cards ? "home-grid" : "home-grid no-side-cards" },
       p.needs,
       el("div", { class: "home-side" }, p.quick, p.cards)),

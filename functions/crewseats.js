@@ -120,4 +120,28 @@ function warnings(setup, { here = [], seats = {}, sched = {}, runningLines = nul
   return out;
 }
 
-module.exports = { normLevel, levelRank, cleanSetup, seatIds, stationOf, schedule, fit, warnings };
+// Which rotation block is running now: the shift split evenly into the blocks. -1 before or after the shift.
+function blockAt(startMs, endMs, blocks, nowMs) {
+  if (!blocks || nowMs < startMs || nowMs >= endMs) return -1;
+  return Math.min(blocks - 1, Math.floor(((nowMs - startMs) / (endMs - startMs)) * blocks));
+}
+
+// Crew Board step 3 — one person's stations for the shift (their Home): { seat, allShift, blocks: [{ label, station }] }
+// or null when they aren't seated. station: { id, name, sops } or null (no station that block).
+function myStations(setup, seats = {}, cells = {}, emp) {
+  const row = schedule(setup, seats, cells)[emp];
+  if (!row) return null;
+  const seat = Object.entries(seats).find(([, e]) => e === emp)?.[0] || "";
+  const allShift = setup.allShift.includes(seat);
+  const n = Math.max(1, setup.rotation.blocks.length);
+  const labels = setup.rotation.blocks.length ? setup.rotation.blocks : ["All shift"];
+  return {
+    seat: allShift ? stationOf(setup, seat)?.name || seat : `Rotation ${seat}`, allShift,
+    blocks: Array.from({ length: n }, (_, i) => {
+      const st = stationOf(setup, row[i]);
+      return { label: labels[i], station: st ? { id: st.id, name: st.name, sops: st.sops } : null };
+    }),
+  };
+}
+
+module.exports = { normLevel, levelRank, cleanSetup, seatIds, stationOf, schedule, fit, warnings, blockAt, myStations };
