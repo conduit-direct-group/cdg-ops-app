@@ -17,10 +17,10 @@ export const canViewMachines = (roles) => roles.some((r) => VIEW_ROLES.includes(
 
 // Sections and their fields: [key, label, wide?]. The first field is the row's title.
 const SECTIONS = [
-  { key: "parts", icon: "🔩", title: "Parts", noun: "part", fields: [["name", "Part name"], ["partNumber", "Part number"], ["vendor", "Vendor"], ["vendorPartNumber", "Vendor part #"], ["qty", "Quantity used"], ["notes", "Notes", true]] },
-  { key: "fasteners", icon: "🪛", title: "Fasteners", noun: "fastener", fields: [["location", "Location"], ["size", "Size"], ["type", "Type"], ["torque", "Torque (if known)"]] },
+  { key: "parts", icon: "🔩", title: "Parts", noun: "part", fields: [["name", "Part name"], ["partNumber", "Part number"], ["qty", "Quantity used"], ["notes", "Notes", true]] },
+  { key: "fasteners", icon: "🪛", title: "Fasteners", noun: "fastener", fields: [["location", "Location"], ["size", "Size"], ["type", "Type"], ["torque", "Torque (if known)"], ["partNumber", "Part number"]] },
   { key: "belts", icon: "⚙", title: "Belts & bearings", noun: "belt or bearing", fields: [["location", "Location"], ["partNumber", "Part number"], ["size", "Size"]] },
-  { key: "fluids", icon: "🛢", title: "Fluids & lubrication", noun: "fluid", fields: [["what", "What"], ["where", "Where"], ["howOften", "How often"]] },
+  { key: "fluids", icon: "🛢", title: "Fluids & lubrication", noun: "fluid", fields: [["what", "What"], ["where", "Where"], ["howOften", "How often"], ["partNumber", "Part number"]] },
 ];
 const INFO = [["make", "Make"], ["model", "Model"], ["serial", "Serial number"], ["vendor", "Vendor"], ["installDate", "Install date"], ["notes", "Notes"]];
 const FILE_LABELS = ["Manual", "Wiring diagram", "Nameplate", "Photo", "Parts list", "Other"];
@@ -153,41 +153,169 @@ export function openMachines(container, { me, startMachine = null, onExit, backL
     return ok;
   }
 
-  // View: one card per row — the first field as the title, the rest as "Label: value".
-  function rowView(sec, r) {
-    const [first, ...rest] = sec.fields;
-    const bits = rest.map(([k, label]) => (r[k] !== "" && r[k] != null ? `${label}: ${r[k]}` : null)).filter(Boolean);
-    return el("div", { class: "spec-row" }, el("strong", {}, breakable(r[first[0]] || "—")), bits.length ? el("span", { class: "person-meta" }, bits.join(" · ")) : null);
-  }
-
-  // Edit: every row as a small form; Save sends the whole section (the server keeps each row's id).
-  function sectionEdit(m, sec) {
-    const rows = ui.edit.rows;
-    const field = (r, [k, label, wide]) => el("label", { class: wide ? "spec-field wide" : "spec-field" },
-      el("span", { class: "field-label" }, label),
-      el("input", { class: "field", value: r[k] ?? "", inputmode: k === "qty" ? "decimal" : null, maxlength: k === "notes" ? "400" : "120", oninput: (e) => { r[k] = e.target.value; } }));
-    return [
-      rows.length ? null : el("p", { class: "card-note" }, `No ${sec.noun}s yet. Tap “+ Add” below.`),
-      rows.map((r, i) => el("div", { class: "spec-edit" },
-        el("div", { class: "spec-fields" }, sec.fields.map((f) => field(r, f))),
-        el("button", { class: "link-btn danger-link", type: "button", onclick: () => { rows.splice(i, 1); render(); } }, `✕ Remove this ${sec.noun}`))),
-      el("button", { class: "btn secondary", type: "button", onclick: () => { rows.push({ id: newRowId() }); render(); container.querySelectorAll(".spec-edit .field")[sec.fields.length * (rows.length - 1)]?.focus(); } }, `+ Add ${sec.noun}`),
-      el("div", { class: "btn-row" },
-        el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: () => saveSection(m, sec.key, rows) }, ui.busy ? "Saving…" : "Save"),
-        el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => { ui.edit = null; render(); } }, "Cancel")),
-      el("p", { class: "card-note" }, "Removed rows can be put back for 30 days (History, below)."),
-    ];
-  }
+  // ---- Parts, fasteners, belts & bearings, fluids (Decision 100): one tidy line per item — a table on a computer —
+  // with its photo, part #, main vendor and cost. Tap an item for its details; add, change, or remove one item at a time
+  // in a pop-up (the whole section is still saved together, so history and Removed work as before).
+  const lists = {};
+  const money = (n) => (n == null || n === "" ? "" : Number(n).toLocaleString("en-US", { style: "currency", currency: "USD" }));
+  const mainSource = (r) => r.sources?.[0] || (r.vendor || r.vendorPartNumber ? { vendor: r.vendor || "", vendorPartNumber: r.vendorPartNumber || "", cost: null } : null);
+  const partNo = (r) => r.partNumber || mainSource(r)?.vendorPartNumber || "";
+  const plantToday = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago" }).format(new Date());
+  const hay = (sec, r) => normPart([...sec.fields.map(([k]) => r[k]), ...(r.sources || []).flatMap((s) => [s.vendor, s.vendorPartNumber])].join(" "));
+  const SORTS = {
+    name: (sec) => (r) => String(r[sec.fields[0][0]] || "").toLowerCase(),
+    part: () => (r) => partNo(r).toLowerCase(),
+    vendor: () => (r) => String(mainSource(r)?.vendor || "").toLowerCase(),
+    cost: () => (r) => (mainSource(r)?.cost ?? Infinity),
+  };
 
   function sectionFold(m, s, sec) {
     const rows = s?.[sec.key] || [];
-    const editing = ui.edit?.section === sec.key;
-    const startEdit = () => { Object.assign(ui, { edit: { section: sec.key, rows: copy(rows) }, info: null }); render(); };
+    const st = lists[sec.key] || (lists[sec.key] = { sort: null, dir: 1 });
+    const key = st.sort ? SORTS[st.sort](sec) : null;
+    const shown = key ? [...rows].sort((a, b) => (key(a) < key(b) ? -st.dir : key(a) > key(b) ? st.dir : 0)) : rows;
+    const sortBy = (k) => { Object.assign(st, st.sort === k ? { dir: -st.dir } : { sort: k, dir: 1 }); render(); };
+    const th = (k, text, cls = "") => el("th", { class: cls, scope: "col", "aria-sort": st.sort === k ? (st.dir > 0 ? "ascending" : "descending") : "none" },
+      el("button", { class: "spec-sort", type: "button", onclick: () => sortBy(k) }, text, st.sort === k ? (st.dir > 0 ? " ▲" : " ▼") : ""));
+    const body = el("tbody", {}, shown.map((r) => {
+      const src = mainSource(r);
+      const extra = sec.fields.slice(1).filter(([k]) => k !== "partNumber" && r[k] !== "" && r[k] != null).map(([k, label]) => `${label}: ${r[k]}`).join(" · ");
+      const open = () => openItem(m, sec, r);
+      return el("tr", { class: "spec-tr", tabindex: "0", "data-hay": hay(sec, r), onclick: open, onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } } },
+        el("td", { class: "col-photo" }, r.photos?.[0] ? el("img", { src: r.photos[0].url, alt: "", loading: "lazy" }) : el("span", { class: "spec-nophoto", "aria-hidden": "true" }, sec.icon)),
+        el("td", { class: "col-name" }, el("strong", {}, breakable(r[sec.fields[0][0]] || "—")),
+          extra ? el("span", { class: "person-meta wide-only" }, breakable(extra)) : null,
+          el("span", { class: "person-meta narrow-only" }, [partNo(r) && `#${partNo(r)}`, src?.vendor].filter(Boolean).join(" · ") || "No part # yet")),
+        el("td", { class: "col-part" }, partNo(r) || "—"),
+        el("td", { class: "col-vendor" }, src?.vendor || "—", r.sources?.length > 1 ? el("span", { class: "person-meta" }, ` +${r.sources.length - 1} backup${r.sources.length > 2 ? "s" : ""}`) : null),
+        el("td", { class: "col-cost" }, money(src?.cost) || "—"));
+    }));
+    const search = rows.length >= 8
+      ? el("input", { class: "field spec-search", type: "search", placeholder: "Search name, part #, vendor", "aria-label": `Search ${sec.title.toLowerCase()}`,
+          oninput: (e) => { const q = normPart(e.target.value); body.querySelectorAll("tr").forEach((tr) => { tr.hidden = !!q && !tr.dataset.hay.includes(q); }); } })
+      : null;
     return collapsible(`mach-${sec.key}`, `${sec.icon} ${sec.title} · ${rows.length}`,
-      editing ? sectionEdit(m, sec) : [
-        rows.length ? el("div", { class: "spec-list" }, rows.map((r) => rowView(sec, r))) : el("p", { class: "card-note" }, `No ${sec.noun}s listed yet.`),
-        editor() ? el("button", { class: "btn secondary", type: "button", disabled: !!ui.edit || !!ui.info, onclick: startEdit }, rows.length ? `✎ Edit ${sec.title.toLowerCase()}` : `+ Add ${sec.noun}s`) : null,
-      ]);
+      search,
+      rows.length
+        ? el("table", { class: "spec-table" },
+            el("thead", {}, el("tr", {}, el("th", { class: "col-photo", scope: "col" }, el("span", { class: "visually-hidden" }, "Photo")), th("name", sec.fields[0][1], "col-name"), th("part", "Part #", "col-part"), th("vendor", "Main vendor", "col-vendor"), th("cost", "Cost each", "col-cost"))),
+            body)
+        : el("p", { class: "card-note" }, `No ${sec.noun}s listed yet.`),
+      rows.length ? el("p", { class: "card-note" }, "Tap an item for photos, every vendor, and costs.") : null,
+      editor() ? el("button", { class: "btn secondary", type: "button", disabled: !!ui.edit || !!ui.info || ui.busy, onclick: () => openItem(m, sec, null) }, `+ Add ${sec.noun}`) : null);
+  }
+
+  // One item in a pop-up: details (photos, every vendor with cost and link), or the form to add / change it.
+  function openItem(m, sec, row) {
+    const it = { row: row ? copy(row) : { id: newRowId(), sources: [{ vendor: "", vendorPartNumber: "", cost: "", costDate: "", link: "" }], photos: [] }, editing: !row, busy: false, message: "", upload: "" };
+    if (!it.row.sources?.length) it.row.sources = mainSource(it.row) ? [{ ...mainSource(it.row) }] : [{ vendor: "", vendorPartNumber: "", cost: "", costDate: "", link: "" }];
+    it.row.photos = it.row.photos || [];
+    const close = () => { if (it.busy) return; document.removeEventListener("keydown", onKey); backdrop.remove(); };
+    const onKey = (e) => { if (e.key === "Escape") close(); };
+    const sheet = el("div", { class: "sheet item-sheet", role: "dialog", "aria-modal": "true", "aria-label": sec.title });
+    const backdrop = el("div", { class: "sheet-backdrop", onclick: (e) => { if (e.target === backdrop) close(); } }, sheet);
+    const title = () => it.row[sec.fields[0][0]] || `New ${sec.noun}`;
+
+    async function save(rows, done) {
+      if (!navigator.onLine) { it.message = friendlyError({ code: "offline" }); return draw(); }
+      Object.assign(it, { busy: true, message: "" });
+      draw();
+      try {
+        await callSaveMachineSpecs({ machineId: m.id, section: sec.key, rev: spec(m.id)?.rev || 0, items: rows });
+        it.busy = false;
+        toast(done);
+        close();
+        render();
+      } catch (err) { Object.assign(it, { busy: false, message: friendlyError(err) }); draw(); }
+    }
+    const current = () => spec(m.id)?.[sec.key] || [];
+    function saveThis() {
+      if (!String(it.row[sec.fields[0][0]] || "").trim()) { it.message = `Fill in “${sec.fields[0][1]}”.`; return draw(); }
+      const rows = current().some((r) => r.id === it.row.id) ? current().map((r) => (r.id === it.row.id ? it.row : r)) : [...current(), it.row];
+      save(rows, row ? "Saved" : `${sec.noun[0].toUpperCase()}${sec.noun.slice(1)} added`);
+    }
+    async function remove() {
+      if (!(await confirmSheet({ title: `Remove “${title()}”?`, text: "It goes to Removed for 30 days (History, at the bottom of the machine page), where it can be put back.", confirmLabel: "Remove", danger: true }))) return;
+      save(current().filter((r) => r.id !== it.row.id), "Removed");
+    }
+    async function addPhoto(file) {
+      if (!file.type.startsWith("image/")) { it.message = "A photo only (JPG or PNG)."; return draw(); }
+      if (file.size > 20 * 1024 * 1024) { it.message = "That photo is over 20 MB."; return draw(); }
+      if (!navigator.onLine) { it.message = friendlyError({ code: "offline" }); return draw(); }
+      Object.assign(it, { busy: true, message: "" });
+      try {
+        const url = await upload(file, me.emp, (p) => { it.upload = `Uploading photo: ${p}%`; draw(); });
+        it.row.photos.push({ url, name: file.name.slice(0, 120) });
+      } catch (err) { it.message = friendlyError(err); }
+      Object.assign(it, { busy: false, upload: "" });
+      draw();
+    }
+
+    function details() {
+      const r = it.row;
+      const facts = sec.fields.slice(1).filter(([k]) => r[k] !== "" && r[k] != null);
+      return [
+        el("h2", {}, `${sec.icon} ${title()}`),
+        r.photos.length ? el("div", { class: "item-photos" }, r.photos.map((p) => el("a", { href: p.url, target: "_blank", rel: "noopener" }, el("img", { src: p.url, alt: p.name, loading: "lazy" })))) : null,
+        facts.length ? el("dl", { class: "item-facts" }, facts.flatMap(([k, label]) => [el("dt", {}, label), el("dd", {}, breakable(String(r[k])))])) : null,
+        el("h3", { class: "home-h2" }, "Where to get it"),
+        r.sources.some((s) => s.vendor || s.vendorPartNumber || s.cost != null && s.cost !== "")
+          ? el("div", { class: "item-sources" }, r.sources.map((s, i) => el("div", { class: "item-source" },
+              el("span", { class: i ? "tag" : "tag main" }, i ? `Backup ${i}` : "Main"),
+              el("strong", {}, s.vendor || "Vendor not named"),
+              s.vendorPartNumber ? el("span", {}, `Their part #: ${s.vendorPartNumber}`) : null,
+              s.cost != null && s.cost !== "" ? el("span", {}, `${money(s.cost)} each${s.costDate ? ` · as of ${fmtDay(s.costDate)}` : ""}`) : el("span", { class: "person-meta" }, "Cost not known"),
+              s.link ? el("a", { href: s.link, target: "_blank", rel: "noopener noreferrer" }, "Open the product page ↗") : null)))
+          : el("p", { class: "card-note" }, "No vendor yet."),
+        it.message ? el("p", { class: "message error" }, it.message) : null,
+        el("div", { class: "btn-row" },
+          editor() ? el("button", { class: "btn", type: "button", onclick: () => { it.editing = true; draw(); } }, "✎ Edit") : null,
+          editor() ? el("button", { class: "btn secondary", type: "button", disabled: it.busy, onclick: remove }, "✕ Remove") : null,
+          el("button", { class: "btn secondary", type: "button", onclick: close }, "Close")),
+      ];
+    }
+
+    function form() {
+      const r = it.row;
+      const input = (obj, k, label, opts = {}) => el("label", { class: opts.wide ? "spec-field wide" : "spec-field" },
+        el("span", { class: "field-label" }, label),
+        el("input", { class: "field", value: obj[k] ?? "", inputmode: opts.mode || null, maxlength: opts.max || "120", placeholder: opts.placeholder || null, oninput: (e) => { obj[k] = e.target.value; if (opts.onInput) opts.onInput(e); } }));
+      const photoInput = el("input", { type: "file", accept: "image/*", hidden: true, onchange: (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) addPhoto(f); } });
+      return [
+        el("h2", {}, row ? `✎ ${title()}` : `+ New ${sec.noun}`),
+        el("div", { class: "spec-fields" }, sec.fields.map(([k, label, wide]) => input(r, k, label, { wide, max: k === "notes" ? "400" : "120", mode: k === "qty" ? "decimal" : null }))),
+        el("h3", { class: "home-h2" }, "Where to get it"),
+        el("div", { class: "item-sources" }, r.sources.map((s, i) => el("div", { class: "item-source edit" },
+          el("div", { class: "item-source-head" },
+            el("span", { class: i ? "tag" : "tag main" }, i ? `Backup ${i}` : "Main vendor"),
+            i ? el("button", { class: "link-btn", type: "button", onclick: () => { r.sources.splice(i, 1); r.sources.unshift(s); draw(); } }, "Make main") : null,
+            r.sources.length > 1 ? el("button", { class: "link-btn danger-link", type: "button", onclick: () => { r.sources.splice(i, 1); draw(); } }, "✕ Remove vendor") : null),
+          el("div", { class: "spec-fields" },
+            input(s, "vendor", "Vendor", { max: "80", placeholder: "e.g. Grainger" }),
+            input(s, "vendorPartNumber", "Their part #", { max: "60" }),
+            input(s, "cost", "Cost each ($)", { mode: "decimal", max: "12", placeholder: "0.00", onInput: () => { s.costDate = plantToday(); } }),
+            input(s, "link", "Product page link (optional)", { wide: true, max: "300", placeholder: "https://…", mode: "url" }))))),
+        r.sources.length < 5 ? el("button", { class: "btn secondary", type: "button", onclick: () => { r.sources.push({ vendor: "", vendorPartNumber: "", cost: "", costDate: "", link: "" }); draw(); } }, "+ Add a backup vendor") : null,
+        el("h3", { class: "home-h2" }, `Photos (${r.photos.length} of 6)`),
+        r.photos.length ? el("div", { class: "item-photos" }, r.photos.map((p, i) => el("div", { class: "item-photo-edit" },
+          el("img", { src: p.url, alt: p.name }),
+          el("button", { class: "link-btn danger-link", type: "button", onclick: () => { r.photos.splice(i, 1); draw(); } }, "✕ Remove")))) : null,
+        it.upload ? el("p", { class: "card-note", role: "status" }, it.upload) : null,
+        r.photos.length < 6 ? [photoInput, el("button", { class: "btn secondary", type: "button", disabled: it.busy, onclick: () => photoInput.click() }, "📷 Add a photo")] : null,
+        it.message ? el("p", { class: "message error" }, it.message) : null,
+        el("div", { class: "btn-row" },
+          el("button", { class: "btn", type: "button", disabled: it.busy, onclick: saveThis }, it.busy && !it.upload ? "Saving…" : "Save"),
+          el("button", { class: "btn secondary", type: "button", disabled: it.busy, onclick: () => (row ? (Object.assign(it, { row: copy(row), editing: false, message: "" }), draw()) : close()) }, "Cancel")),
+      ];
+    }
+
+    function draw() { sheet.replaceChildren(...(it.editing ? form() : details()).flat(3).filter(Boolean)); }
+    if (!it.row.sources.length) it.row.sources.push({ vendor: "", vendorPartNumber: "", cost: "", costDate: "", link: "" });
+    if (row && !row.sources?.length) it.row.sources = mainSource(row) ? [{ cost: null, costDate: "", link: "", ...mainSource(row) }] : it.row.sources;
+    document.addEventListener("keydown", onKey);
+    document.body.append(backdrop);
+    draw();
+    sheet.querySelector(it.editing ? "input.field" : "button")?.focus();
   }
 
   function infoFold(m, s) {

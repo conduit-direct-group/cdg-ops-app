@@ -48,3 +48,34 @@ test("part numbers for search are normalized; diff finds added, removed, changed
   assert.notStrictEqual(copy[0].id, "a");
   assert.strictEqual(copy[0].name, "x");
 });
+
+test("buying details: main + backup vendors with cost, photos in our storage, on every part section", () => {
+  const ours = (u) => u.startsWith("https://ours/");
+  const { items } = m.cleanSection("belts", [{ location: "Puller", partNumber: "B-42", sources: [
+    { vendor: "Main Supply", vendorPartNumber: "MS-42", cost: "$1,234.567", costDate: "2026-10-23", link: "https://example.com/b42" },
+    { vendor: "Backup Co", cost: "" },
+    { vendor: "", vendorPartNumber: "", cost: "" }, // empty source dropped
+  ], photos: [{ url: "https://ours/p.jpg", name: "Belt" }] }], ours);
+  assert.deepStrictEqual(items[0].sources, [
+    { vendor: "Main Supply", vendorPartNumber: "MS-42", cost: 1234.57, costDate: "2026-10-23", link: "https://example.com/b42" },
+    { vendor: "Backup Co", vendorPartNumber: "", cost: null, costDate: "", link: "" },
+  ]);
+  assert.deepStrictEqual(items[0].photos, [{ url: "https://ours/p.jpg", name: "Belt" }]);
+  assert.match(m.cleanSection("fluids", [{ what: "Oil", sources: [{ vendor: "x", cost: "cheap" }] }]).error, /Oil: the cost/);
+  assert.match(m.cleanSection("parts", [{ name: "Gear", photos: [{ url: "https://evil/x.jpg" }] }], ours).error, /photo/);
+  assert.match(m.cleanSection("parts", [{ name: "Gear", sources: [{ vendor: "x", link: "javascript:alert(1)" }] }]).error, /link/);
+  assert.match(m.cleanSection("parts", [{ name: "Gear", sources: Array(6).fill({ vendor: "x" }) }]).error, /up to 5/);
+  assert.strictEqual(m.cleanSection("fasteners", [{ location: "Die bolt", partNumber: "FB-1" }]).items[0].partNumber, "FB-1");
+});
+
+test("buying details: an older screen's vendor becomes the main source, and the main source is mirrored back", () => {
+  const { items } = m.cleanSection("parts", [{ name: "Bearing", vendor: "SKF", vendorPartNumber: "6205" }]);
+  assert.deepStrictEqual(items[0].sources, [{ vendor: "SKF", vendorPartNumber: "6205", cost: null, costDate: "", link: "" }]);
+  const two = m.cleanSection("parts", [{ name: "Bearing", vendor: "old", sources: [{ vendor: "New Main", vendorPartNumber: "N1" }] }]).items[0];
+  assert.deepStrictEqual([two.vendor, two.vendorPartNumber], ["New Main", "N1"]);
+});
+
+test("part number search covers every part section and backup vendors' part numbers", () => {
+  const spec = { fasteners: [{ partNumber: "FB-1" }], fluids: [{ partNumber: "OIL 68", sources: [{ vendorPartNumber: "X-9" }, { vendorPartNumber: "Y 7" }] }] };
+  assert.deepStrictEqual(m.partNumbersOf(spec), ["fb1", "oil68", "x9", "y7"]);
+});
