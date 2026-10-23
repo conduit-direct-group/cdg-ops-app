@@ -145,3 +145,20 @@ test("open issues board: Maintenance, Production Manager, Admin only", async () 
   for (const emp of [9005, 9003, 9004]) await assertSucceeds(getDoc(doc(db(emp), "issues", "i1")));
   for (const emp of [9001, 9002, 9006, 9007]) await assertFails(getDoc(doc(db(emp), "issues", "i1")));
 });
+
+// ---- announcement tasks ---------------------------------------------------------------------------------------------
+
+test("announcement tasks: the person sees their own; supervisors, Production Manager, Admins see all; nobody writes", async () => {
+  await env.withSecurityRulesDisabled(async (ctx) => {
+    await setDoc(doc(ctx.firestore(), "annTasks", "t1"), { emp: "9001", status: "open", annTitle: "Wipe the panels" });
+    await setDoc(doc(ctx.firestore(), "annTasks", "t2"), { emp: "9005", status: "open", annTitle: "Other" });
+  });
+  await assertSucceeds(getDoc(doc(db(9001), "annTasks", "t1")));
+  await assertFails(getDoc(doc(db(9001), "annTasks", "t2")));
+  await assertSucceeds(getDocs(query(collection(db(9001), "annTasks"), where("emp", "==", "9001"))));
+  await assertFails(getDocs(collection(db(9001), "annTasks")));
+  await assertSucceeds(getDocs(collection(db(9006), "annTasks")));
+  await assertSucceeds(getDoc(doc(db(9003), "annTasks", "t2")));
+  await assertFails(getDoc(doc(db(9002), "annTasks", "t2")));
+  await assertFails(setDoc(doc(db(9006), "annTasks", "t3"), { emp: "9001", status: "verified" }));
+});

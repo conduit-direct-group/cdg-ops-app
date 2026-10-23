@@ -44,6 +44,7 @@ const { AsyncLocalStorage } = require("node:async_hooks");
 const deptLib = require("./departments");
 const crewLib = require("./crew");
 const verifyLib = require("./verify");
+const annTasksLib = require("./anntasks");
 const crypto = require("node:crypto");
 const { getMessaging } = require("firebase-admin/messaging");
 const { defineSecret } = require("firebase-functions/params");
@@ -4785,4 +4786,132 @@ exports.crewSetup = onCall(async (req) => {
     auditRecord(tx, "updated", "attendance", s.ref.id, me.employeeNumber, { teamId, add, remove, test });
     return { ok: true };
   });
+});
+
+// ---------------------------------------------------------------------------
+// Announcement tasks (Chris, 10-23-2026). Rules in anntasks.js. A Line Lead or Supervisor in an announcement's
+// audience assigns it as a task to people on their team; each signs Done, then a Line Lead / Supervisor on that team
+// (or the Production Manager) signs it off. Read live by the assignee and by leads, supervisors, Production Manager,
+// Admins (database rules); written only here. Test site: test_annTasks.
+// ---------------------------------------------------------------------------
+
+const annTaskCol = (test) => col("annTasks", test);
+
+async function openAnnTask(tx, test, id) {
+  const ref = annTaskCol(test).doc(String(id || "x"));
+  const snap = await tx.get(ref);
+  if (!snap.exists || snap.get("status") === "removed") throw new HttpsError("not-found", "That task no longer exists.");
+  return { ref, task: snap.data() };
+}
+
+// The people I can assign this announcement to: { annId } → { people: [{ emp, name, team }] }.
+exports.annTaskPeople = onCall(async (req) => {
+  const me = await requireMember(req);
+  if (!annTasksLib.canAssign(me.roles)) throw new HttpsError("permission-denied", "Line Leads and Supervisors assign announcement tasks.");
+  const people = await peopleList();
+  const myself = people.find((p) => p.id === me.employeeNumber) || { id: me.employeeNumber, roles: me.roles };
+  const teamName = new Map((await teams.get()).docs.map((d) => [d.id, d.get("name") || d.id]));
+  return { people: annTasksLib.crewFor(myself, people).map((p) => ({ emp: p.id, name: p.name, team: p.team ? teamName.get(p.team) || p.team : "", loginEnabled: p.loginEnabled })) };
+});
+
+// Assign: { annId, emps: [employee #], dueDate: "YYYY-MM-DD", note? }. Someone with an open task on it already is skipped.
+exports.assignAnnouncementTask = onCall(async (req) => {
+  const me = await requireMember(req);
+  if (!annTasksLib.canAssign(me.roles)) throw new HttpsError("permission-denied", "Line Leads and Supervisors assign announcement tasks.");
+  const test = isTest(req);
+  const { snap } = await findAnnouncement(test, String(req.data?.annId || ""));
+  const a = snap.data();
+  if (!(a.audienceEmps || []).includes(me.employeeNumber)) throw new HttpsError("permission-denied", "This announcement wasn't sent to you.");
+  if (annLib.isEnded(a, plantToday())) throw new HttpsError("failed-precondition", "This announcement has ended.");
+  const people = await peopleList();
+  const myself = people.find((p) => p.id === me.employeeNumber) || { id: me.employeeNumber, roles: me.roles };
+  const crew = annTasksLib.crewFor(myself, people);
+  const { task, error } = annTasksLib.cleanAssign(req.data, { today: plantToday(), crewIds: crew.map((p) => p.id) });
+  if (error) throw new HttpsError("invalid-argument", error);
+  const existing = await annTaskCol(test).where("annId", "==", snap.id).get();
+  const busy = new Set(existing.docs.filter((d) => ["open", "done"].includes(d.get("status"))).map((d) => d.get("emp")));
+  const byId = new Map(people.map((p) => [p.id, p]));
+  const fresh = task.emps.filter((e) => !busy.has(e));
+  const batch = db.batch();
+  for (const emp of fresh) {
+    const p = byId.get(emp);
+    batch.create(annTaskCol(test).doc(), {
+      annId: snap.id, annVersion: a.version || 1, annTitle: a.title, priority: a.priority, emp, name: p.name, team: p.team || null,
+      dueDate: task.dueDate, note: task.note, assignedBy: me.employeeNumber, assignedByName: me.name, status: "open", done: null, verified: null,
+      createdAt: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}),
+    });
+  }
+  if (fresh.length) {
+    batch.create(auditLog.doc(), { type: "assigned", kind: "announcement task", recordId: snap.id, by: me.employeeNumber, at: FieldValue.serverTimestamp(), emps: fresh, dueDate: task.dueDate, test });
+    await batch.commit();
+    await pushTo(test ? [me.employeeNumber] : fresh, {
+      title: `${test ? "[TEST] " : ""}📋 Task from ${me.name}`, body: `${a.title} — due ${task.dueDate}. Sign it done in the app.`, url: `/?ann=${snap.id}`,
+    });
+  }
+  return { assigned: fresh.length, skipped: task.emps.length - fresh.length, test };
+});
+
+// Done, by the person it's assigned to: { id, signer: { emp, pin }, device }.
+exports.markAnnTaskDone = onCall(signable(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const signer = await requireSignature(req.data);
+  const device = annLib.cleanDevice(req.data?.device);
+  const out = await db.runTransaction(async (tx) => {
+    const { ref, task } = await openAnnTask(tx, test, req.data?.id);
+    if (task.emp !== signer.employeeNumber) throw new HttpsError("permission-denied", `This task is ${task.name}'s — ${signer.name} can't sign it done.`);
+    if (task.status !== "open") return task.annTitle;
+    tx.update(ref, { status: "done", done: { emp: signer.employeeNumber, name: signer.name, at: new Date(), device } });
+    logSignoff(tx, test, { kind: "announcement-task", refId: ref.id, version: task.annVersion, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber });
+    return task.annTitle;
+  });
+  return { ok: true, name: signer.name, title: out, test };
+}));
+
+// The second sign-off, once it's done: { id, signer: { emp, pin }, device }. A Line Lead or Supervisor on that team (or
+// whoever assigned it), or the Production Manager — never the person who did it.
+exports.signAnnTask = onCall(signable(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const signer = await requireSignature(req.data);
+  const device = annLib.cleanDevice(req.data?.device);
+  const w = await db.runTransaction(async (tx) => {
+    const { ref, task } = await openAnnTask(tx, test, req.data?.id);
+    if (task.status === "open") throw new HttpsError("failed-precondition", `${task.name} hasn't signed it done yet.`);
+    if (task.status === "verified") throw new HttpsError("failed-precondition", `Already signed off by ${task.verified?.name}.`);
+    const who = annTasksLib.secondSigner({ id: signer.employeeNumber, roles: signer.roles, team: signer.employee.team || null, supervisesTeams: signer.employee.supervisesTeams || [] }, task);
+    if (who.error) throw new HttpsError("permission-denied", who.error);
+    tx.update(ref, { status: "verified", verified: { emp: signer.employeeNumber, name: signer.name, at: new Date(), device, role: who.role, roleName: who.roleName } });
+    logSignoff(tx, test, { kind: "announcement-task-verify", refId: ref.id, version: task.annVersion, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber, role: who.role });
+    return who;
+  });
+  return { ok: true, name: signer.name, role: w.roleName, test };
+}));
+
+// Take an open task back (assigned by mistake, or to give it to someone else): { id }.
+exports.removeAnnTask = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const people = await peopleList();
+  const myself = people.find((p) => p.id === me.employeeNumber) || { id: me.employeeNumber, roles: me.roles };
+  await db.runTransaction(async (tx) => {
+    const { ref, task } = await openAnnTask(tx, test, req.data?.id);
+    if (!annTasksLib.canRemove(myself, task)) throw new HttpsError("permission-denied", "The person who assigned it, a lead or supervisor on that team, or the Production Manager can take it back.");
+    if (task.status !== "open") throw new HttpsError("failed-precondition", "It's already signed done — it can't be taken back.");
+    tx.update(ref, { status: "removed", removedBy: me.employeeNumber, removedByName: me.name, removedAt: new Date() });
+    auditRecord(tx, "removed", "announcement task", ref.id, me.employeeNumber, { test });
+  });
+  return { ok: true };
+});
+
+// Who can sign on this device's sheet (line tablets): { id, step: "done" | "verify" } → names and employee numbers.
+exports.annTaskSigners = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const snap = await annTaskCol(test).doc(String(req.data?.id || "x")).get();
+  if (!snap.exists) throw new HttpsError("not-found", "That task no longer exists.");
+  const task = snap.data();
+  const people = (await peopleList()).filter((p) => p.active && p.loginEnabled && p.id !== me.employeeNumber);
+  const list = req.data?.step === "verify" ? people.filter((p) => !annTasksLib.secondSigner(p, task).error) : people.filter((p) => p.id === task.emp);
+  return { people: list.map((p) => ({ emp: p.id, name: p.name })) };
 });

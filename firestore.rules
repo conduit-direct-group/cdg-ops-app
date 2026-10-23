@@ -220,6 +220,17 @@ service cloud.firestore {
     match /test_announcementSigs/{id} {
       allow read: if member() && resource.data.emp == me();
     }
+    // Announcement tasks (assigned by a Line Lead or Supervisor): the person it's assigned to sees their own; Line Leads,
+    // Supervisors, the Production Manager, and Admins see all (to sign them off). Written only by the server.
+    function annTaskReader() {
+      return member() && employee().roles.hasAny(['lead', 'supervisor', 'plant-manager', 'admin']);
+    }
+    match /annTasks/{id} {
+      allow read: if member() && (resource.data.emp == me() || annTaskReader());
+    }
+    match /test_annTasks/{id} {
+      allow read: if member() && (resource.data.emp == me() || annTaskReader());
+    }
     // Every sign-off ever (checklists, announcements, …) — admins only.
     match /signoffs/{id} {
       allow read: if admin();

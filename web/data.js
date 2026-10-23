@@ -175,6 +175,7 @@ export function startData(me) {
     (snap) => { data.machineSpecs = snap.docs.map((d) => ({ id: d.id, ...d.data() })); data.machineSpecsError = false; changed(); },
     (err) => { data.machineSpecs = data.machineSpecs || []; data.machineSpecsError = err.code !== "permission-denied"; changed(); }));
   stopFns.push(watchAnnouncements(me));
+  stopFns.push(watchAnnTasks(me));
   // Shift handoffs not yet received (drafts and sent ones) — Line Leads, Supervisors, Production Manager, Admin.
   if ((me.roles || []).some((r) => ["lead", "supervisor", "plant-manager", "admin"].includes(r))) {
     const open = (name) => query(collection(db, name), where("status", "in", ["draft", "sent"]));
@@ -235,6 +236,19 @@ function watchAnnouncements(me) {
     }
   }
   return watchUnion("announcements", sources, (a, b) => time(b.createdAt) - time(a.createdAt));
+}
+
+// Announcement tasks still open or waiting for the second sign-off: my own, and (leads, supervisors, Production Manager,
+// Admins) everyone's. Tasks are made where they're assigned, so the test site reads only test_annTasks.
+function watchAnnTasks(me) {
+  const c = collection(db, TEST_MODE ? "test_annTasks" : "annTasks");
+  const sources = [{ key: "my announcement tasks", source: query(c, where("emp", "==", me.emp)), test: TEST_MODE }];
+  if ((me.roles || []).some((r) => ["lead", "supervisor", "plant-manager", "admin"].includes(r))) {
+    sources.push({ key: "open announcement tasks", source: query(c, where("status", "in", ["open", "done"])), test: TEST_MODE });
+    // …and the last 30 days of finished ones, so a signed-off task still shows (green) on its announcement.
+    sources.push({ key: "recent announcement tasks", source: query(c, where("createdAt", ">=", new Date(Date.now() - 30 * 86400000))), test: TEST_MODE });
+  }
+  return watchUnion("annTasks", sources, (a, b) => String(a.dueDate).localeCompare(String(b.dueDate)));
 }
 
 function watchMySigs(me) {

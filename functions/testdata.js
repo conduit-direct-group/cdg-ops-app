@@ -35,6 +35,7 @@ const TEST_COLLECTIONS = [
   ["test_downtimeEvents", "Downtime & scrap downtime events"],
   ["test_scrapEntries", "Downtime & scrap scrap entries"],
   ["test_attendance", "Who's here today"],
+  ["test_annTasks", "Announcement tasks"],
 ];
 const DAY_MS = 86400000;
 

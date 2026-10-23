@@ -12,7 +12,9 @@ import { data, onDataChange, lineName } from "./data.js";
 import {
   storage, TEST_MODE, callAnnouncementPeople, callPostAnnouncement, callEndAnnouncement, callSignAnnouncement,
   callRecordReviewedInPerson, callAnnouncementTracking, callRemindAnnouncement, callSignoffPeople,
+  callAnnTaskPeople, callAssignAnnouncementTask, callRemoveAnnTask, callAnnTaskSigners,
 } from "./firebase.js";
+import { dueByShiftEnd } from "./shift.js";
 import { ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-storage.js";
 import { signOff, signedNote } from "./signoff.js";
 import { offlineSign } from "./outbox.js";
@@ -97,6 +99,37 @@ export function announcementItems(emp, onOpen) {
   return forMeNow(emp).length ? [{ key: "ann", icon: "📣", title: "Announcements", detail: "all signed", state: "done", onOpen: () => onOpen(null) }] : [];
 }
 
+// ---- Announcement tasks (Chris, 10-23-2026) --------------------------------------------------------------------
+// A Line Lead or Supervisor who gets an announcement that is real work assigns it to people on their team, with a
+// due date. Each signs Done; then a Line Lead or Supervisor on that team (or the Production Manager) signs it off —
+// never the person who did it. Green only when both have signed. Rules: functions/anntasks.js.
+const ASSIGN_ROLES = ["lead", "supervisor"];
+const tasksFor = (annId) => (data.annTasks || []).filter((t) => t.annId === annId && t.status !== "removed");
+// Could I sign the second sign-off? (The server has the final say.)
+function maySecondSign(t, emp, roles = data.myself?.roles || []) {
+  if (t.emp === emp) return false;
+  if (roles.includes("plant-manager")) return true;
+  if (!roles.some((r) => ASSIGN_ROLES.includes(r))) return false;
+  const me = data.myself || {};
+  return t.assignedBy === emp || me.team === t.team || (roles.includes("supervisor") && (me.supervisesTeams || []).includes(t.team));
+}
+// Due date → status: gray "due by Tue, Oct 27", on the day red in the last hour of the shift, red after.
+function taskDue(t) {
+  const today = plantToday();
+  if (t.dueDate < today) return { state: "late", detail: `overdue — was due ${fmtDay(t.dueDate)}` };
+  if (t.dueDate === today) return dueByShiftEnd();
+  return { state: "due", detail: `due by ${fmtDay(t.dueDate)}` };
+}
+export function annTaskItems(emp, onOpen) {
+  if (!data.annTasks) return [];
+  const mine = data.annTasks.filter((t) => t.emp === emp && t.status === "open");
+  const toSign = data.annTasks.filter((t) => t.status === "done" && maySecondSign(t, emp));
+  return [
+    ...mine.map((t) => { const d = taskDue(t); return { key: `anntask:${t.id}`, icon: "📋", title: `Task: ${t.annTitle}`, detail: `from ${t.assignedByName} · ${d.detail}`, state: d.state, onOpen: () => onOpen(t.annId) }; }),
+    ...toSign.map((t) => { const d = taskDue(t); return { key: `anntask-sign:${t.id}`, icon: "📋", title: `Task done by ${t.name} — sign it off`, detail: `${t.annTitle} · ${d.detail}`, state: d.state, onOpen: () => onOpen(t.annId) }; }),
+  ];
+}
+
 // Important ones the crew doesn't sign: shown at the top until they open it once (Chris, 10-23-2026). Remembered on
 // this device per person (a convenience — nothing is signed).
 const seenKey = (emp, a) => `cdg-ann-seen:${emp}:${a.id}:v${version(a)}`;
@@ -162,7 +195,7 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
     view: startId ? "read" : "list", id: startId, back: startId ? "home" : "list",
     busy: false, upload: "", message: "", messageKind: "", retry: null,
     seenEnd: false, openedFile: false, track: null, draft: null, people: null, peopleError: "",
-    inPerson: null, search: "",
+    inPerson: null, search: "", assign: null,
   };
   const find = (id) => (data.announcements || []).find((a) => a.id === id);
   const say = (message, retry = null) => { Object.assign(ui, { message, messageKind: "error", retry, busy: false }); render(); };
@@ -272,11 +305,101 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
     if (box) box.replaceChildren(...[signArea(a)].flat(2).filter(Boolean));
   }
 
+  // ---- tasks on this announcement ------------------------------------------------------------------------------
+  const canAssignHere = (a) => me.roles.some((r) => ASSIGN_ROLES.includes(r)) && (a.audienceEmps || []).includes(me.emp) && !isEnded(a);
+
+  async function taskSign(t, step) {
+    const verify = step === "verify";
+    const r = await signOff({
+      title: verify ? "Sign off the task" : "Task done", what: `${t.annTitle} · ${t.name}`,
+      me: verify ? (maySecondSign(t, me.emp, me.roles) ? { emp: me.emp, name: me.name } : null) : (t.emp === me.emp ? { emp: me.emp, name: me.name } : null),
+      others: async () => (await callAnnTaskSigners({ id: t.id, step })).data.people,
+      action: offlineSign(verify ? "signAnnTask" : "markAnnTaskDone", { id: t.id }, { label: `${verify ? "Task signed off" : "Task done"} · ${t.annTitle}`, key: `anntask-${step}:${t.id}` }),
+    });
+    if (r) toast(signedNote(r, verify ? `Signed off by ${r.name}${r.role ? ` (${r.role})` : ""}${r.test ? " (test)" : ""}` : `Done — ${r.name}${r.test ? " (test)" : ""}`));
+  }
+  async function taskRemove(t) {
+    if (!(await confirmSheet({ title: `Take this task back from ${t.name}?`, text: "It comes off their Home. You can assign it again.", confirmLabel: "Take it back" }))) return;
+    Object.assign(ui, { busy: true, message: "" });
+    render();
+    try { await callRemoveAnnTask({ id: t.id }); ui.busy = false; toast(`Taken back from ${t.name}`); render(); } catch (err) { say(friendlyError(err), () => taskRemove(t)); }
+  }
+  async function openAssign(a) {
+    ui.assign = { emps: new Set(), dueDate: a.ackBy && a.ackBy >= plantToday() ? a.ackBy : plantToday(), note: "", people: null, error: "" };
+    render();
+    try { ui.assign.people = (await callAnnTaskPeople({ annId: a.id })).data.people; } catch (err) { ui.assign.error = friendlyError(err); }
+    render();
+  }
+  async function saveAssign(a) {
+    const x = ui.assign;
+    if (!x.emps.size) return say("Pick at least one person.");
+    Object.assign(ui, { busy: true, message: "" });
+    render();
+    try {
+      const { data: r } = await callAssignAnnouncementTask({ annId: a.id, emps: [...x.emps], dueDate: x.dueDate, note: x.note });
+      Object.assign(ui, { busy: false, assign: null });
+      toast(`Assigned to ${r.assigned} ${r.assigned === 1 ? "person" : "people"}${r.skipped ? ` (${r.skipped} already had it)` : ""}${r.test ? " — test: only you are notified" : ""}`);
+      render();
+    } catch (err) { say(friendlyError(err), () => saveAssign(a)); }
+  }
+
+  function taskRow(t) {
+    const d = taskDue(t);
+    const status = t.status === "verified" ? `✓ Done by ${t.done?.name} · signed off by ${t.verified?.name}${t.verified?.roleName ? ` (${t.verified.roleName})` : ""}`
+      : t.status === "done" ? `Done by ${t.done?.name} — needs sign-off from a lead or supervisor` : `Not done yet · ${d.detail}`;
+    return el("div", { class: t.status === "verified" ? "task-row done" : t.status === "open" && d.state === "late" ? "task-row late" : "task-row" },
+      el("div", { class: "task-main" },
+        el("span", { class: "person-name" }, t.name),
+        el("span", { class: "person-meta" }, status),
+        t.note ? el("span", { class: "person-meta" }, t.note) : null,
+        el("span", { class: "person-meta" }, `Assigned by ${t.assignedByName}${t.test ? " · TEST" : ""}`)),
+      t.status === "open" && (t.emp === me.emp || canAssignHereFor(t)) ? el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: () => taskSign(t, "done") }, t.emp === me.emp ? "✔ Mark my task done" : `✔ ${t.name}: mark done`) : null,
+      t.status === "done" && maySecondSign(t, me.emp, me.roles) ? el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: () => taskSign(t, "verify") }, "✍ Sign off") : null,
+      t.status === "open" && canAssignHereFor(t) ? el("button", { class: "link-btn", type: "button", disabled: ui.busy, onclick: () => taskRemove(t) }, "Take it back") : null);
+  }
+  const canAssignHereFor = (t) => t.assignedBy === me.emp || me.roles.some((r) => ["plant-manager", "admin"].includes(r)) || maySecondSign({ ...t, emp: null }, me.emp, me.roles);
+
+  function assignForm(a) {
+    const x = ui.assign;
+    return el("form", { class: "redo-form", onsubmit: (e) => { e.preventDefault(); saveAssign(a); } },
+      el("strong", {}, "📋 Assign as a task"),
+      x.error ? el("div", { class: "message error", role: "alert" }, x.error) : null,
+      !x.people && !x.error ? spinner("Loading your team…") : null,
+      x.people && !x.people.length ? emptyState("No one on your team yet", "Admin → People sets each person's team.") : null,
+      x.people?.length
+        ? [el("span", { class: "field-label" }, "Who does it? (pick one or more)"),
+           el("div", { class: "ck-list" }, x.people.map((p) => el("div", { class: x.emps.has(p.emp) ? "ck-item on" : "ck-item" },
+             el("label", { class: "check-row" },
+               el("input", { type: "checkbox", checked: x.emps.has(p.emp), onchange: (e) => { if (e.target.checked) x.emps.add(p.emp); else x.emps.delete(p.emp); render(); } }),
+               el("span", {}, el("span", { class: "person-name" }, p.name), el("span", { class: "ck-last" }, [p.team ? `Team ${p.team}` : "", p.loginEnabled ? "" : "no login yet"].filter(Boolean).join(" · "))))))) ]
+        : null,
+      el("label", { class: "field-label", for: "task-due" }, "Due by"),
+      el("input", { class: "field", id: "task-due", type: "date", min: plantToday(), required: true, value: x.dueDate, onchange: (e) => { x.dueDate = e.target.value; } }),
+      el("label", { class: "field-label", for: "task-note" }, "Note (optional)"),
+      el("input", { class: "field", id: "task-note", maxlength: "500", value: x.note, placeholder: "e.g. Both winders on Line 2", oninput: (e) => { x.note = e.target.value; } }),
+      el("div", { class: "btn-row" },
+        el("button", { class: "btn", type: "submit", disabled: ui.busy || !x.emps.size }, x.emps.size ? `Assign to ${x.emps.size} ${x.emps.size === 1 ? "person" : "people"}` : "Assign"),
+        el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => { ui.assign = null; render(); } }, "Cancel")),
+      el("p", { class: "hint" }, "Each person signs Done with their PIN; then a Line Lead or Supervisor on that team (or the Production Manager) signs it off."));
+  }
+
+  function tasksPanel(a) {
+    const list = tasksFor(a.id);
+    const canAssign = canAssignHere(a);
+    if (!list.length && !canAssign) return null;
+    return el("section", { class: "card" },
+      el("strong", {}, list.length ? `📋 Tasks (${list.filter((t) => t.status === "verified").length} of ${list.length} signed off)` : "📋 Tasks"),
+      list.length ? el("div", { class: "task-list" }, list.map(taskRow)) : el("p", { class: "card-note" }, "Is this real work for your crew? Assign it to the people who'll do it."),
+      ui.assign ? assignForm(a) : canAssign ? el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => openAssign(a) }, "📋 Assign as a task") : null);
+  }
+
   function renderRead() {
     const a = find(ui.id);
     if (!a) {
       return [backBtn(ui.back === "home" ? "Home" : "Announcements", leaveRead),
-        !data.announcements ? spinner("Loading announcement…") : emptyState("Announcement not found", "It may have been for someone else.")];
+        !data.announcements ? spinner("Loading announcement…")
+          : tasksFor(ui.id).length ? tasksPanel({ id: ui.id, title: tasksFor(ui.id)[0].annTitle, ackBy: null, audienceEmps: [] })
+          : emptyState("Announcement not found", "It may have been for someone else.")];
     }
     if (!iSign(a, me.roles)) markSeen(me.emp, a); // Important, crew: off the top of Home once opened
     const sig = mySig(a);
@@ -308,6 +431,7 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
       isRelay(a) && canSign(a) ? el("p", { class: "hint" }, "Important: go over it with your crew, then sign that you've read it and relayed it.") : null,
       sig ? el("p", { class: "message ok" }, `✓ ${sig.method === "in-person" ? `Reviewed in person (recorded by ${sig.recordedByName || "a supervisor"})` : "You signed this"} ${fmtWhen(sig.at)}${version(a) > 1 ? ` · version ${version(a)}` : ""}.`) : null,
       el("div", { id: "ann-sign" }, signArea(a)),
+      tasksPanel(a),
       trackingPanel(a),
     ];
   }
