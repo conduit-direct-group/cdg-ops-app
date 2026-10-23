@@ -37,7 +37,7 @@ test("an announcement needs a title, message, priority, acknowledge-by date, and
   assert.match(a.cleanAnnouncement({ ...good, file: { url: "https://evil.example/x.pdf", kind: "pdf" } }, known, ours).error, /attachment/);
   const { announcement } = a.cleanAnnouncement({ ...good, title: "  New   glove rule ", audience: { everyone: true, roles: ["admin"] }, file: { url: "https://firebasestorage.googleapis.com/v0/b/cdg/o/uploads%2F1001%2Fa.pdf", kind: "pdf", name: "Rule.pdf" }, keepForNewHires: true }, known, ours);
   assert.strictEqual(announcement.title, "New glove rule");
-  assert.deepStrictEqual(announcement.audience, { everyone: true, roles: [], teams: [], lines: [], people: [] });
+  assert.deepStrictEqual(announcement.audience, { everyone: true, roles: [], roleTeams: [], teams: [], lines: [], people: [] });
   assert.strictEqual(announcement.file.kind, "pdf");
   assert.strictEqual(announcement.keepForNewHires, true);
   assert.strictEqual(announcement.endDate, null);
@@ -114,4 +114,20 @@ test("Important: only the Line Leads and Supervisors in the audience sign; Norma
   assert.strictEqual(a.signsIt({ priority: "important" }, ["operator"]), false);
   assert.strictEqual(a.signsIt({ priority: "important" }, ["lead"]), true);
   assert.deepStrictEqual(a.signersOf({ priority: "important", audienceEmps: ["1", "4"] }, people), []);
+});
+
+test("roles on chosen teams only: e.g. the Supervisors of Team B — their own team or a team they cover", () => {
+  const out = a.cleanAnnouncement({ ...good, audience: { roles: ["supervisor"], roleTeams: ["team-b"] } }, known, ours);
+  assert.deepStrictEqual(out.announcement.audience.roleTeams, ["team-b"]);
+  assert.match(a.cleanAnnouncement({ ...good, audience: { roles: ["supervisor"], roleTeams: ["team-z"] } }, known, ours).error, /teams/);
+  assert.deepStrictEqual(a.cleanAnnouncement({ ...good, audience: { teams: ["team-a"], roleTeams: ["team-b"] } }, known, ours).announcement.audience.roleTeams, []);
+  const staff = [
+    { id: "1", roles: ["supervisor"], team: "team-a" },
+    { id: "2", roles: ["supervisor"], team: "team-a", supervisesTeams: ["team-a", "team-b"] },
+    { id: "3", roles: ["supervisor"], team: "team-b" },
+    { id: "4", roles: ["operator"], team: "team-b" },
+  ];
+  assert.deepStrictEqual(a.matchAudience({ roles: ["supervisor"], roleTeams: ["team-b"] }, staff), ["2", "3"]);
+  assert.deepStrictEqual(a.matchAudience({ roles: ["supervisor"] }, staff), ["1", "2", "3"]);
+  assert.deepStrictEqual(a.matchAudience({ roles: ["supervisor"], roleTeams: ["team-b"], people: ["4"] }, staff), ["2", "3", "4"]);
 });

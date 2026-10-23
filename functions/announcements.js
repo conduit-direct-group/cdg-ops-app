@@ -58,25 +58,32 @@ function cleanAnnouncement(data, known, bucketPath, today) {
   }
 
   const a = data?.audience || {};
-  const audience = { everyone: a.everyone === true, roles: ids(a.roles), teams: ids(a.teams), lines: ids(a.lines), people: ids(a.people) };
-  if (audience.everyone) Object.assign(audience, { roles: [], teams: [], lines: [], people: [] });
+  // roleTeams: the roles picked reach only people on these teams (their own team, or a team a Supervisor covers) —
+  // e.g. the Line Leads and Supervisors of Team B only (Chris, 10-23-2026). Empty = the roles on every team.
+  const audience = { everyone: a.everyone === true, roles: ids(a.roles), roleTeams: ids(a.roleTeams), teams: ids(a.teams), lines: ids(a.lines), people: ids(a.people) };
+  if (audience.everyone) Object.assign(audience, { roles: [], roleTeams: [], teams: [], lines: [], people: [] });
+  if (!audience.roles.length) audience.roleTeams = [];
   if (!audience.everyone && !audience.roles.length && !audience.teams.length && !audience.lines.length && !audience.people.length) {
     return { error: "Pick who it's for: everyone, or some roles, teams, lines, or people." };
   }
   for (const [key, label] of [["roles", "roles"], ["teams", "teams"], ["lines", "lines"]]) {
     if (audience[key].some((id) => !known[key].includes(id))) return { error: `Pick ${label} from the list.` };
   }
+  if (audience.roleTeams.some((id) => !known.teams.includes(id))) return { error: "Pick teams from the list." };
   if (audience.people.some((p) => !/^[A-Za-z0-9]{1,12}$/.test(p))) return { error: "Pick people from the list." };
 
   return { announcement: { title, body, priority, ackBy: data.ackBy, endDate, file, audience, keepForNewHires: data?.keepForNewHires === true } };
 }
 
-// Audience -> employee numbers of everyone on (active) who matches. employees: [{ id, roles, team, homeLineId, active }]
+// Audience -> employee numbers of everyone on (active) who matches.
+// employees: [{ id, roles, team, supervisesTeams, homeLineId, active }]
 function matchAudience(audience, employees) {
   const on = employees.filter((e) => e.active !== false);
+  const limit = audience.roleTeams || [];
+  const onRoleTeams = (e) => !limit.length || limit.includes(e.team) || (e.supervisesTeams || []).some((t) => limit.includes(t));
   const hit = (e) =>
     audience.everyone === true ||
-    (e.roles || []).some((r) => (audience.roles || []).includes(r)) ||
+    ((e.roles || []).some((r) => (audience.roles || []).includes(r)) && onRoleTeams(e)) ||
     (e.team && (audience.teams || []).includes(e.team)) ||
     (e.homeLineId && (audience.lines || []).includes(e.homeLineId)) ||
     (audience.people || []).includes(e.id);

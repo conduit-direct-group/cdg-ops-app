@@ -327,7 +327,7 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
   async function openAssign(a) {
     ui.assign = { emps: new Set(), dueDate: a.ackBy && a.ackBy >= plantToday() ? a.ackBy : plantToday(), note: "", people: null, error: "" };
     render();
-    try { ui.assign.people = (await callAnnTaskPeople({ annId: a.id })).data.people; } catch (err) { ui.assign.error = friendlyError(err); }
+    try { const { data: r } = await callAnnTaskPeople({ annId: a.id }); Object.assign(ui.assign, { people: r.people, myTeam: r.myTeam ?? null, covers: r.covers || [] }); } catch (err) { ui.assign.error = friendlyError(err); }
     render();
   }
   async function saveAssign(a) {
@@ -365,7 +365,12 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
       el("strong", {}, "📋 Assign as a task"),
       x.error ? el("div", { class: "message error", role: "alert" }, x.error) : null,
       !x.people && !x.error ? spinner("Loading your team…") : null,
-      x.people && !x.people.length ? emptyState("No one on your team yet", "Admin → People sets each person's team.") : null,
+      x.people && !x.people.length
+        ? x.myTeam === null && !(x.covers || []).length
+          ? emptyState("You're not on a team yet", `Tasks go to people on your team, and ${me.name} has no team set. An admin sets it in Admin → People → ${me.name} → Team.`)
+          : emptyState(`No one else is on Team ${[x.myTeam, ...(x.covers || [])].filter(Boolean).join(", ")} yet`, "Admin → People sets each person's team.")
+        : null,
+      x.people?.length ? el("p", { class: "card-note" }, `Your team: ${[x.myTeam, ...(x.covers || [])].filter(Boolean).map((t) => `Team ${t}`).join(", ")}`) : null,
       x.people?.length
         ? [el("span", { class: "field-label" }, "Who does it? (pick one or more)"),
            el("div", { class: "ck-list" }, x.people.map((p) => el("div", { class: x.emps.has(p.emp) ? "ck-item on" : "ck-item" },
@@ -609,11 +614,11 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
     ui.draft = a
       ? {
           id: a.id, title: a.title, body: a.body, priority: a.priority, ackBy: a.ackBy, endDate: a.endDate || "", file: a.file || null,
-          everyone: a.audience?.everyone === true, roles: [...(a.audience?.roles || [])], teams: [...(a.audience?.teams || [])],
+          everyone: a.audience?.everyone === true, roles: [...(a.audience?.roles || [])], roleTeams: [...(a.audience?.roleTeams || [])], teams: [...(a.audience?.teams || [])],
           lines: [...(a.audience?.lines || [])], people: [...(a.audience?.people || [])], keepForNewHires: a.keepForNewHires === true,
           was: { title: a.title, body: a.body, priority: a.priority, fileUrl: a.file?.url || "" },
         }
-      : { id: null, title: "", body: "", priority: "normal", ackBy: addDays(today, 7), endDate: "", file: null, everyone: true, roles: [], teams: [], lines: [], people: [], keepForNewHires: false };
+      : { id: null, title: "", body: "", priority: "normal", ackBy: addDays(today, 7), endDate: "", file: null, everyone: true, roles: [], roleTeams: [], teams: [], lines: [], people: [], keepForNewHires: false };
     loadPeople();
     show("form");
   }
@@ -621,7 +626,8 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
   // Who it reaches right now (same matching as the server).
   function reach(d) {
     if (!ui.people) return null;
-    return ui.people.filter((p) => d.everyone || p.roles.some((r) => d.roles.includes(r)) || (p.team && d.teams.includes(p.team)) || (p.homeLineId && d.lines.includes(p.homeLineId)) || d.people.includes(p.id));
+    const onRoleTeams = (p) => !d.roleTeams.length || d.roleTeams.includes(p.team) || (p.supervisesTeams || []).some((t) => d.roleTeams.includes(t));
+    return ui.people.filter((p) => d.everyone || (p.roles.some((r) => d.roles.includes(r)) && onRoleTeams(p)) || (p.team && d.teams.includes(p.team)) || (p.homeLineId && d.lines.includes(p.homeLineId)) || d.people.includes(p.id));
   }
 
   function renderForm() {
@@ -670,7 +676,7 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
       try {
         const { data: r } = await callPostAnnouncement({
           ...(d.id ? { id: d.id } : {}), title: d.title, body: d.body, priority: d.priority, ackBy: d.ackBy, endDate: d.endDate || null, file: d.file,
-          audience: { everyone: d.everyone, roles: d.roles, teams: d.teams, lines: d.lines, people: d.people }, keepForNewHires: d.keepForNewHires,
+          audience: { everyone: d.everyone, roles: d.roles, roleTeams: d.roles.length ? d.roleTeams : [], teams: d.teams, lines: d.lines, people: d.people }, keepForNewHires: d.keepForNewHires,
         });
         toast(d.id ? (r.signAgain ? `Saved — everyone signs version ${r.version}` : "Saved") : `Posted to ${r.audience} ${r.audience === 1 ? "person" : "people"}${r.test ? " (test)" : ""}`);
         ui.draft = null;
@@ -726,7 +732,17 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
           ? el("div", { class: "card" },
               el("p", { class: "field-label" }, "Roles"),
               el("div", { class: "chips" }, activeRoles.map((r) => chip("roles", r.id, r.name))),
-              activeTeams.length ? [el("p", { class: "field-label" }, "Teams"), el("div", { class: "chips" }, activeTeams.map((t) => chip("teams", t.id, `Team ${t.name}`)))] : null,
+              // The roles picked, on which teams? (e.g. only Team B's Line Leads and Supervisors — Chris, 10-23-2026)
+              d.roles.length && activeTeams.length
+                ? [el("p", { class: "field-label" }, "Those roles on which teams?"),
+                   el("div", { class: "chips" },
+                     el("button", { class: d.roleTeams.length ? "chip" : "chip on", type: "button", "aria-pressed": String(!d.roleTeams.length), onclick: () => { d.roleTeams = []; render(); } }, "All teams"),
+                     activeTeams.map((t) => chip("roleTeams", t.id, `Team ${t.name}`))),
+                   el("p", { class: "card-note" }, d.roleTeams.length
+                     ? "Only the people with those roles on the teams picked — Supervisors also count for the teams they cover."
+                     : "Every person with those roles, on every team.")]
+                : null,
+              activeTeams.length ? [el("p", { class: "field-label" }, "Whole teams (everyone on them)"), el("div", { class: "chips" }, activeTeams.map((t) => chip("teams", t.id, `Team ${t.name}`)))] : null,
               activeLines.length ? [el("p", { class: "field-label" }, "Lines (people whose home line it is)"), el("div", { class: "chips" }, activeLines.map((l) => chip("lines", l.id, l.name)))] : null,
               el("p", { class: "field-label" }, "People"),
               d.people.map((id) => el("div", { class: "import-row" }, el("span", { class: "gap-term" }, personName(id)), el("button", { class: "link-btn", type: "button", onclick: () => toggle("people", id) }, "Remove"))),

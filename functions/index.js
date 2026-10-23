@@ -2094,7 +2094,7 @@ exports.announcementPeople = onCall(async (req) => {
   }
   const people = (await peopleList()).filter((p) => p.active);
   people.sort((x, y) => x.name.localeCompare(y.name));
-  return { people: people.map(({ id, name, roles: r, team, homeLineId, loginEnabled }) => ({ id, name, roles: r, team, homeLineId, loginEnabled })) };
+  return { people: people.map(({ id, name, roles: r, team, supervisesTeams, homeLineId, loginEnabled }) => ({ id, name, roles: r, team, supervisesTeams, homeLineId, loginEnabled })) };
 });
 
 // Post { title, body, priority, ackBy, endDate?, file?, audience, keepForNewHires } or edit (same plus { id }).
@@ -4613,7 +4613,7 @@ exports.adminOrg = onCall(async (req) => {
 exports.adminSaveOrg = onCall(async (req) => {
   const adminNumber = await requireAdmin(req);
   const emp = String(req.data?.emp || "");
-  return db.runTransaction(async (tx) => {
+  const out = await db.runTransaction(async (tx) => {
     const [deptSnap, all, teamSnaps] = await Promise.all([tx.get(departmentsDoc), tx.get(employees), tx.get(teams)]);
     const departments = deptSnap.get("departments") || deptLib.startingDepartments();
     const people = all.docs.map((d) => ({ id: d.id, name: d.get("name"), active: d.get("active") !== false, department: d.get("department") || null, deptHead: d.get("deptHead") === true }));
@@ -4630,6 +4630,9 @@ exports.adminSaveOrg = onCall(async (req) => {
     auditRecord(tx, "updated", "department", emp, adminNumber, { department: org.department, head: org.head, reportsTo: org.reportsTo, supervisesTeams: org.supervisesTeams, replaced: current?.id || null });
     return { ok: true, replaced: current ? current.name : null };
   });
+  // Teams a Supervisor covers can change who a "those roles on Team B" announcement reaches (keep for new hires).
+  await refreshAnnouncementLists();
+  return out;
 });
 
 // Admins: { departments: [{ id?, name, active }], headsReportTo: employee # or null } — Admin → Departments.
@@ -4811,7 +4814,12 @@ exports.annTaskPeople = onCall(async (req) => {
   const people = await peopleList();
   const myself = people.find((p) => p.id === me.employeeNumber) || { id: me.employeeNumber, roles: me.roles };
   const teamName = new Map((await teams.get()).docs.map((d) => [d.id, d.get("name") || d.id]));
-  return { people: annTasksLib.crewFor(myself, people).map((p) => ({ emp: p.id, name: p.name, team: p.team ? teamName.get(p.team) || p.team : "", loginEnabled: p.loginEnabled })) };
+  // myTeam / covers: so the screen can say why the list is empty (no team set yet, or no one else on it).
+  return {
+    myTeam: myself.team ? teamName.get(myself.team) || myself.team : null,
+    covers: (myself.supervisesTeams || []).map((t) => teamName.get(t) || t),
+    people: annTasksLib.crewFor(myself, people).map((p) => ({ emp: p.id, name: p.name, team: p.team ? teamName.get(p.team) || p.team : "", loginEnabled: p.loginEnabled })),
+  };
 });
 
 // Assign: { annId, emps: [employee #], dueDate: "YYYY-MM-DD", note? }. Someone with an open task on it already is skipped.
