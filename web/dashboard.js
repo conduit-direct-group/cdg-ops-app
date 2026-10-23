@@ -30,7 +30,7 @@ export const ROLE_CARDS = [
   ["admin", "Admin", ["system-alerts", "waiting-login"]],
   ["plant-manager", "Production Manager", ["crew-today", "pm-people", "ack-gaps", "silos", "reels-week", "incidents-open"]],
   ["supervisor", "Supervisor", ["crew-today", "crew-gaps", "silos"]],
-  ["lead", "Line Lead", []],
+  ["lead", "Line Lead", ["silos"]],
   ["operator", "Operator", []],
   ["maintenance", "Maintenance", []],
   ["quality", "Quality", ["reels-hold", "reels-shift"]],
@@ -241,7 +241,7 @@ const ISSUE_ROLES = ["maintenance", "admin", "plant-manager"];
 function needRow(it) {
   return el("button", { class: `need-item ${it.state}`, type: "button", onclick: it.onOpen, "data-key": it.key },
     el("span", { class: "need-icon", "aria-hidden": "true" }, it.icon || "•"),
-    el("span", { class: "need-text" }, el("span", { class: "need-title" }, it.title), it.detail ? el("span", { class: "need-detail" }, it.detail) : null),
+    el("span", { class: "need-text" }, el("span", { class: "need-title" }, it.badge || null, it.title), it.detail ? el("span", { class: "need-detail" }, it.detail) : null),
     el("span", { class: "need-mark", "aria-label": it.state === "late" ? "Needs doing now" : it.state === "done" ? "Done" : "Not due yet" }, MARK[it.state] || "›"));
 }
 
@@ -337,7 +337,8 @@ function needsItems(ctx, roles) {
           : { key: "training", icon: "🎓", title: "My training", detail: "all current", state: "done", onOpen: () => {} });
     }
   }
-  return items.map((it, i) => ({ ...it, i })).sort((a, b) => STATE_ORDER[a.state] - STATE_ORDER[b.state] || a.i - b.i);
+  // Unsigned announcements (pin) first, above everything else (Chris, 10-23-2026); then red, gray, green.
+  return items.map((it, i) => ({ ...it, i })).sort((a, b) => (b.pin === true) - (a.pin === true) || STATE_ORDER[a.state] - STATE_ORDER[b.state] || a.i - b.i);
 }
 
 // ---- the whole Home -----------------------------------------------------------------------------------------

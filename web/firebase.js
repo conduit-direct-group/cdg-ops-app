@@ -136,6 +136,9 @@ export const callAssignShopTask = call("assignShopTask");
 export const callMarkShopTaskDone = call("markShopTaskDone");
 export const callCheckShopTasks = call("checkShopTasks");
 export const callShopTaskSigners = call("shopTaskSigners");
+export const callRedoShopTask = call("redoShopTask");
+export const callRedoStationList = call("redoStationList");
+export const callStationVerifiers = call("stationVerifiers");
 // Station checklists (Reel Building, Reclamation)
 export const callStartStationList = call("startStationList");
 export const callSaveStationList = call("saveStationList");

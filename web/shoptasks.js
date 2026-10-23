@@ -1,18 +1,21 @@
 // Keep the Shop Clean — shift task list (Decision 62). Tasks, shift times, and "turns red" come from the task-list
 // form (Admin → Forms, "clean-shop"). One list per shift. A Line Lead or Supervisor assigns each task to a person;
-// each person marks their own task done with their PIN (on a line tablet: tap their name, then PIN); the Supervisor
-// check is a PIN sign-off once every task is done. Unfinished tasks show on Home — red in the last hour of the shift.
+// each person marks their own task done with their PIN (on a line tablet: tap their name, then PIN); Verified is a PIN
+// sign-off once every task is done (two-step sign-off, functions/verify.js: a Supervisor, or with no Supervisor on
+// shift the Production Manager or a Line Lead; never your own work). A task can be reassigned until it's done, and a
+// finished task can be reopened ("Do again", with a reason) — the old sign-offs stay in the list's history.
+// Unfinished tasks show on Home — red in the last hour of the shift.
 
-import { el, friendlyError, spinner, emptyState, banner, toast, picker, collapsible } from "./ui.js";
+import { el, friendlyError, spinner, emptyState, banner, toast, picker, collapsible, breakable } from "./ui.js";
 import { data, onDataChange } from "./data.js";
 import {
-  TEST_MODE, callStartShopTasks, callShopTaskPeople, callAssignShopTask, callMarkShopTaskDone, callCheckShopTasks, callShopTaskSigners,
+  TEST_MODE, callStartShopTasks, callShopTaskPeople, callAssignShopTask, callMarkShopTaskDone, callCheckShopTasks, callShopTaskSigners, callRedoShopTask,
 } from "./firebase.js";
 import { signOff, signedNote } from "./signoff.js";
 import { offlineSign } from "./outbox.js";
 
 export const TASKLIST_ROLES = ["lead", "supervisor", "plant-manager", "admin"];
-const CHECK_ROLES = ["supervisor", "plant-manager", "admin"];
+const VERIFY_ROLES = ["supervisor", "plant-manager", "lead"]; // the server decides who may verify right now
 const SHOP_FORM = "clean-shop";
 const PLANT_TZ = "America/Chicago";
 export const runsShopList = (roles) => (roles || []).some((r) => TASKLIST_ROLES.includes(r));
@@ -81,8 +84,8 @@ export function shopItems(me, roles, onOpen) {
       const late = list ? s.late : Date.now() >= currentEnd(form, now) - (form.redMinutes ?? 60) * 60000;
       const by = `due by ${fmtTime(list ? list.endMs : currentEnd(form, now))}`;
       if (!list) out.push({ key: "shop", icon: "🧹", title: "Keep the Shop Clean — start and assign tasks", detail: by, state: late ? "late" : "due", onOpen: () => onOpen(null) });
-      else if (s.checked) out.push({ key: "shop", icon: "🧹", title: "Keep the Shop Clean", detail: "done and checked", state: "done", onOpen: () => onOpen(list.id) });
-      else out.push({ key: "shop", icon: "🧹", title: s.allDone ? "Keep the Shop Clean — supervisor check needed" : `Keep the Shop Clean — ${s.done} of ${s.total} done`,
+      else if (s.checked) out.push({ key: "shop", icon: "🧹", title: "Keep the Shop Clean", detail: "done and verified", state: "done", onOpen: () => onOpen(list.id) });
+      else out.push({ key: "shop", icon: "🧹", title: s.allDone ? "Keep the Shop Clean — needs Verified" : `Keep the Shop Clean — ${s.done} of ${s.total} done`,
         detail: by, state: late ? "late" : "due", onOpen: () => onOpen(list.id) });
     }
   }
@@ -110,7 +113,7 @@ function plantMs(date, hhmm) {
 // ===========================================================================
 
 export function openShopTasks(container, { me, startId = null, onExit }) {
-  const ui = { id: startId, busy: false, message: "", messageKind: "", retry: null, people: null, peopleError: "" };
+  const ui = { id: startId, busy: false, message: "", messageKind: "", retry: null, people: null, peopleError: "", redo: null };
   const runs = runsShopList(me.roles);
   const say = (message, retry = null) => { Object.assign(ui, { message, messageKind: "error", retry, busy: false }); render(); };
   const back = (label, onclick) => el("button", { class: "link-btn", type: "button", onclick, disabled: ui.busy }, `← ${label}`);
@@ -152,14 +155,42 @@ export function openShopTasks(container, { me, startId = null, onExit }) {
   }
 
   async function check(l) {
-    const canMe = me.roles.some((x) => CHECK_ROLES.includes(x));
+    const canMe = me.roles.some((x) => VERIFY_ROLES.includes(x)) && !Object.values(l.done || {}).some((d) => d.emp === me.emp);
     const r = await signOff({
-      title: "Supervisor check", what: `Keep the Shop Clean · ${l.shift.name} shift · ${dayLabel(l.date)}`,
+      title: "Verified", what: `Keep the Shop Clean · ${l.shift.name} shift · ${dayLabel(l.date)}`,
       me: canMe ? { emp: me.emp, name: me.name } : null, // not a supervisor: go straight to the supervisors' names
       others: async () => (await callShopTaskSigners({ id: l.id })).data.people,
-      action: offlineSign("checkShopTasks", { id: l.id }, { label: `Keep the Shop Clean check · ${l.shift.name} shift`, key: `shop-check:${l.id}` }),
+      action: offlineSign("checkShopTasks", { id: l.id }, { label: `Keep the Shop Clean verified · ${l.shift.name} shift`, key: `shop-check:${l.id}` }),
     });
-    if (r) toast(signedNote(r, `Checked by ${r.name}${r.test ? " (test)" : ""}`));
+    if (r) toast(signedNote(r, `Verified by ${r.name}${r.role ? ` (${r.role})` : ""}${r.test ? " (test)" : ""}`));
+  }
+
+  // Do again: reopen a finished task with a short reason (its old Done stays in the history).
+  async function redo(l, t) {
+    const reason = (ui.redo?.reason || "").trim();
+    if (reason.length < 3) return say("Add a short reason (for example: “Floor still wet by the winders”).");
+    Object.assign(ui, { busy: true, message: "", retry: null });
+    render();
+    try {
+      const { data: r } = await callRedoShopTask({ id: l.id, taskId: t.id, reason });
+      Object.assign(ui, { busy: false, redo: null });
+      toast(`Reopened: ${t.label}${r.test ? " (test)" : ""}`);
+      render();
+    } catch (err) { say(friendlyError(err), () => redo(l, t)); }
+  }
+  function redoForm(l, t) {
+    return el("form", { class: "redo-form", onsubmit: (e) => { e.preventDefault(); redo(l, t); } },
+      el("label", { class: "field-label", for: `redo-${t.id}` }, `Why does “${t.label}” need doing again?`),
+      el("input", { class: "field", id: `redo-${t.id}`, maxlength: "300", required: true, value: ui.redo.reason, placeholder: "e.g. Floor still wet by the winders", oninput: (e) => { ui.redo.reason = e.target.value; } }),
+      el("div", { class: "btn-row" },
+        el("button", { class: "btn", type: "submit", disabled: ui.busy }, "↺ Do again"),
+        el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => { ui.redo = null; render(); } }, "Cancel")));
+  }
+
+  const verifiedText = (c) => `${c.name}${c.roleName ? ` (${c.roleName}${c.backup ? " — no Supervisor on shift" : ""})` : ""}`;
+  function historyText(h) {
+    if (h.kind === "reassigned") return `↔ ${h.label}: ${h.fromName} → ${h.toName || "no one"} · by ${h.byName} · ${fmtWhen(h.at)}`;
+    return `↺ Do again: ${h.label} — “${h.reason}” · by ${h.byName} · ${fmtWhen(h.at)} (was done by ${h.prevDone?.name || "?"}${h.prevCheck ? `, verified by ${h.prevCheck.name}` : ""})`;
   }
 
   const personName = (emp, l) => l?.names?.[emp] || ui.people?.find((p) => p.id === emp)?.name || `#${emp}`;
@@ -178,7 +209,7 @@ export function openShopTasks(container, { me, startId = null, onExit }) {
     return [
       el("p", { class: "hint" }, `${l.shift.name} shift · ${dayLabel(l.date)} · ends ${fmtTime(l.endMs)} · form revision ${l.formRev}`),
       el("p", { class: "tags ann-tags" },
-        el("span", { class: s.checked ? "tag ok" : s.allDone ? "tag warn" : s.late ? "tag off" : "tag warn" }, s.checked ? "✓ Done and checked" : s.allDone ? "All done — supervisor check needed" : `${s.done} of ${s.total} done`),
+        el("span", { class: s.checked ? "tag ok" : s.allDone ? "tag warn" : s.late ? "tag off" : "tag warn" }, s.checked ? "✓ Done and verified" : s.allDone ? "All done — needs Verified" : `${s.done} of ${s.total} done`),
         l.test ? el("span", { class: "tag test" }, "TEST") : null),
       s.late && !s.allDone ? el("p", { class: "message error", role: "alert" }, `⚠ ${s.total - s.done} task${s.total - s.done === 1 ? "" : "s"} not done — the shift ends at ${fmtTime(l.endMs)}.`) : null,
       l.intro ? el("p", { class: "card-note" }, l.intro) : null,
@@ -187,21 +218,32 @@ export function openShopTasks(container, { me, startId = null, onExit }) {
       el("div", { class: "task-list" }, tasks.map((t) => {
         const who = l.assign?.[t.id];
         const done = l.done?.[t.id];
-        return el("div", { class: done ? "task-row done" : s.late ? "task-row late" : "task-row" },
+        // Green only when Done and Verified (two-step sign-off); Done but not yet verified stays gray.
+        return el("div", { class: done ? (l.check ? "task-row done" : "task-row signed") : s.late ? "task-row late" : "task-row" },
           el("div", { class: "task-main" },
             el("span", { class: "person-name" }, `${done ? "✓ " : ""}${t.label}`),
             el("span", { class: "person-meta" }, done ? `Done by ${done.name} · ${fmtWhen(done.at)}` : who ? `Assigned to ${personName(who, l)}` : "Not assigned yet"),
             t.help ? el("span", { class: "person-meta" }, t.help) : null),
           !done && runs && !l.check
-            ? (ui.people ? picker({ title: `Who does “${t.label}”?`, value: who || "", placeholder: "Assign to…", options: assignOptions(!!who), onChange: (v) => assign(l, t, v) }) : spinner("Loading the crew…"))
+            ? (ui.people
+                ? el("div", { class: "assign-pick" },
+                    el("span", { class: "field-label" }, who ? "↔ Reassign to someone else" : "Assign to"),
+                    picker({ title: who ? `Reassign “${t.label}” to…` : `Who does “${t.label}”?`, value: who || "", placeholder: "Assign to…", options: assignOptions(!!who), onChange: (v) => assign(l, t, v) }))
+                : spinner("Loading the crew…"))
             : null,
-          !done && who ? el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: () => markDone(l, t) }, who === me.emp ? "✔ Mark my task done" : `✔ ${personName(who, l)}: mark done`) : null);
+          !done && who ? el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: () => markDone(l, t) }, who === me.emp ? "✔ Mark my task done" : `✔ ${personName(who, l)}: mark done`) : null,
+          done && runs && ui.redo?.taskId !== t.id ? el("button", { class: "link-btn", type: "button", disabled: ui.busy, onclick: () => { ui.redo = { taskId: t.id, reason: "" }; render(); } }, "↺ Do again") : null,
+          done && runs && ui.redo?.taskId === t.id ? redoForm(l, t) : null);
       })),
       l.check
-        ? el("p", { class: "message ok" }, `✓ Supervisor check: ${l.check.name} · ${fmtWhen(l.check.at)}${l.check.device?.label ? ` · ${l.check.device.label}` : ""}`)
+        ? el("p", { class: "message ok" }, `✓ Verified by ${verifiedText(l.check)} · ${fmtWhen(l.check.at)}${l.check.device?.label ? ` · ${l.check.device.label}` : ""}`)
         : s.allDone
-          ? el("button", { class: "btn big", type: "button", disabled: ui.busy, onclick: () => check(l) }, "✍ Supervisor check")
-          : el("p", { class: "hint" }, "The supervisor check opens once every task is done."),
+          ? [el("button", { class: "btn big", type: "button", disabled: ui.busy, onclick: () => check(l) }, "✍ Verified"),
+             el("p", { class: "hint" }, "A Supervisor verifies — or, with no Supervisor on shift, the Production Manager or a Line Lead. Not someone who did a task.")]
+          : el("p", { class: "hint" }, "Verified opens once every task is done."),
+      (l.history || []).length
+        ? collapsible(`shop-history-${l.id}`, `🕘 History (${l.history.length})`, el("ul", { class: "history-list" }, [...l.history].reverse().map((h) => el("li", {}, breakable(historyText(h))))))
+        : null,
       el("p", { class: "hint" }, `Each person signs with their own PIN${TEST_MODE ? " — test site, practice only" : ""}.`),
     ];
   }
@@ -228,7 +270,7 @@ export function openShopTasks(container, { me, startId = null, onExit }) {
         const s = listState(l);
         return el("button", { class: "person-row", type: "button", onclick: () => { ui.id = l.id; render(); window.scrollTo(0, 0); } },
           el("span", { class: "person-name" }, `${l.shift.name} shift · ${dayLabel(l.date)}`),
-          el("span", { class: "person-meta" }, s.checked ? `✓ Checked by ${l.check.name}` : `${s.done} of ${s.total} done`),
+          el("span", { class: "person-meta" }, s.checked ? `✓ Verified by ${verifiedText(l.check)}` : `${s.done} of ${s.total} done`),
           l.test ? el("span", { class: "tags" }, el("span", { class: "tag test" }, "TEST")) : null);
       }))) : null,
     ].flat(3).filter(Boolean));

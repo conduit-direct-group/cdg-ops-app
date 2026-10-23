@@ -19,11 +19,21 @@ import { offlineSign } from "./outbox.js";
 
 // Same as the server (functions/announcements.js).
 const DEFAULT_POSTER_ROLES = ["admin", "plant-manager", "supervisor", "training-safety", "office"];
+// Priority labels (Chris, 10-23-2026) — separate from the gray / red / green status colors: Normal is plain,
+// Important an orange ⚡ badge, Safety a red ⚠ badge.
 const PRIORITY = {
-  normal: { label: "Normal", tag: "tag", icon: "📣" },
-  important: { label: "❗ Important", tag: "tag warn", icon: "❗" },
-  safety: { label: "⚠ Safety", tag: "tag off", icon: "⚠" },
+  normal: { label: "Normal", tag: "", icon: "📣" },
+  important: { label: "⚡ Important", tag: "prio-badge important", icon: "⚡" },
+  safety: { label: "⚠ Safety", tag: "prio-badge safety", icon: "⚠" },
 };
+export const prioBadge = (priority) => (PRIORITY[priority]?.tag ? el("span", { class: PRIORITY[priority].tag }, PRIORITY[priority].label) : null);
+
+// Important: only Line Leads and Supervisors sign ("Read & relayed to crew"); the crew sees it but doesn't sign.
+// Normal and Safety: everyone in the audience signs. Same rule as the server (functions/announcements.js).
+const RELAY_ROLES = ["lead", "supervisor"];
+const isRelay = (a) => a.priority === "important";
+const iSign = (a, roles = data.myself?.roles || []) => !isRelay(a) || roles.some((r) => RELAY_ROLES.includes(r));
+const signLabel = (a) => (isRelay(a) ? "Read & relayed to crew" : "Read & understood");
 
 export const rolePosts = (role) => (typeof role.canPostAnnouncements === "boolean" ? role.canPostAnnouncements : DEFAULT_POSTER_ROLES.includes(role.id));
 export function canPost(myRoles) {
@@ -52,8 +62,8 @@ export function toSign(emp) {
   if (!data.announcements || !data.mySigs) return [];
   const today = plantToday();
   return data.announcements
-    .filter((a) => (a.audienceEmps || []).includes(emp) && !isEnded(a, today) && !mySig(a))
-    .sort((a, b) => (b.priority === "safety") - (a.priority === "safety") || isOverdue(b, today) - isOverdue(a, today) || String(a.ackBy).localeCompare(String(b.ackBy)));
+    .filter((a) => (a.audienceEmps || []).includes(emp) && !isEnded(a, today) && !mySig(a) && iSign(a))
+    .sort((a, b) => (b.priority === "safety") - (a.priority === "safety") || (b.priority === "important") - (a.priority === "important") || isOverdue(b, today) - isOverdue(a, today) || String(a.ackBy).localeCompare(String(b.ackBy)));
 }
 export const forMeNow = (emp) => (data.announcements || []).filter((a) => (a.audienceEmps || []).includes(emp) && !isEnded(a));
 
@@ -61,18 +71,19 @@ function statusTag(a, emp) {
   if (isEnded(a)) return el("span", { class: "tag" }, "Ended");
   if (!(a.audienceEmps || []).includes(emp)) return null;
   if (mySig(a)) return el("span", { class: "tag ok" }, "✓ Signed");
+  if (!iSign(a)) return el("span", { class: "tag" }, "No sign-off needed");
   if (isOverdue(a)) return el("span", { class: "tag off" }, "⚠ Overdue");
   return el("span", { class: "tag warn" }, signedBefore(a) ? "Updated — sign again" : "To sign");
 }
 
 export function annRow(a, emp, onclick) {
-  const urgent = (a.audienceEmps || []).includes(emp) && !isEnded(a) && !mySig(a) && (a.priority === "safety" || isOverdue(a));
+  const urgent = (a.audienceEmps || []).includes(emp) && !isEnded(a) && !mySig(a) && iSign(a) && (a.priority === "safety" || isOverdue(a));
   return el(
     "button",
     { class: urgent ? "person-row urgent" : "person-row", type: "button", onclick },
     el("span", { class: "person-name" }, `${PRIORITY[a.priority]?.icon || "📣"} ${a.title}`),
     el("span", { class: "person-meta" }, [a.createdByName ? `From ${a.createdByName}` : "", toMs(a.createdAt) ? `posted ${fmtWhen(a.createdAt)}` : "", isEnded(a) ? "" : `acknowledge by ${fmtDay(a.ackBy)}`].filter(Boolean).join(" · ")),
-    el("span", { class: "tags" }, a.priority !== "normal" ? el("span", { class: PRIORITY[a.priority].tag }, PRIORITY[a.priority].label) : null, statusTag(a, emp), a.test ? el("span", { class: "tag test" }, "TEST") : null)
+    el("span", { class: "tags" }, prioBadge(a.priority), statusTag(a, emp), a.test ? el("span", { class: "tag test" }, "TEST") : null)
   );
 }
 
@@ -85,17 +96,16 @@ export function announcementItems(emp, onOpen) {
   if (!waiting.length) {
     return forMeNow(emp).length ? [{ key: "ann", icon: "📣", title: "Announcements", detail: "all signed", state: "done", onOpen: () => onOpen(null) }] : [];
   }
-  const safety = waiting.filter((a) => a.priority === "safety");
-  const late = waiting.filter((a) => isOverdue(a));
-  const first = waiting[0];
-  const more = waiting.length > 1 ? ` (+${waiting.length - 1} more)` : "";
-  return [{
-    key: "ann", icon: "📣",
-    title: safety.length ? `Safety announcement: ${safety[0].title}${more}` : waiting.length === 1 ? `Announcement: ${first.title}` : `${waiting.length} announcements to read and sign`,
-    detail: late.length ? `was due ${fmtDay(late[0].ackBy)}` : safety.length ? "read and sign now" : `sign by ${fmtDay(first.ackBy)}`,
-    state: safety.length || late.length ? "late" : "due",
-    onOpen: () => onOpen(waiting.length === 1 ? first.id : null),
-  }];
+  // Each unsigned one is its own item, with its priority badge, pinned above everything else in Needs you
+  // (Chris, 10-23-2026). Safety first, then Important, then overdue, then soonest due.
+  return waiting.map((a) => ({
+    key: `ann:${a.id}`, icon: PRIORITY[a.priority]?.icon || "📣", pin: true, badge: prioBadge(a.priority),
+    title: a.title,
+    detail: [isOverdue(a) ? `was due ${fmtDay(a.ackBy)}` : a.priority === "safety" ? "read and sign now" : `sign by ${fmtDay(a.ackBy)}`,
+      isRelay(a) ? "read & relay to your crew" : ""].filter(Boolean).join(" · "),
+    state: a.priority === "safety" || isOverdue(a) ? "late" : "due",
+    onOpen: () => onOpen(a.id),
+  }));
 }
 
 // ---- upload (photo or PDF) -------------------------------------------------------------------------------------
@@ -141,7 +151,7 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
     const all = data.announcements;
     const loading = !all || !data.mySigs;
     const waiting = loading ? [] : toSign(me.emp);
-    const current = loading ? [] : all.filter((a) => !isEnded(a) && (a.audienceEmps || []).includes(me.emp) && mySig(a));
+    const current = loading ? [] : all.filter((a) => !isEnded(a) && (a.audienceEmps || []).includes(me.emp) && (mySig(a) || !iSign(a, me.roles)));
     const tracking = loading ? [] : all.filter((a) => !isEnded(a) && !(a.audienceEmps || []).includes(me.emp));
     const past = loading ? [] : all.filter((a) => isEnded(a));
     return [
@@ -156,7 +166,7 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
         : null,
       waiting.length ? [el("h2", {}, `To read and sign (${waiting.length})`), el("div", { class: "person-list" }, waiting.map((a) => annRow(a, me.emp, () => openOne(a.id))))] : null,
       !loading && !waiting.length && (current.length || tracking.length) ? el("p", { class: "message ok" }, "✓ You've signed every announcement meant for you.") : null,
-      current.length ? collapsible("ann-current", `✓ Signed, still up (${current.length})`, el("div", { class: "person-list" }, current.map((a) => annRow(a, me.emp, () => openOne(a.id))))) : null,
+      current.length ? collapsible("ann-current", `✓ Signed or no sign-off needed, still up (${current.length})`, el("div", { class: "person-list" }, current.map((a) => annRow(a, me.emp, () => openOne(a.id))))) : null,
       tracking.length ? collapsible("ann-tracking", `📊 Sign-offs you're tracking (${tracking.length})`, el("div", { class: "person-list" }, tracking.map((a) => annRow(a, me.emp, () => openOne(a.id))))) : null,
       past.length ? collapsible("ann-archive", `🗄 Archive — past announcements (${past.length})`, archive(past)) : null,
     ];
@@ -180,17 +190,17 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
   // ---- read & sign ---------------------------------------------------------------------------------------------
 
   function canSign(a) {
-    return (a.audienceEmps || []).includes(me.emp) && !isEnded(a) && !mySig(a);
+    return (a.audienceEmps || []).includes(me.emp) && !isEnded(a) && !mySig(a) && iSign(a, me.roles);
   }
   const gateOpen = (a) => ui.seenEnd && (a.file?.kind !== "pdf" || ui.openedFile);
 
   async function sign(a) {
     const r = await signOff({
-      title: "Read & understood",
+      title: signLabel(a),
       what: `${a.title}${version(a) > 1 ? ` · version ${version(a)}` : ""}`,
       me: { emp: me.emp, name: me.name },
       others: async () => (await callSignoffPeople({ kind: "announcement", id: a.id })).data.people,
-      action: offlineSign("signAnnouncement", { id: a.id, version: version(a) }, { label: `Read & understood · ${a.title}`, key: `ann:${a.id}` }),
+      action: offlineSign("signAnnouncement", { id: a.id, version: version(a) }, { label: `${signLabel(a)} · ${a.title}`, key: `ann:${a.id}` }),
     });
     if (!r) return;
     toast(signedNote(r, `${r.already ? "Already signed" : "Signed"} — ${r.name}${r.test ? " (test)" : ""}`));
@@ -205,7 +215,7 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
     const ready = gateOpen(a);
     return [
       !ready ? el("p", { class: "hint" }, !ui.seenEnd ? "⬇ Scroll to the end of the message to sign." : needPdf ? "📄 Open the attached PDF to sign." : "") : null,
-      el("button", { class: "btn big", type: "button", disabled: !ready, onclick: () => sign(a) }, "✔ Read & understood"),
+      el("button", { class: "btn big", type: "button", disabled: !ready, onclick: () => sign(a) }, `✔ ${signLabel(a)}`),
       el("p", { class: "hint" }, `You'll confirm with your PIN${TEST_MODE ? " — test site, practice only" : ""}.`),
     ];
   }
@@ -237,7 +247,6 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
     }
     const sig = mySig(a);
     const older = signedBefore(a);
-    const p = PRIORITY[a.priority] || PRIORITY.normal;
     const file = a.file
       ? a.file.kind === "image"
         ? el("a", { href: a.file.url, target: "_blank", rel: "noopener", class: "ann-photo" }, el("img", { class: "fix-photo", src: a.file.url, alt: a.file.name || "Attached photo" }))
@@ -249,7 +258,7 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
       el("h1", { class: "fix-title" }, a.title),
       el("p", { class: "hint" }, [a.createdByName ? `From ${a.createdByName}` : "", fmtWhen(a.createdAt), `acknowledge by ${fmtDay(a.ackBy)}`, a.endDate ? `up until ${fmtDay(a.endDate)}` : ""].filter(Boolean).join(" · ")),
       el("p", { class: "tags ann-tags" },
-        el("span", { class: p.tag }, p.label),
+        prioBadge(a.priority),
         version(a) > 1 ? el("span", { class: "tag" }, `Version ${version(a)}`) : null,
         statusTag(a, me.emp),
         a.test ? el("span", { class: "tag test" }, "TEST") : null),
@@ -259,6 +268,10 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
       el("div", { class: "fix-body keep-lines ann-body" }, a.body),
       file,
       el("p", { class: "ann-end", "aria-hidden": "true" }, "— End of message —"),
+      isRelay(a) && (a.audienceEmps || []).includes(me.emp) && !iSign(a, me.roles)
+        ? el("p", { class: "message" }, "Your Line Lead or Supervisor goes over this with the crew — no sign-off needed from you.")
+        : null,
+      isRelay(a) && canSign(a) ? el("p", { class: "hint" }, "Important: go over it with your crew, then sign that you've read it and relayed it.") : null,
       sig ? el("p", { class: "message ok" }, `✓ ${sig.method === "in-person" ? `Reviewed in person (recorded by ${sig.recordedByName || "a supervisor"})` : "You signed this"} ${fmtWhen(sig.at)}${version(a) > 1 ? ` · version ${version(a)}` : ""}.`) : null,
       el("div", { id: "ann-sign" }, signArea(a)),
       trackingPanel(a),
@@ -340,7 +353,7 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
       { class: "card ann-track" },
       el("h2", {}, t.scope === "crew" ? "Your crew's sign-offs" : "Sign-offs"),
       t.noCrew ? el("p", { class: "message" }, "Your crew is the people on your team (or your home line). Ask an admin to set your team in Admin → People.") : null,
-      el("p", { class: "ann-count" }, el("strong", {}, `${c.signed} of ${c.total} signed`), c.noLogin ? ` · ${c.noLogin} with no login, not reviewed yet` : ""),
+      el("p", { class: "ann-count" }, el("strong", {}, `${isRelay(a) ? "Line Leads & Supervisors: " : ""}${c.signed} of ${c.total} signed`), c.noLogin ? ` · ${c.noLogin} with no login, not reviewed yet` : ""),
       t.readOnly ? el("p", { class: "card-note" }, "Real announcement — on the test site, signatures here are practice only.") : null,
       // People with a login who haven't signed stay in view; people with no login yet fold away (until launch that
       // is nearly everyone, and they can't sign themselves — a supervisor records "Reviewed in person").
@@ -538,6 +551,7 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
         el("div", { class: "choices three" }, ["normal", "important", "safety"].map((k) =>
           el("button", { class: `${d.priority === k ? "choice on" : "choice"}${k === "safety" ? " danger" : ""}`, type: "button", "aria-pressed": String(d.priority === k), onclick: () => { d.priority = k; render(); } }, PRIORITY[k].label))),
         d.priority === "safety" ? el("p", { class: "card-note" }, "Safety shows in red at the very top of everyone's Home until they sign.") : null,
+        d.priority === "important" ? el("p", { class: "card-note" }, "Important: only the Line Leads and Supervisors in the audience sign “Read & relayed to crew.” The crew sees it but doesn't sign.") : null,
         el("div", { class: "date-row" },
           el("div", {},
             el("label", { class: "field-label", for: "ann-ack" }, "Acknowledge by"),

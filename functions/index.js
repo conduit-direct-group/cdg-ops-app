@@ -43,6 +43,7 @@ const offlineLib = require("./offline");
 const { AsyncLocalStorage } = require("node:async_hooks");
 const deptLib = require("./departments");
 const crewLib = require("./crew");
+const verifyLib = require("./verify");
 const crypto = require("node:crypto");
 const { getMessaging } = require("firebase-admin/messaging");
 const { defineSecret } = require("firebase-functions/params");
@@ -2071,6 +2072,9 @@ exports.postAnnouncement = onCall(async (req) => {
   if (error) throw new HttpsError("invalid-argument", error);
   const audienceEmps = annLib.matchAudience(announcement.audience, people);
   if (!audienceEmps.length) throw new HttpsError("invalid-argument", "Nobody matches that audience right now. Pick others.");
+  if (!annLib.signersOf({ ...announcement, audienceEmps }, people).length) {
+    throw new HttpsError("invalid-argument", "Important announcements are signed by the Line Leads and Supervisors in the audience, and there are none. Add them, or pick Normal.");
+  }
   const trackers = annLib.trackersFor(me.employeeNumber, audienceEmps, people);
   const editId = req.data?.id ? String(req.data.id) : null;
   const now = FieldValue.serverTimestamp();
@@ -2155,6 +2159,7 @@ exports.signAnnouncement = onCall(signable(async (req) => {
   const { snap } = await findAnnouncement(test, String(req.data?.id || ""));
   const a = snap.data();
   if (!(a.audienceEmps || []).includes(signer.employeeNumber)) throw new HttpsError("permission-denied", `This announcement isn't for ${signer.name}.`);
+  if (!annLib.signsIt(a, signer.roles)) throw new HttpsError("permission-denied", `Line Leads and Supervisors sign Important announcements — ${signer.name} doesn't need to.`);
   if (annLib.isEnded(a, plantToday())) throw new HttpsError("failed-precondition", "This announcement has ended — nothing to sign.");
   if (Number(req.data?.version) !== (a.version || 1)) throw new HttpsError("failed-precondition", "It was just updated. Read the new version, then sign.");
   const version = a.version || 1;
@@ -2190,6 +2195,7 @@ exports.recordReviewedInPerson = onCall(signable(async (req) => {
   const person = people.find((p) => p.id === emp);
   if (!person) throw new HttpsError("not-found", "That person is no longer in the app.");
   if (person.loginEnabled) throw new HttpsError("failed-precondition", `${person.name} has a login — they sign with their own PIN.`);
+  if (!annLib.signsIt(a, person.roles)) throw new HttpsError("failed-precondition", `Line Leads and Supervisors sign Important announcements — ${person.name} doesn't need to.`);
   const meRecord = people.find((p) => p.id === me.employeeNumber);
   if (!hasRole(me.roles, ["plant-manager", "admin"]) && !annLib.crewOf(meRecord, people).includes(emp)) {
     throw new HttpsError("permission-denied", `${person.name} isn't on your crew.`);
@@ -2216,7 +2222,7 @@ async function trackingFor(me, test, id) {
   if (!scope) throw new HttpsError("permission-denied", "Only the poster, Production Manager, Office, Admins, and Supervisors (for their crew) can see this.");
   const people = await peopleList();
   const byId = new Map(people.map((p) => [p.id, p]));
-  let ids = a.audienceEmps || [];
+  let ids = annLib.signersOf(a, people); // Important: only the Line Leads and Supervisors
   if (scope === "crew") {
     const crew = new Set(annLib.crewOf(byId.get(me.employeeNumber), people));
     ids = ids.filter((e) => crew.has(e));
@@ -2289,7 +2295,7 @@ exports.announcementSummary = onCall(async (req) => {
   const behindOverdue = new Set();
   const items = active.map((d) => {
     const a = d.data();
-    const ids = (a.audienceEmps || []).filter((e) => !crew || crew.has(e));
+    const ids = annLib.signersOf(a, people).filter((e) => !crew || crew.has(e));
     const list = ids.map((emp) => annLib.personStatus({ id: emp, loginEnabled: byId.get(emp)?.loginEnabled === true }, sigs.find((s) => s.annId === d.id && s.emp === emp && s.version === (a.version || 1)) || null));
     const overdue = annLib.isOverdue(a, today);
     for (const p of list) if (p.state === "not-signed" || p.state === "no-login") { behind.add(p.id); if (overdue) behindOverdue.add(p.id); }
@@ -2311,7 +2317,7 @@ exports.signoffPeople = onCall(async (req) => {
     const a = snap.data();
     const signed = new Set((await sigCol(test).where("annId", "==", snap.id).get()).docs.filter((d) => d.get("version") === (a.version || 1)).map((d) => d.get("emp")));
     const audience = new Set(a.audienceEmps || []);
-    list = people.filter((p) => audience.has(p.id) && !signed.has(p.id));
+    list = people.filter((p) => audience.has(p.id) && annLib.signsIt(a, p.roles) && !signed.has(p.id));
   }
   list.sort((x, y) => x.name.localeCompare(y.name));
   return { people: list.filter((p) => p.id !== me.employeeNumber).map((p) => ({ emp: p.id, name: p.name })) };
@@ -2571,7 +2577,8 @@ exports.handoffReceivers = onCall(async (req) => {
 // task-list form (Admin → Forms, formId "clean-shop"). One list per shift (date + shift).
 //   shopTasks/{date__shift}   formRev, sections (copy), shift {id,name,start,end}, date, startMs, endMs, redMinutes,
 //                             assign { taskId: emp }, names { emp: name }, assignees [emp], done { taskId: {emp,name,at,device} },
-//                             check {emp,name,at,device} | null, createdBy/Name
+//                             check {emp,name,at,device,role,roleName,backup} | null (Verified), history [reassigned /
+//                             Do again — old sign-offs kept], createdBy/Name
 // A Line Lead or Supervisor assigns each task to a person; each person marks their own task done with PIN; the
 // Supervisor check is a PIN sign-off once every task is done. Test site: test_shopTasks.
 // ---------------------------------------------------------------------------
@@ -2631,8 +2638,13 @@ exports.assignShopTask = onCall(async (req) => {
     if (l.check) throw new HttpsError("failed-precondition", "This list was already checked by a supervisor.");
     const assign = { ...(l.assign || {}) };
     const names = { ...(l.names || {}) };
+    const from = assign[task.id] || null;
     if (emp) { assign[task.id] = emp; names[emp] = person.get("name") || `Employee ${emp}`; } else delete assign[task.id];
-    tx.update(ref, { assign, names, assignees: [...new Set(Object.values(assign))].sort(), updatedAt: FieldValue.serverTimestamp() });
+    // Reassigned (e.g. someone left mid-shift): kept in the list's history.
+    const history = from && from !== emp
+      ? [...(l.history || []), { kind: "reassigned", taskId: task.id, label: task.label, from, fromName: names[from] || from, to: emp, toName: emp ? names[emp] : null, by: me.employeeNumber, byName: me.name, at: new Date() }]
+      : l.history || [];
+    tx.update(ref, { assign, names, assignees: [...new Set(Object.values(assign))].sort(), history, updatedAt: FieldValue.serverTimestamp() });
     return { task, list: l };
   });
   if (emp && emp !== me.employeeNumber) {
@@ -2665,37 +2677,91 @@ exports.markShopTaskDone = onCall(signable(async (req) => {
   return { ok: true, name: signer.name, task: label, test };
 }));
 
-// Supervisor check, once every task is done: { id, signer: { emp, pin }, device }. Supervisor, Production Manager, Admin.
+// Two-step sign-off (verify.js): is a Supervisor on this shift? Supervisors who cover the team on shift (their own team
+// or one they supervise), minus anyone marked Out on Who's here today. No team on shift yet → no Supervisor on shift.
+async function supervisorOnShiftNow(test) {
+  const [s, people] = await Promise.all([crewShift(test), peopleList()]);
+  if (!s?.teamId) return false;
+  const marks = s.saved?.marks || {};
+  return people.some((p) => p.active && p.roles.includes("supervisor") && deptLib.covers(p, s.teamId, "supervisor") && marks[p.id]?.status !== "out");
+}
+
+// The verifier's role for the record, or a plain refusal.
+function requireVerifier(signer, supervisorOnShift, doers) {
+  const who = verifyLib.verifierRole(signer.employeeNumber, signer.roles, { supervisorOnShift, doers });
+  if (who.error) throw new HttpsError("permission-denied", who.error.replace(/^You did/, `${signer.name} did`));
+  return who;
+}
+const verifyStamp = (signer, who, device) => ({ emp: signer.employeeNumber, name: signer.name, at: new Date(), device, role: who.role, roleName: who.roleName, backup: who.backup });
+const shopDoers = (l) => Object.values(l.done || {}).map((d) => d.emp);
+
+// Verified (the second step), once every task is done: { id, signer: { emp, pin }, device }. A Supervisor — or, with no
+// Supervisor on shift, the Production Manager or a Line Lead. Not someone who did a task on the list.
 exports.checkShopTasks = onCall(signable(async (req) => {
   const me = await requireMember(req);
   const test = isTest(req);
   const signer = await requireSignature(req.data);
-  if (!signer.roles.some((r) => formsLib.CHECK_ROLES.includes(r))) throw new HttpsError("permission-denied", "The supervisor check is for Supervisors, the Production Manager, and Admins.");
   const device = annLib.cleanDevice(req.data?.device);
   const ref = shopCol(test).doc(String(req.data?.id || ""));
-  await db.runTransaction(async (tx) => {
+  const supervisorOnShift = await supervisorOnShiftNow(test);
+  const who = await db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     if (!snap.exists) throw new HttpsError("not-found", "That task list no longer exists.");
     const l = snap.data();
-    if (l.check) throw new HttpsError("failed-precondition", `Already checked by ${l.check.name}.`);
+    if (l.check) throw new HttpsError("failed-precondition", `Already verified by ${l.check.name}.`);
     const left = (l.sections || []).flatMap((s) => s.fields).filter((t) => !l.done?.[t.id]);
     if (left.length) throw new HttpsError("failed-precondition", `${left.length} task${left.length === 1 ? " isn't" : "s aren't"} done yet.`);
-    tx.update(ref, { check: { emp: signer.employeeNumber, name: signer.name, at: new Date(), device }, updatedAt: FieldValue.serverTimestamp() });
-    logSignoff(tx, test, { kind: "shop-check", refId: ref.id, version: l.formRev, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber });
+    const w = requireVerifier(signer, supervisorOnShift, shopDoers(l));
+    tx.update(ref, { check: verifyStamp(signer, w, device), updatedAt: FieldValue.serverTimestamp() });
+    logSignoff(tx, test, { kind: "shop-check", refId: ref.id, version: l.formRev, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber, role: w.role, backup: w.backup });
+    return w;
   });
-  return { ok: true, name: signer.name, test };
+  return { ok: true, name: signer.name, role: who.roleName, backup: who.backup, test };
 }));
 
-// Who can sign on this device's sheet (line tablets): { id, taskId } -> the person it's assigned to; { id } (check) ->
-// Supervisors, Production Manager, Admins with a login.
+// Do again: { id, taskId, reason } — reopens a finished task. Its Done (and the list's Verified, if any) move to the
+// history; the person it's assigned to is notified. Line Leads, Supervisors, Production Manager, Admins.
+exports.redoShopTask = onCall(async (req) => {
+  const me = await requireMember(req);
+  if (!verifyLib.canRedo(me.roles)) throw new HttpsError("permission-denied", "Line Leads, Supervisors, the Production Manager, and Admins can ask for a task to be done again.");
+  const test = isTest(req);
+  const { reason, error } = verifyLib.cleanReason(req.data?.reason);
+  if (error) throw new HttpsError("invalid-argument", error);
+  const ref = shopCol(test).doc(String(req.data?.id || ""));
+  const r = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "That task list no longer exists.");
+    const l = snap.data();
+    const task = (l.sections || []).flatMap((s) => s.fields).find((t) => t.id === req.data?.taskId);
+    if (!task) throw new HttpsError("invalid-argument", "That task isn't on this list.");
+    if (!l.done?.[task.id]) throw new HttpsError("failed-precondition", `“${task.label}” isn't done yet.`);
+    const at = new Date();
+    const history = [...(l.history || []), { kind: "redo", taskId: task.id, label: task.label, reason, prevDone: l.done[task.id], prevCheck: l.check || null, by: me.employeeNumber, byName: me.name, at }];
+    const done = { ...l.done };
+    delete done[task.id];
+    tx.update(ref, { done, check: null, history, updatedAt: FieldValue.serverTimestamp() });
+    auditRecord(tx, "redo", "shop task", ref.id, me.employeeNumber, { taskId: task.id, reason, test });
+    return { task, emp: l.assign?.[task.id] || null };
+  });
+  if (r.emp && r.emp !== me.employeeNumber) {
+    await pushTo(test ? [me.employeeNumber] : [r.emp], {
+      title: `${test ? "[TEST] " : ""}🧹 Do again: ${r.task.label}`, body: `${me.name}: ${reason}`, url: `/?shop=${ref.id}`,
+    });
+  }
+  return { ok: true, task: r.task.label, test };
+});
+
+// Who can sign on this device's sheet (line tablets): { id, taskId } -> the person it's assigned to; { id } (Verified)
+// -> who may verify right now (verify.js), with a login.
 exports.shopTaskSigners = onCall(async (req) => {
   const me = await requireMember(req);
-  const snap = await shopCol(isTest(req)).doc(String(req.data?.id || "")).get();
+  const test = isTest(req);
+  const snap = await shopCol(test).doc(String(req.data?.id || "")).get();
   if (!snap.exists) throw new HttpsError("not-found", "That task list no longer exists.");
   const people = (await peopleList()).filter((p) => p.active && p.loginEnabled && p.id !== me.employeeNumber);
   const list = req.data?.taskId
     ? people.filter((p) => snap.get("assign")?.[req.data.taskId] === p.id)
-    : people.filter((p) => p.roles.some((r) => formsLib.CHECK_ROLES.includes(r)));
+    : verifyLib.verifiers(people, { supervisorOnShift: await supervisorOnShiftNow(test), doers: shopDoers(snap.data()) });
   return { people: list.map((p) => ({ emp: p.id, name: p.name })) };
 });
 
@@ -2704,7 +2770,8 @@ exports.shopTaskSigners = onCall(async (req) => {
 // shift. The items come from each station's form (Admin → Forms, kind "station"); the shift times come from the
 // Keep the Shop Clean form, so they're kept in one place.
 //   stationLists/{date__shift__formId}   formId, formRev, formName, intro, sections (copy), shift, date, startMs, endMs,
-//                                        redMinutes, values, signed {emp,name,at,device} | null, createdBy
+//                                        redMinutes, values, signed {emp,name,at,device} | null (Done),
+//                                        verified {emp,name,at,device,role,roleName,backup} | null, history [Do again], createdBy
 // Anyone signed in fills it in (saved as they go); one person signs it off with PIN once every task is ticked and
 // every count is filled in. Test site: test_stationLists.
 // ---------------------------------------------------------------------------
@@ -2774,6 +2841,62 @@ exports.signStationList = onCall(signable(async (req) => {
   });
   return { ok: true, name: signer.name, form: name, test };
 }));
+
+// Verified (the second step, verify.js) once it's signed Done: { id, signer: { emp, pin }, device }. A Supervisor — or,
+// with no Supervisor on shift, the Production Manager or a Line Lead. Not the person who signed it Done.
+exports.verifyStationList = onCall(signable(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const signer = await requireSignature(req.data);
+  const device = annLib.cleanDevice(req.data?.device);
+  const ref = stationCol(test).doc(String(req.data?.id || ""));
+  const supervisorOnShift = await supervisorOnShiftNow(test);
+  const r = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "That checklist no longer exists.");
+    const l = snap.data();
+    if (!l.signed) throw new HttpsError("failed-precondition", "It isn't signed Done yet.");
+    if (l.verified) throw new HttpsError("failed-precondition", `Already verified by ${l.verified.name}.`);
+    const w = requireVerifier(signer, supervisorOnShift, [l.signed.emp]);
+    tx.update(ref, { verified: verifyStamp(signer, w, device), updatedAt: FieldValue.serverTimestamp() });
+    logSignoff(tx, test, { kind: "station-verify", refId: ref.id, version: l.formRev, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber, role: w.role, backup: w.backup });
+    return { w, form: l.formName };
+  });
+  return { ok: true, name: signer.name, role: r.w.roleName, backup: r.w.backup, form: r.form, test };
+}));
+
+// Do again: { id, reason } — reopens a signed checklist. Its Done and Verified move to the history (the ticks and counts
+// stay, to fix what's needed). Line Leads, Supervisors, Production Manager, Admins.
+exports.redoStationList = onCall(async (req) => {
+  const me = await requireMember(req);
+  if (!verifyLib.canRedo(me.roles)) throw new HttpsError("permission-denied", "Line Leads, Supervisors, the Production Manager, and Admins can ask for a checklist to be done again.");
+  const test = isTest(req);
+  const { reason, error } = verifyLib.cleanReason(req.data?.reason);
+  if (error) throw new HttpsError("invalid-argument", error);
+  const ref = stationCol(test).doc(String(req.data?.id || ""));
+  const form = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "That checklist no longer exists.");
+    const l = snap.data();
+    if (!l.signed) throw new HttpsError("failed-precondition", "It isn't signed Done yet — nothing to reopen.");
+    const history = [...(l.history || []), { kind: "redo", reason, prevDone: l.signed, prevCheck: l.verified || null, by: me.employeeNumber, byName: me.name, at: new Date() }];
+    tx.update(ref, { signed: null, verified: null, history, updatedAt: FieldValue.serverTimestamp() });
+    auditRecord(tx, "redo", "station checklist", ref.id, me.employeeNumber, { reason, test });
+    return l.formName;
+  });
+  return { ok: true, form, test };
+});
+
+// Who can verify on this device's sheet (line tablets): { id } -> who may verify right now, with a login.
+exports.stationVerifiers = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const snap = await stationCol(test).doc(String(req.data?.id || "")).get();
+  if (!snap.exists) throw new HttpsError("not-found", "That checklist no longer exists.");
+  const people = (await peopleList()).filter((p) => p.active && p.loginEnabled && p.id !== me.employeeNumber);
+  const list = verifyLib.verifiers(people, { supervisorOnShift: await supervisorOnShiftNow(test), doers: [snap.get("signed")?.emp].filter(Boolean) });
+  return { people: list.map((p) => ({ emp: p.id, name: p.name })) };
+});
 
 // ---------------------------------------------------------------------------
 // Line Check Log (Decision 64) — from the Line Daily Checklist. The readings, checks, limits, how often, and the

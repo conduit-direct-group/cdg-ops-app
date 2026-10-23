@@ -18,6 +18,9 @@ const SEE_ALL_ROLES = ["admin", "plant-manager", "office"];
 const CREW_ROLES = ["supervisor"];
 // May record "Reviewed in person" for someone with no login yet.
 const IN_PERSON_ROLES = ["supervisor", "plant-manager", "admin"];
+// Important: only the Line Leads and Supervisors in the audience sign ("Read & relayed to crew"); the crew sees it
+// but doesn't sign (Chris, 10-23-2026). Normal and Safety: everyone in the audience signs.
+const RELAY_ROLES = ["lead", "supervisor"];
 
 const clean = (v, max) => (typeof v === "string" ? v.replace(/\r\n/g, "\n").trim().slice(0, max) : "");
 const isDay = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(`${v}T12:00:00Z`));
@@ -92,6 +95,13 @@ function crewOf(supervisor, employees) {
 
 const has = (roles, list) => (roles || []).some((r) => list.includes(r));
 
+// Does someone with these roles sign this announcement? And who in the audience signs: people = [{ id, roles }].
+const signsIt = (announcement, roles) => announcement.priority !== "important" || has(roles, RELAY_ROLES);
+function signersOf(announcement, people) {
+  const byId = new Map(people.map((p) => [p.id, p]));
+  return (announcement.audienceEmps || []).filter((e) => signsIt(announcement, byId.get(e)?.roles));
+}
+
 // Who may open the tracking list: the poster and Production Manager/Office/Admin see everyone; supervisors their crew.
 // Returns "all", "crew", or null.
 function trackScope(me, announcement) {
@@ -152,7 +162,7 @@ function cleanDevice(d) {
 }
 
 module.exports = {
-  PRIORITIES, DEFAULT_POSTER_ROLES, SEE_ALL_ROLES, CREW_ROLES, IN_PERSON_ROLES,
+  PRIORITIES, DEFAULT_POSTER_ROLES, SEE_ALL_ROLES, CREW_ROLES, IN_PERSON_ROLES, RELAY_ROLES, signsIt, signersOf,
   rolePosts, canPost, cleanAnnouncement, matchAudience, crewOf, trackScope, trackersFor, refreshedAudience,
   contentChanged, isEnded, isOverdue, personStatus, countUp, cleanDevice,
 };

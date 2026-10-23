@@ -104,3 +104,14 @@ test("device on a sign-off is cleaned up", () => {
   assert.deepStrictEqual(a.cleanDevice({ id: "abc12345-x", kind: "line-tablet", label: "Line tablet · iPad" }), { id: "abc12345-x", kind: "line-tablet", label: "Line tablet · iPad" });
   assert.deepStrictEqual(a.cleanDevice({ id: "<script>", kind: "hack" }), { id: "unknown", kind: "personal", label: "Personal device" });
 });
+
+test("Important: only the Line Leads and Supervisors in the audience sign; Normal and Safety: everyone", () => {
+  const people = [{ id: "1", roles: ["operator"] }, { id: "2", roles: ["lead"] }, { id: "3", roles: ["supervisor", "admin"] }, { id: "4", roles: ["office"] }];
+  const audienceEmps = ["1", "2", "3"];
+  assert.deepStrictEqual(a.signersOf({ priority: "important", audienceEmps }, people), ["2", "3"]);
+  assert.deepStrictEqual(a.signersOf({ priority: "normal", audienceEmps }, people), audienceEmps);
+  assert.deepStrictEqual(a.signersOf({ priority: "safety", audienceEmps }, people), audienceEmps);
+  assert.strictEqual(a.signsIt({ priority: "important" }, ["operator"]), false);
+  assert.strictEqual(a.signsIt({ priority: "important" }, ["lead"]), true);
+  assert.deepStrictEqual(a.signersOf({ priority: "important", audienceEmps: ["1", "4"] }, people), []);
+});

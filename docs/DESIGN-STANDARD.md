@@ -6,6 +6,8 @@ Every screen should look and feel like a finished, professional CDG product. Cle
 ## Look
 - CDG black / orange / white. One black, one orange, one red (alerts only). Defined once as color variables, never hard-coded.
 - Status colors (Decision 66): three only — gray = not due yet (always with its due time, e.g. "due by 5:00 PM"), red ⚠ = last hour of the shift or overdue, green ✓ = done. Always paired with an icon and words. No other status colors (no orange "waiting" style). Line status: green ✓ Running / red ⛔ Down. **Exception: the Trucks board** uses no red/green — plain words and icons only (🕒 Expected · 📥 Arrived · 🚚 Out the door).
+- Announcement priority labels (`prioBadge`, `.prio-badge`) are not status colors: Normal plain, Important orange ⚡, Safety red ⚠.
+- Two-step duties (Done, then Verified): green only once both are signed; Done alone stays gray.
 - Home: every item appears only once (Needs you); no card or button repeats a Needs you item. Tapping an item opens it.
 - Navigation bar on every screen once signed in: Home · Map · Checklists · Machines (Maintenance, Production Manager, Admin) · Trucks (Logistics & Distribution; Production Manager, Sales, Admin find it in More) · Announcements · More — bottom bar on phones and tablets, side bar on desktops. Lists that can fold away elsewhere still do (collapsible in ui.js).
 - Every sign-off uses the one shared sign-off part (signoff.js): tap your name, then your PIN.

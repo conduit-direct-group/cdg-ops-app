@@ -1,16 +1,21 @@
 // Station checklists (Decision 63) — from the Daily Check List: Reel Building and Reclamation, one per station per
 // shift. Items come from each station's form (Admin → Forms). Anyone signed in ticks tasks and fills in the counts
-// (saved as they go); one person signs it off with their PIN once everything is done.
-// Leads and supervisors see on Home which stations aren't signed off this shift (red in the last hour).
+// (saved as they go); the person who did it signs Done with their PIN once everything is done, then someone else signs
+// Verified (two-step sign-off, functions/verify.js: a Supervisor, or with no Supervisor on shift the Production Manager
+// or a Line Lead). Green only when both have signed. "Do again" reopens a signed checklist with a reason; the old
+// sign-offs stay in its history. Leads and supervisors see on Home which stations aren't done and verified this shift
+// (red in the last hour).
 
-import { el, friendlyError, spinner, emptyState, banner, toast, collapsible } from "./ui.js";
+import { el, friendlyError, spinner, emptyState, banner, toast, collapsible, breakable } from "./ui.js";
 import { dueByShiftEnd } from "./shift.js";
 import { data, onDataChange } from "./data.js";
-import { TEST_MODE, callStartStationList, callSaveStationList, callSignStationList } from "./firebase.js";
+import { TEST_MODE, callStartStationList, callSaveStationList, callSignStationList, callRedoStationList, callStationVerifiers } from "./firebase.js";
 import { signOff, signedNote } from "./signoff.js";
 import { offlineSign } from "./outbox.js";
 
 const TASKLIST_ROLES = ["lead", "supervisor", "plant-manager", "admin"];
+const VERIFY_ROLES = ["supervisor", "plant-manager", "lead"]; // the server decides who may verify right now
+const verifiedText = (c) => `${c.name}${c.roleName ? ` (${c.roleName}${c.backup ? " — no Supervisor on shift" : ""})` : ""}`;
 const SHIFT_FORM = "clean-shop"; // shift times are kept on the Keep the Shop Clean form
 const PLANT_TZ = "America/Chicago";
 
@@ -56,10 +61,13 @@ export function stationItems(roles, onOpen) {
   const forms = stationForms();
   const now = shiftNow();
   if (!forms.length || !now) return [];
-  const open = forms.filter((f) => !listFor(f.id, now)?.signed);
-  if (!open.length) return [{ key: "stations", icon: "📋", title: "Station checklists", detail: "all signed off", state: "done", onOpen: () => onOpen(null) }];
+  const open = forms.filter((f) => !listFor(f.id, now)?.verified);
+  if (!open.length) return [{ key: "stations", icon: "📋", title: "Station checklists", detail: "all done and verified", state: "done", onOpen: () => onOpen(null) }];
   const due = dueByShiftEnd();
-  return [{ key: "stations", icon: "📋", title: `Station checklists — not signed off: ${open.map((x) => x.name).join(", ")}`, ...due,
+  const toVerify = open.filter((f) => listFor(f.id, now)?.signed);
+  const notDone = open.filter((f) => !listFor(f.id, now)?.signed);
+  const title = [notDone.length && `not done: ${notDone.map((x) => x.name).join(", ")}`, toVerify.length && `needs Verified: ${toVerify.map((x) => x.name).join(", ")}`].filter(Boolean).join(" · ");
+  return [{ key: "stations", icon: "📋", title: `Station checklists — ${title}`, ...due,
     onOpen: () => onOpen(open.length === 1 ? open[0].id : null) }];
 }
 
@@ -67,7 +75,8 @@ export function stationItems(roles, onOpen) {
 // ===========================================================================
 
 export function openStations(container, { me, startForm = null, onExit }) {
-  const ui = { formId: startForm, id: null, values: null, busy: false, save: "", message: "", messageKind: "", retry: null, starting: false };
+  const ui = { formId: startForm, id: null, values: null, busy: false, save: "", message: "", messageKind: "", retry: null, starting: false, redo: null };
+  const runs = me.roles.some((r) => TASKLIST_ROLES.includes(r));
   let saveTimer = null;
   const say = (message, retry = null) => { Object.assign(ui, { message, messageKind: "error", retry, busy: false }); render(); };
   const back = (label, onclick) => el("button", { class: "link-btn", type: "button", onclick, disabled: ui.busy }, `← ${label}`);
@@ -109,8 +118,35 @@ export function openStations(container, { me, startForm = null, onExit }) {
       me: { emp: me.emp, name: me.name },
       action: offlineSign("signStationList", { id: l.id, values: ui.values }, { label: `${l.formName} · ${l.shift.name} shift`, key: `station:${l.id}` }),
     });
-    if (r) toast(signedNote(r, `${r.form} signed off by ${r.name}${r.test ? " (test)" : ""}`));
+    if (r) toast(signedNote(r, `${r.form} done — ${r.name}${r.test ? " (test)" : ""}`));
   }
+
+  // Verified: someone other than the person who signed it Done.
+  async function verify(l) {
+    const canMe = me.roles.some((x) => VERIFY_ROLES.includes(x)) && l.signed?.emp !== me.emp;
+    const r = await signOff({
+      title: "Verified", what: `${l.formName} · ${l.shift.name} shift · ${dayLabel(l.date)} · done by ${l.signed.name}`,
+      me: canMe ? { emp: me.emp, name: me.name } : null,
+      others: async () => (await callStationVerifiers({ id: l.id })).data.people,
+      action: offlineSign("verifyStationList", { id: l.id }, { label: `${l.formName} verified · ${l.shift.name} shift`, key: `station-verify:${l.id}` }),
+    });
+    if (r) toast(signedNote(r, `Verified by ${r.name}${r.role ? ` (${r.role})` : ""}${r.test ? " (test)" : ""}`));
+  }
+
+  // Do again: reopen with a short reason (the old Done / Verified stay in the history).
+  async function redo(l) {
+    const reason = (ui.redo?.reason || "").trim();
+    if (reason.length < 3) return say("Add a short reason (for example: “Gaylord count is off”).");
+    Object.assign(ui, { busy: true, message: "", retry: null });
+    render();
+    try {
+      const { data: r } = await callRedoStationList({ id: l.id, reason });
+      Object.assign(ui, { busy: false, redo: null, values: null });
+      toast(`Reopened: ${r.form}${r.test ? " (test)" : ""}`);
+      render();
+    } catch (err) { say(friendlyError(err), () => redo(l)); }
+  }
+  const historyText = (h) => `↺ Do again — “${h.reason}” · by ${h.byName} · ${fmtWhen(h.at)} (was done by ${h.prevDone?.name || "?"}${h.prevCheck ? `, verified by ${h.prevCheck.name}` : ""})`;
 
   function field(f, signed) {
     const v = ui.values[f.id];
@@ -139,7 +175,7 @@ export function openStations(container, { me, startForm = null, onExit }) {
       el("h1", {}, `📋 ${l.formName}`),
       el("p", { class: "hint" }, `${l.shift.name} shift · ${dayLabel(l.date)} · ends ${fmtTime(l.endMs)} · form revision ${l.formRev}`),
       el("p", { class: "tags ann-tags" },
-        el("span", { class: signed ? "tag ok" : late ? "tag off" : "tag warn" }, signed ? "✓ Signed off" : left ? `${left} left` : "Ready to sign off"),
+        el("span", { class: l.verified ? "tag ok" : late ? "tag off" : "tag warn" }, l.verified ? "✓ Done and verified" : signed ? "Done — needs Verified" : left ? `${left} left` : "Ready to sign Done"),
         l.test ? el("span", { class: "tag test" }, "TEST") : null,
         signed ? null : el("span", { class: "save-state", id: "st-save", role: "status" }, ui.save)),
       l.intro ? el("p", { class: "message" }, l.intro) : null,
@@ -150,9 +186,26 @@ export function openStations(container, { me, startForm = null, onExit }) {
         el("div", { class: "ck-list" }, s.fields.filter((f) => f.type === "task").map((f) => field(f, signed))),
         s.fields.filter((f) => f.type !== "task").map((f) => field(f, signed)))),
       signed
-        ? el("p", { class: "message ok" }, `✓ Signed off by ${l.signed.name} · ${fmtWhen(l.signed.at)}${l.signed.device?.label ? ` · ${l.signed.device.label}` : ""}`)
-        : [el("button", { class: "btn big", type: "button", disabled: ui.busy, onclick: () => sign(l) }, "✍ Sign off"),
+        ? el("p", { class: l.verified ? "message ok" : "message" }, `✓ Done by ${l.signed.name} · ${fmtWhen(l.signed.at)}${l.signed.device?.label ? ` · ${l.signed.device.label}` : ""}`)
+        : [el("button", { class: "btn big", type: "button", disabled: ui.busy, onclick: () => sign(l) }, "✍ Sign Done"),
            el("p", { class: "hint" }, `Tick every task and fill in every count, then sign with your PIN${TEST_MODE ? " — test site, practice only" : ""}.`)],
+      signed && l.verified ? el("p", { class: "message ok" }, `✓ Verified by ${verifiedText(l.verified)} · ${fmtWhen(l.verified.at)}`) : null,
+      signed && !l.verified
+        ? [el("button", { class: "btn big", type: "button", disabled: ui.busy, onclick: () => verify(l) }, "✍ Verified"),
+           el("p", { class: "hint" }, "A Supervisor verifies — or, with no Supervisor on shift, the Production Manager or a Line Lead. Not the person who signed it Done.")]
+        : null,
+      signed && runs && !ui.redo ? el("button", { class: "link-btn", type: "button", disabled: ui.busy, onclick: () => { ui.redo = { reason: "" }; render(); } }, "↺ Do again") : null,
+      signed && runs && ui.redo
+        ? el("form", { class: "redo-form", onsubmit: (e) => { e.preventDefault(); redo(l); } },
+            el("label", { class: "field-label", for: "st-redo" }, "Why does it need doing again?"),
+            el("input", { class: "field", id: "st-redo", maxlength: "300", required: true, value: ui.redo.reason, placeholder: "e.g. Gaylord count is off", oninput: (e) => { ui.redo.reason = e.target.value; } }),
+            el("div", { class: "btn-row" },
+              el("button", { class: "btn", type: "submit", disabled: ui.busy }, "↺ Do again"),
+              el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => { ui.redo = null; render(); } }, "Cancel")))
+        : null,
+      (l.history || []).length
+        ? collapsible(`station-history-${l.id}`, `🕘 History (${l.history.length})`, el("ul", { class: "history-list" }, [...l.history].reverse().map((h) => el("li", {}, breakable(historyText(h))))))
+        : null,
     ];
   }
 
@@ -172,13 +225,13 @@ export function openStations(container, { me, startForm = null, onExit }) {
         const left = l ? missing(l.sections, l.values).length : null;
         return el("button", { class: "person-row", type: "button", onclick: () => openStation(f.id) },
           el("span", { class: "person-name" }, f.name),
-          el("span", { class: "person-meta" }, l?.signed ? `Signed off by ${l.signed.name} · ${fmtWhen(l.signed.at)}` : l ? `${left} left` : "Not started this shift"),
-          el("span", { class: "tags" }, el("span", { class: l?.signed ? "tag ok" : "tag warn" }, l?.signed ? "✓ Signed off" : "To do"), l?.test ? el("span", { class: "tag test" }, "TEST") : null));
+          el("span", { class: "person-meta" }, l?.verified ? `Done by ${l.signed.name} · verified by ${verifiedText(l.verified)}` : l?.signed ? `Done by ${l.signed.name} · ${fmtWhen(l.signed.at)}` : l ? `${left} left` : "Not started this shift"),
+          el("span", { class: "tags" }, el("span", { class: l?.verified ? "tag ok" : "tag warn" }, l?.verified ? "✓ Done and verified" : l?.signed ? "Needs Verified" : "To do"), l?.test ? el("span", { class: "tag test" }, "TEST") : null));
       })) : null,
       past.length ? collapsible("stations-past", `Recent shifts (${past.length})`, el("div", { class: "person-list" }, past.map((l) =>
         el("div", { class: "person-row static" },
           el("span", { class: "person-name" }, `${l.formName} · ${l.shift.name} shift · ${dayLabel(l.date)}`),
-          el("span", { class: "person-meta" }, l.signed ? `✓ Signed off by ${l.signed.name}` : "Not signed off"),
+          el("span", { class: "person-meta" }, l.verified ? `✓ Done by ${l.signed.name} · verified by ${verifiedText(l.verified)}` : l.signed ? `Done by ${l.signed.name} · not verified` : "Not signed Done"),
           el("span", { class: "person-meta" }, (l.sections || []).flatMap((s) => s.fields).filter((f) => f.type !== "task" && l.values?.[f.id] != null).map((f) => `${f.label}: ${l.values[f.id]}`).join(" · ")))))) : null,
     ];
   }
@@ -196,7 +249,7 @@ export function openStations(container, { me, startForm = null, onExit }) {
   const stop = onDataChange(() => {
     if (ui.busy) return;
     const l = ui.id ? (data.stationLists || []).find((x) => x.id === ui.id) : null;
-    if (!ui.id || !ui.values || l?.signed) render();
+    if (!ui.id || !ui.values || (l?.signed && !ui.redo)) render();
   });
   if (startForm) openStation(startForm); else render();
   return () => { stop(); clearTimeout(saveTimer); };
