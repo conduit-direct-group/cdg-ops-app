@@ -26,6 +26,9 @@ then screenshots and the dev test link shown to Chris.
 - Chris is not a developer: one step at a time, explain the why, offer choices, short and plain.
 - The master plan is a revisioned file in `C:\CDG\private\` (`CDG_Operations_App_Plan_*_RevN.md`; git-ignored, never committed); decisions go there. After each new revision, copy it to Chris's Downloads so he can upload it to his planning chat.
 - No secrets, PINs, or employee data in this repo — it is public.
+- Never use real employee names in code, tests, examples, or hint text. Use obviously fake names (Test Operator, Sam Sample).
+  A pre-commit check (`tools/hooks/`, turned on with `git config core.hooksPath tools/hooks`) blocks any name in
+  `private/employee-names.txt` — that list stays private and is never committed. Add new hires to it.
 
 ## When something is missing
 - Any time you ask Chris for something (a file, login, API key, program name, decision), always include a **"Don't have it yet"** option.

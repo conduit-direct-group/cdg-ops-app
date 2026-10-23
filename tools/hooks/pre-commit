@@ -1,0 +1,31 @@
+#!/bin/sh
+# Blocks a commit that adds a real employee name (CLAUDE.md: the repo is public — fake names only, like
+# "Test Operator" or "Sam Sample"). The names live in private/employee-names.txt, which is git-ignored and never
+# committed. Turned on once per computer with:  git config core.hooksPath tools/hooks
+root=$(git rev-parse --show-toplevel)
+list="$root/private/employee-names.txt"
+if [ ! -f "$list" ]; then
+  echo "Name check: $list is missing, so the commit is blocked. Put the private name list back, then commit again." >&2
+  exit 1
+fi
+pat=$(mktemp)
+grep -v '^#' "$list" | sed 's/\r$//; /^[[:space:]]*$/d' > "$pat"
+
+found=0
+git diff --cached --name-only --diff-filter=ACMR > "$pat.files"
+while IFS= read -r f; do
+  hits=$(git diff --cached -U0 --no-color -- "$f" | grep '^+' | grep -v '^+++' | grep -owF -f "$pat" | sort -u | tr '\n' ' ')
+  if [ -n "$hits" ]; then
+    echo "  $f: $hits" >&2
+    found=1
+  fi
+done < "$pat.files"
+rm -f "$pat" "$pat.files"
+
+if [ "$found" = 1 ]; then
+  echo "" >&2
+  echo "Commit blocked: real employee name(s) above. Use obviously fake names (Test Operator, Sam Sample)." >&2
+  echo "If a word is a false alarm, take it out of private/employee-names.txt (full names stay)." >&2
+  exit 1
+fi
+exit 0

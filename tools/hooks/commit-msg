@@ -1,0 +1,15 @@
+#!/bin/sh
+# Blocks a commit message with a real employee name (same private list as pre-commit; see CLAUDE.md).
+root=$(git rev-parse --show-toplevel)
+list="$root/private/employee-names.txt"
+[ -f "$list" ] || { echo "Name check: $list is missing, so the commit is blocked." >&2; exit 1; }
+pat=$(mktemp)
+grep -v '^#' "$list" | sed 's/\r$//; /^[[:space:]]*$/d' > "$pat"
+hits=$(grep -v '^#' "$1" | grep -owF -f "$pat" | sort -u | tr '\n' ' ')
+rm -f "$pat"
+if [ -n "$hits" ]; then
+  echo "Commit blocked: the commit message has real employee name(s): $hits" >&2
+  echo "Use obviously fake names (Test Operator, Sam Sample)." >&2
+  exit 1
+fi
+exit 0
