@@ -5139,8 +5139,9 @@ exports.crewCell = onCall(async (req) => {
 // ---------------------------------------------------------------------------
 // Write-ups (Decision 52; who writes and sees: Chris, 10-23-2026). Rules in writeups.js. Server-only collection — every
 // read goes through these functions, so only the writer and people with HR access ever get one, and every view and
-// print is in the activity log. Steps: the writer fills the form and signs with their PIN → the employee reads it, adds
-// comments, and signs with their own PIN on the writer's device — or the writer marks "Refused to sign".
+// print is in the activity log. Steps: the writer fills the form and signs by hand → the employee reads it, adds
+// comments, and signs by hand on the writer's device — or the writer marks "Refused to sign" (Decision 101: drawn
+// signatures instead of PINs).
 // ---------------------------------------------------------------------------
 
 async function requireWriteupAccess(req) {
@@ -5199,7 +5200,7 @@ exports.writeupPrinted = onCall(async (req) => {
   return { ok: true };
 });
 
-// The writer saves the form and signs with their own PIN. { writeup: form, signer, device } → { id }
+// The writer (the person signed in) saves the form and signs by hand. { writeup: form, signature (PNG), device } → { id }
 exports.saveWriteup = onCall(async (req) => {
   const me = await requireMember(req);
   if (!writeupsLib.canWrite(me.roles)) throw new HttpsError("permission-denied", "Write-ups are written by Supervisors, the Production Manager, and Admins.");
@@ -5207,8 +5208,8 @@ exports.saveWriteup = onCall(async (req) => {
   const { writeup, error } = writeupsLib.cleanWriteup(req.data?.writeup, plantToday());
   if (error) throw new HttpsError("invalid-argument", error);
   if (writeup.emp === me.employeeNumber) throw new HttpsError("invalid-argument", "You can't write yourself up.");
-  const signer = await requireSignature(req.data);
-  if (signer.employeeNumber !== me.employeeNumber) throw new HttpsError("permission-denied", "The writer signs with their own PIN.");
+  const sig = writeupsLib.cleanPng(req.data?.signature, "Your signature");
+  if (sig.error) throw new HttpsError("invalid-argument", sig.error);
   const person = await employees.doc(writeup.emp).get();
   if (!person.exists || person.get("active") === false) throw new HttpsError("invalid-argument", "Pick the employee from the list.");
   const c = col("writeups", test);
@@ -5219,31 +5220,34 @@ exports.saveWriteup = onCall(async (req) => {
     tx.create(ref, {
       ...writeup, empName: person.get("name") || `Employee ${writeup.emp}`,
       prior: writeupsLib.priorList(earlier.docs.map((d) => d.data()), writeup.date),
-      writerEmp: me.employeeNumber, writerName: me.name, writerSig: { emp: me.employeeNumber, name: me.name, atMs: Date.now(), device },
+      writerEmp: me.employeeNumber, writerName: me.name, writerRole: writeupsLib.writerRole(me.roles),
+      writerSig: { emp: me.employeeNumber, name: me.name, role: writeupsLib.writerRole(me.roles), atMs: Date.now(), device, png: sig.png },
       status: "waiting", employeeComments: "", createdAt: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}),
     });
-    logSignoff(tx, test, { kind: "write-up (writer)", refId: ref.id, emp: me.employeeNumber, name: me.name, method: "pin", device, signedOn: me.employeeNumber });
+    logSignoff(tx, test, { kind: "write-up (writer)", refId: ref.id, emp: me.employeeNumber, name: me.name, method: "drawn", device, signedOn: me.employeeNumber });
     auditRecord(tx, "created", "write-up", ref.id, me.employeeNumber, test ? { test: true } : {});
   });
   return { id: ref.id };
 });
 
-// The employee reads it, adds comments, and signs with their own PIN on the writer's device. { id, comments, signer, device }
+// The employee reads it, adds comments, and signs by hand on the writer's device, with the writer there.
+// { id, comments, signature (PNG), device }
 exports.writeupEmployeeSign = onCall(async (req) => {
   const me = await requireWriteupAccess(req);
   const test = isTest(req);
   const snap = await writeupFor(me, req.data?.id, test);
-  const signer = await requireSignature(req.data);
+  const sig = writeupsLib.cleanPng(req.data?.signature, `${snap.get("empName")}'s signature`);
+  if (sig.error) throw new HttpsError("invalid-argument", sig.error);
   const device = annLib.cleanDevice(req.data?.device);
   const comments = writeupsLib.clean(req.data?.comments, writeupsLib.MAX.comments);
   await db.runTransaction(async (tx) => {
     const fresh = await tx.get(snap.ref);
     const w = fresh.data();
     if (w.status !== "waiting") throw new HttpsError("failed-precondition", "This write-up is already signed or marked refused.");
-    if (signer.employeeNumber !== w.emp) throw new HttpsError("permission-denied", `Only ${w.empName} can sign this one, with their own PIN.`);
-    tx.update(snap.ref, { status: "signed", employeeComments: comments, employeeSig: { emp: signer.employeeNumber, name: signer.name, atMs: Date.now(), device }, updatedAt: FieldValue.serverTimestamp() });
-    logSignoff(tx, test, { kind: "write-up (employee)", refId: snap.id, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber });
-    auditRecord(tx, "signed", "write-up", snap.id, signer.employeeNumber, test ? { test: true } : {});
+    const witness = { emp: me.employeeNumber, name: me.name };
+    tx.update(snap.ref, { status: "signed", employeeComments: comments, employeeSig: { emp: w.emp, name: w.empName, atMs: Date.now(), device, png: sig.png, witnessedBy: witness }, updatedAt: FieldValue.serverTimestamp() });
+    logSignoff(tx, test, { kind: "write-up (employee)", refId: snap.id, emp: w.emp, name: w.empName, method: "drawn", device, signedOn: me.employeeNumber, recordedBy: me.employeeNumber });
+    auditRecord(tx, "signed", "write-up", snap.id, me.employeeNumber, { employee: w.emp, method: "drawn", ...(test ? { test: true } : {}) });
   });
   return { ok: true };
 });

@@ -7,9 +7,11 @@
 //
 //   writeups/{auto}   emp, empName, date (YYYY-MM-DD), type, policy, description, correctiveAction, priorNotes,
 //                     prior [{ date, type }] (earlier write-ups for that person, filled in by the server),
-//                     writerEmp, writerName, writerSig { emp, name, atMs, device },
+//                     writerEmp, writerName, writerRole ("Supervisor" …), writerSig { emp, name, role, atMs, device, png },
 //                     status "waiting" | "signed" | "refused", employeeComments,
-//                     employeeSig { emp, name, atMs, device } | refused { by, byName, atMs }
+//                     employeeSig { emp, name, atMs, device, png, witnessedBy } | refused { by, byName, atMs }
+// Signing (Chris, 10-23-2026, Decision 101): the writer and the employee sign BY HAND (a drawn signature, PNG) instead of
+// with their PIN. Records saved earlier have no png — they were signed with PIN.
 // Test site: test_writeups.
 
 const WRITER_ROLES = ["supervisor", "plant-manager", "admin"];
@@ -18,7 +20,18 @@ const TYPES = [
   { value: "written", label: "Written warning" },
   { value: "final", label: "Final warning" },
 ];
-const MAX = { policy: 200, text: 4000, comments: 2000 };
+const MAX = { policy: 200, text: 4000, comments: 2000, png: 300000 };
+// The writer's role on the write-up — the first that applies.
+const WRITER_LABELS = [["supervisor", "Supervisor"], ["plant-manager", "Production Manager"], ["admin", "Admin"]];
+const writerRole = (roles = []) => WRITER_LABELS.find(([r]) => roles.includes(r))?.[1] || "";
+
+// A drawn signature → { png } or { error }. who: "Your" / the employee's name, for the message.
+function cleanPng(raw, who) {
+  const png = typeof raw === "string" ? raw : "";
+  if (!/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(png) || png.length < 200) return { error: `${who}: sign in the box.` };
+  if (png.length > MAX.png) return { error: `${who}: the signature is too large — clear it and sign again.` };
+  return { png };
+}
 
 const clean = (v, max) => (typeof v === "string" ? v.replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ").trim().slice(0, max) : "");
 const canWrite = (roles = []) => roles.some((r) => WRITER_ROLES.includes(r));
@@ -52,4 +65,4 @@ function priorList(others, date) {
 // What the list shows.
 const summary = (id, w) => ({ id, emp: w.emp, empName: w.empName, date: w.date, type: w.type, status: w.status, writerName: w.writerName });
 
-module.exports = { WRITER_ROLES, TYPES, MAX, canWrite, canSee, typeLabel, cleanWriteup, priorList, summary, clean };
+module.exports = { WRITER_ROLES, TYPES, MAX, canWrite, canSee, typeLabel, cleanWriteup, priorList, summary, clean, writerRole, cleanPng };

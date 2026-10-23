@@ -1,12 +1,13 @@
 // Write-ups (Decision 52; who writes and sees: Chris, 10-23-2026). Supervisors, the Production Manager, and Admins write
 // them; only the writer and people with HR access ever see one — the server checks every read and logs every view and
-// print (nothing is kept on the device, not even a draft). Steps: fill the form → the writer signs with their PIN →
-// hand the device to the employee: they add comments and sign with their own PIN, or the writer marks "Refused to sign"
-// → Save as PDF for Gusto (People → the employee → Documents → Add Document).
+// print (nothing is kept on the device, not even a draft). Steps: fill the form → the writer signs by hand →
+// hand the device to the employee: they add comments and sign by hand, or the writer marks "Refused to sign"
+// → Save as PDF for Gusto (People → the employee → Documents → Add Document). Hand signatures, not PINs: Decision 101.
 
 import { el, friendlyError, spinner, emptyState, banner, toast, picker, confirmSheet, collapsible } from "./ui.js";
 import { TEST_MODE, callWriteupStart, callWriteupList, callWriteupGet, callWriteupPrinted, callSaveWriteup, callWriteupEmployeeSign, callWriteupRefused } from "./firebase.js";
-import { signOff } from "./signoff.js";
+import { deviceInfo } from "./signoff.js";
+import { sigPad } from "./sigpad.js";
 
 const WRITER_ROLES = ["supervisor", "plant-manager", "admin"];
 export const canWriteUps = (roles = [], hr = false) => hr || roles.some((r) => WRITER_ROLES.includes(r));
@@ -18,6 +19,42 @@ const plantToday = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/C
 const fmtDay = (day) => (day ? new Date(`${day}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "");
 const fmtWhen = (ms) => (ms ? new Date(ms).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }) : "");
 const offline = () => !navigator.onLine;
+const ROLE_LABEL = [["supervisor", "Supervisor"], ["plant-manager", "Production Manager"], ["admin", "Admin"]];
+const roleOf = (roles = []) => ROLE_LABEL.find(([r]) => roles.includes(r))?.[1] || "";
+
+// A signature box in a pop-up: { title, who, note, action(png, device) } → what action returned, or null if cancelled.
+// Errors from the server show in the pop-up, and the signature stays so it can be sent again.
+function handSign({ title, who, note, action }) {
+  return new Promise((resolve) => {
+    const pad = sigPad({ label: `${who} — sign with your finger or the mouse` });
+    const st = { busy: false, message: "" };
+    const sheet = el("div", { class: "sheet wu-sign-sheet", role: "dialog", "aria-modal": "true", "aria-label": title });
+    const backdrop = el("div", { class: "sheet-backdrop", onclick: (e) => { if (e.target === backdrop && !st.busy) done(null); } }, sheet);
+    const onKey = (e) => { if (e.key === "Escape" && !st.busy) done(null); };
+    function done(result) { document.removeEventListener("keydown", onKey); backdrop.remove(); resolve(result); }
+    async function send() {
+      if (pad.isEmpty()) { st.message = "Sign in the box first."; return draw(); }
+      if (offline()) { st.message = friendlyError({ code: "offline" }); return draw(); }
+      Object.assign(st, { busy: true, message: "" });
+      draw();
+      try { done(await action(pad.png(), deviceInfo())); } catch (err) { Object.assign(st, { busy: false, message: friendlyError(err) }); draw(); }
+    }
+    function draw() {
+      sheet.replaceChildren(...[
+        el("h2", {}, `✍ ${title}`),
+        note ? el("p", { class: "card-note" }, note) : null,
+        pad.el,
+        st.message ? el("p", { class: "message error" }, st.message) : null,
+        el("div", { class: "btn-row" },
+          el("button", { class: "btn", type: "button", disabled: st.busy, onclick: send }, st.busy ? "Saving…" : "✍ Sign"),
+          el("button", { class: "btn secondary", type: "button", disabled: st.busy, onclick: () => done(null) }, "Cancel")),
+      ].filter(Boolean));
+    }
+    document.addEventListener("keydown", onKey);
+    document.body.append(backdrop);
+    draw();
+  });
+}
 
 export function openWriteups(container, { me, onExit, backLabel = "Home" }) {
   const ui = {
@@ -69,9 +106,11 @@ export function openWriteups(container, { me, onExit, backLabel = "Home" }) {
     if (missing) { Object.assign(ui, { message: missing, messageKind: "error", retry: null }); return render(); }
     if (offline()) return fail({ code: "offline" }, save);
     const person = ui.start.people.find((p) => p.emp === f.emp);
-    const result = await signOff({
-      title: "Sign as the writer", what: `${TYPE_LABEL[f.type]} for ${person?.name || f.emp} · ${fmtDay(f.date)}`, me: { emp: me.emp, name: me.name },
-      action: ({ signer, device }) => callSaveWriteup({ writeup: f, signer, device }),
+    const role = roleOf(me.roles);
+    const result = await handSign({
+      title: `Written by ${me.name}${role ? `, ${role}` : ""}`, who: me.name,
+      note: `${TYPE_LABEL[f.type]} for ${person?.name || f.emp} · ${fmtDay(f.date)}. Sign to save it — then hand the device to the employee.`,
+      action: (signature, device) => callSaveWriteup({ writeup: f, signature, device }),
     });
     if (!result) return;
     ok("Saved — now the employee reads and signs");
@@ -81,10 +120,10 @@ export function openWriteups(container, { me, onExit, backLabel = "Home" }) {
   async function employeeSign() {
     const w = ui.writeup;
     if (offline()) return fail({ code: "offline" }, employeeSign);
-    const result = await signOff({
-      title: `${w.empName}: acknowledge this write-up`, what: `${TYPE_LABEL[w.type]} · ${fmtDay(w.date)} — signing means you received it, not that you agree`,
-      me: { emp: w.emp, name: w.empName },
-      action: ({ signer, device }) => callWriteupEmployeeSign({ id: w.id, comments: ui.comments, signer, device }),
+    const result = await handSign({
+      title: `${w.empName}: acknowledge this write-up`, who: w.empName,
+      note: `${TYPE_LABEL[w.type]} · ${fmtDay(w.date)}. Signing means you received it, not that you agree with it.`,
+      action: (signature, device) => callWriteupEmployeeSign({ id: w.id, comments: ui.comments, signature, device }),
     });
     if (!result) return;
     ok("Signed by the employee");
@@ -139,7 +178,7 @@ export function openWriteups(container, { me, onExit, backLabel = "Home" }) {
     return [
       back("Write-ups", loadList),
       el("h1", {}, "🧾 New write-up"),
-      el("p", { class: "hint" }, "Fill it in, sign with your PIN, then hand the device to the employee to read and sign."),
+      el("p", { class: "hint" }, "Fill it in and sign it by hand, then hand the device to the employee to read and sign."),
       el("form", { class: "card wu-form", onsubmit: (e) => { e.preventDefault(); save(); } },
         label("Employee"),
         people.length
@@ -166,8 +205,14 @@ export function openWriteups(container, { me, onExit, backLabel = "Home" }) {
   function doc(w) {
     const row = (k, v) => el("tr", {}, el("th", {}, k), el("td", {}, v || "—"));
     const prior = [...(w.prior || []).map((p) => `${fmtDay(p.date)} — ${TYPE_LABEL[p.type] || p.type}`), w.priorNotes].filter(Boolean);
-    const empLine = w.status === "signed" ? `${w.employeeSig.name} · signed with PIN · ${fmtWhen(w.employeeSig.atMs)}`
-      : w.status === "refused" ? `Refused to sign · recorded by ${w.refused.byName} · ${fmtWhen(w.refused.atMs)}` : "Not signed yet";
+    // Each signature: the drawn picture over a line, then name, role and time (older write-ups were signed with PIN).
+    const sigBox = (heading, name, role, sig, fallback) => el("figure", { class: "wu-sig" },
+      el("figcaption", { class: "wu-sig-head" }, heading),
+      sig?.png ? el("img", { src: sig.png, alt: `Signature of ${name}` }) : el("div", { class: "wu-sig-blank" }, sig ? "Signed with PIN" : fallback),
+      el("div", { class: "wu-sig-line" }, el("strong", {}, name), role ? ` · ${role}` : ""),
+      el("div", { class: "wu-sig-when" }, sig?.atMs ? fmtWhen(sig.atMs) : ""));
+    const writerRole = w.writerSig?.role || w.writerRole || "";
+    const empFallback = w.status === "refused" ? `✋ Refused to sign — recorded by ${w.refused.byName}, ${fmtWhen(w.refused.atMs)}` : "Not signed yet";
     return el("article", { class: "print-doc wu-doc" },
       el("h1", {}, `Employee write-up — ${TYPE_LABEL[w.type] || w.type}${TEST_MODE ? " (TEST SITE — practice)" : ""}`),
       el("p", {}, "Conduit Direct Group · CDG Ops"),
@@ -176,8 +221,9 @@ export function openWriteups(container, { me, onExit, backLabel = "Home" }) {
         row("What happened", w.description), row("Corrective action expected", w.correctiveAction),
         row("Earlier history", prior.length ? prior.join("\n") : "None"), row("Employee comments", w.employeeComments)),
       el("div", { class: "wu-sigs" },
-        el("p", {}, el("strong", {}, "Written by: "), `${w.writerSig.name} · signed with PIN · ${fmtWhen(w.writerSig.atMs)}`),
-        el("p", {}, el("strong", {}, "Employee: "), empLine)),
+        sigBox("Written by", w.writerSig?.name || w.writerName, writerRole, w.writerSig, "Not signed"),
+        sigBox("Employee", w.empName, "", w.status === "signed" ? w.employeeSig : null, empFallback)),
+      w.employeeSig?.witnessedBy ? el("p", { class: "wu-sig-note" }, `The employee signed by hand on ${w.employeeSig.witnessedBy.name}'s device.`) : null,
       el("p", { class: "print-foot" }, "Signing means the employee received this write-up, not that they agree with it."));
   }
 
@@ -195,11 +241,11 @@ export function openWriteups(container, { me, onExit, backLabel = "Home" }) {
       doc(w),
       waiting ? el("section", { class: "card wu-hand no-print" },
         el("strong", {}, `${w.empName}: after reading`),
-        el("p", { class: "card-note" }, "Add comments if you want, then sign with your own PIN. Signing means you received it, not that you agree. If they won't sign, the writer taps Refused to sign."),
+        el("p", { class: "card-note" }, "Add comments if you want, then sign by hand. Signing means you received it, not that you agree. If they won't sign, the writer taps Refused to sign."),
         el("span", { class: "field-label strong" }, "Employee comments (optional)"),
         el("textarea", { class: "field", rows: "3", maxlength: "2000", oninput: (e) => { ui.comments = e.target.value; } }, ui.comments),
         el("div", { class: "btn-row" },
-          el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: employeeSign }, `✍ ${w.empName} signs with their PIN`),
+          el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: employeeSign }, `✍ ${w.empName} signs here`),
           el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: refused }, "✋ Refused to sign"))) : null,
       !waiting ? el("section", { class: "card no-print" },
         el("button", { class: "btn", type: "button", onclick: printIt }, "🖨 Save as PDF"),

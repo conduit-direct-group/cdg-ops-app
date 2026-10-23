@@ -43,3 +43,15 @@ test("write-ups: earlier write-ups for the person are listed by date and type on
   assert.deepStrictEqual(w.priorList(others, "2026-10-20"), [{ date: "2026-03-01", type: "verbal" }, { date: "2026-09-01", type: "written" }]);
   assert.strictEqual(w.typeLabel("final"), "Final warning");
 });
+
+test("write-ups: the writer's role shows on the sheet; signatures are drawn pictures (PNG)", () => {
+  assert.strictEqual(w.writerRole(["supervisor", "admin"]), "Supervisor");
+  assert.strictEqual(w.writerRole(["plant-manager"]), "Production Manager");
+  assert.strictEqual(w.writerRole(["admin"]), "Admin");
+  assert.strictEqual(w.writerRole(["operator"]), "");
+  const png = `data:image/png;base64,${"A".repeat(400)}`;
+  assert.deepStrictEqual(w.cleanPng(png, "Your signature"), { png });
+  assert.match(w.cleanPng("", "Your signature").error, /sign in the box/);
+  assert.match(w.cleanPng("data:image/jpeg;base64,AAAA", "Sam's signature").error, /Sam's signature: sign in the box/);
+  assert.match(w.cleanPng(`data:image/png;base64,${"A".repeat(400000)}`, "x").error, /too large/);
+});
