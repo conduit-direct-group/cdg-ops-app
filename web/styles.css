@@ -1584,3 +1584,11 @@ button.block:active { background: var(--surface-3); }
 .my-station-now { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s1) var(--s2); margin: 0; }
 .my-station-now strong { font-size: var(--text-section); }
 .block.now { border-color: var(--orange); border-width: var(--border-width); }
+
+/* Admin → Record retention (Decision 99) */
+.ret-groups { margin-top: var(--s2); }
+.ret-period { margin: 0; font-weight: bold; }
+.ret-run { display: flex; flex-direction: column; gap: var(--s1); padding: var(--s2) 0; border-bottom: 1px solid var(--line); }
+.ret-run:last-child { border-bottom: 0; }
+.ret-run .message { margin: 0; }
+.ret-runs { display: flex; flex-direction: column; }

@@ -25,3 +25,18 @@ test("test cleanup only touches the practice copies of safety reports", () => {
   assert.ok(names.includes("test_incidents"));
   assert.ok(!names.includes("incidents") && !names.includes("incidentActions"));
 });
+
+// Record retention (Decision 99): live safety reports may be removed only by the nightly retention cleanup, only after
+// closing + their period, and injury reports never before 5 years (retentionrules.incidentMayGo).
+test("only the retention section removes live safety reports, and only through the 5-year check", () => {
+  const start = src.indexOf("RETENTION SECTION START");
+  const end = src.indexOf("// RETENTION SECTION END");
+  assert.ok(start > 0 && end > start, "retention section markers found");
+  const section = src.slice(start, end);
+  assert.match(section, /retentionLib\.incidentMayGo\(/);
+  assert.match(section, /"incidents", "closedAtMs"/);
+  assert.match(section, /byKey\("injury"\)\.minDays/);
+  const outside = src.slice(0, start) + src.slice(end);
+  assert.doesNotMatch(outside, /deleteFiles\(\{ prefix: `safety\/\$\{/, "no safety folder removal outside the retention section");
+  assert.doesNotMatch(outside, /collection\("incidentActions"\)[^;]*\.delete\(/);
+});

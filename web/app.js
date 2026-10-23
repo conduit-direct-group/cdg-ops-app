@@ -43,6 +43,7 @@ import { openDepartmentsAdmin, openProfile } from "./departments.js";
 import { openWhoToCall, openCallAdmin, lineDownReminder } from "./whotocall.js";
 import { openIncidents, openRotationAdmin, openInjuryExport, openHrAccess } from "./incidents.js";
 import { openWriteups, canWriteUps } from "./writeups.js";
+import { openRetentionAdmin } from "./retention.js";
 import { openSilos, openSiloAdmin, UPDATE_ROLES as SILO_UPDATE_ROLES, ALERT_ROLES as SILO_ALERT_ROLES } from "./silos.js";
 
 const screen = document.getElementById("screen");
@@ -788,6 +789,7 @@ function renderAdminMenu() {
     me().hr ? el("button", { class: "btn", type: "button", onclick: () => openModule(openInjuryExport) }, "🗂 Export injury reports (PDF)") : null,
     me().hr ? el("button", { class: "btn", type: "button", onclick: () => openModule(openHrAccess) }, "🔒 HR access") : null,
     el("button", { class: "btn", type: "button", onclick: () => openModule(openTrainingAdmin) }, "🎓 Training setup"),
+    el("button", { class: "btn", type: "button", onclick: () => openModule(openRetentionAdmin) }, "🗄 Record retention"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openActivity) }, "📜 Admin activity"),
     TEST_MODE ? el("button", { class: "btn secondary", type: "button", onclick: () => openModule((c, o) => openTestReset(c, { ...o, onIssues: () => openIssues() })) }, "🧹 Reset test data") : null,
     deviceCard(), // one-time device setup, so it lives here rather than on Home

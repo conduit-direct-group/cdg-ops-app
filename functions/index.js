@@ -47,6 +47,7 @@ const verifyLib = require("./verify");
 const annTasksLib = require("./anntasks");
 const crewSeatsLib = require("./crewseats");
 const writeupsLib = require("./writeups");
+const retentionLib = require("./retentionrules");
 const crypto = require("node:crypto");
 const { getMessaging } = require("firebase-admin/messaging");
 const { defineSecret } = require("firebase-functions/params");
@@ -5278,4 +5279,150 @@ exports.crewMyStation = onCall(async (req) => {
   const mine = setup ? crewSeatsLib.myStations(setup, s.saved.seats, s.saved.cells || {}, me.employeeNumber) : null;
   if (!mine) return { test, shift, seated: false };
   return { test, shift, seated: true, ...mine, current: crewSeatsLib.blockAt(s.now.startMs, s.now.endMs, mine.blocks.length, Date.now()) };
+});
+
+// ---------------------------------------------------------------------------
+// Record retention (Decision 99; rules in retentionrules.js). Every night the cleanup removes live records older than
+// their group's period — never anything still open — and logs a count per group (retentionRuns + Admin activity).
+//   meta/retention     periods { key: days | null }, updatedBy, updatedAt
+//   retentionRuns/{auto}  atMs, removed { key: n }, keptOpen { key: n }, errors [text]
+// Backups (daily kept 7 days, weekly kept 14 weeks) are separate: a removed record can be restored only in that window.
+// RETENTION SECTION START — the only place live safety reports may be removed (retention.test.js checks this).
+// ---------------------------------------------------------------------------
+
+const retentionDoc = db.collection("meta").doc("retention");
+const retentionRuns = db.collection("retentionRuns");
+const RETENTION_BATCH = 2000; // per collection per night — anything left over goes the next night
+
+async function retentionPeriods() {
+  const snap = await retentionDoc.get();
+  return retentionLib.periods(snap.exists ? snap.get("periods") || {} : {});
+}
+
+// One collection: records with `field` before `before` (oldest first), minus the open ones. → { removed, keptOpen, keptIds }
+async function retentionSweep(name, field, before, open, ctx, extra = null) {
+  const snap = await db.collection(name).where(field, "<", before).limit(RETENTION_BATCH).get();
+  const writer = db.bulkWriter();
+  let removed = 0;
+  let keptOpen = 0;
+  const keptIds = new Set();
+  for (const d of snap.docs) {
+    const rec = { id: d.id, ...d.data() };
+    if (open(rec, ctx)) { keptOpen += 1; keptIds.add(d.id); continue; }
+    if (extra) await extra(d, rec);
+    writer.delete(d.ref);
+    removed += 1;
+  }
+  await writer.close();
+  return { removed, keptOpen, keptIds };
+}
+
+async function runRetention(nowMs = Date.now()) {
+  const p = await retentionPeriods();
+  const O = retentionLib.OPEN;
+  const day = (days) => retentionLib.cutoffDay(nowMs, days);
+  const at = (days) => new Date(retentionLib.cutoffMs(nowMs, days));
+  const removed = {};
+  const keptOpen = {};
+  const errors = [];
+  const add = (key, r) => { removed[key] = (removed[key] || 0) + r.removed; keptOpen[key] = (keptOpen[key] || 0) + r.keptOpen; };
+  const step = async (key, fn) => {
+    try { await fn(); } catch (err) { console.error(`retention ${key}`, err); errors.push(`${key}: ${String(err.message || err).slice(0, 200)}`); }
+  };
+
+  if (p.checklists != null) await step("checklists", async () => {
+    const units = await db.collection("checklistUnits").get();
+    const pendingSignoffs = new Set(units.docs.flatMap((u) => Object.keys(u.get("pending") || {})));
+    add("checklists", await retentionSweep("shopTasks", "date", day(p.checklists), O.shopTasks, {}));
+    add("checklists", await retentionSweep("stationLists", "date", day(p.checklists), O.stationLists, {}));
+    add("checklists", await retentionSweep("checklistSignoffs", "at", at(p.checklists), O.checklistSignoffs, { pendingSignoffs }));
+  });
+  if (p.lineChecks != null) await step("lineChecks", async () => {
+    add("lineChecks", await retentionSweep("lineLogs", "date", day(p.lineChecks), O.lineLogs, {}));
+    add("lineChecks", await retentionSweep("plantLogs", "date", day(p.lineChecks), O.plantLogs, {}));
+  });
+  if (p.reels != null) await step("reels", async () => {
+    add("reels", await retentionSweep("reels", "flagged.atMs", retentionLib.cutoffMs(nowMs, p.reels), O.reels, {}));
+  });
+  if (p.downtime != null) await step("downtime", async () => {
+    const reports = await retentionSweep("shiftReports", "date", day(p.downtime), O.shiftReports, {});
+    add("downtime", reports);
+    // Changeovers, downtime, and scrap go with their report — but stay while the report is still open.
+    const eventOpen = (e) => reports.keptIds.has(e.reportId);
+    for (const name of ["changeoverEvents", "downtimeEvents", "scrapEntries"]) {
+      const r = await retentionSweep(name, "date", day(p.downtime), eventOpen, {});
+      removed.downtime += r.removed;
+    }
+  });
+  if (p.handoffs != null) await step("handoffs", async () => {
+    add("handoffs", await retentionSweep("handoffs", "date", day(p.handoffs), O.handoffs, {}));
+  });
+  if (p.annSigs != null) await step("annSigs", async () => {
+    add("annSigs", await retentionSweep("announcementSigs", "at", at(p.annSigs), O.announcementSigs, {}));
+  });
+  if (p.writeups != null) await step("writeups", async () => {
+    add("writeups", await retentionSweep("writeups", "date", day(p.writeups), O.writeups, {}));
+  });
+  // Safety reports: counted from closing; injury reports never before 5 years (incidentMayGo checks each one again).
+  const safetyDays = [p.incidents, p.injury == null ? null : Math.max(p.injury, retentionLib.byKey("injury").minDays)].filter((d) => d != null);
+  if (safetyDays.length) await step("safety", async () => {
+    const actions = await db.collection("incidentActions").get();
+    const openActionIncidents = new Set(actions.docs.filter((a) => !a.get("done")).map((a) => a.get("incidentId")));
+    const bucket = getStorage().bucket();
+    const notYet = (inc) => !retentionLib.incidentMayGo(inc, p, nowMs);
+    const r = await retentionSweep("incidents", "closedAtMs", retentionLib.cutoffMs(nowMs, Math.min(...safetyDays)),
+      (inc, ctx) => O.incidents(inc, ctx) || notYet(inc), { openActionIncidents },
+      async (d, inc) => {
+        const acts = await db.collection("incidentActions").where("incidentId", "==", d.id).get();
+        await Promise.all(acts.docs.map((a) => a.ref.delete()));
+        await db.recursiveDelete(d.ref.collection("private"));
+        await bucket.deleteFiles({ prefix: `safety/${d.id}/` });
+        const key = retentionLib.isInjury(inc) ? "injury" : "incidents";
+        removed[key] = (removed[key] || 0) + 1;
+      });
+    // retentionSweep counted removals together; they were split by type above.
+    keptOpen.incidents = (keptOpen.incidents || 0) + r.keptOpen;
+  });
+
+  const run = { atMs: nowMs, removed, keptOpen, errors, at: FieldValue.serverTimestamp() };
+  await retentionRuns.add(run);
+  await auditLog.add({ type: "cleanup", kind: "record retention", recordId: "retention", by: "system", at: FieldValue.serverTimestamp(), removed, keptOpen, errors: errors.length });
+  return run;
+}
+
+exports.recordRetention = onSchedule({ schedule: "every day 02:30", timeZone: "America/Chicago", retryCount: 0, timeoutSeconds: 540 }, async () => {
+  await runRetention();
+});
+
+// RETENTION SECTION END
+
+// Admins: the periods, who may change each one, and the last 30 nightly runs.
+exports.adminRetention = onCall(async (req) => {
+  const me = await requireMember(req);
+  if (!me.roles.includes("admin")) throw new HttpsError("permission-denied", "Only Admins can see record retention.");
+  const [p, runs] = await Promise.all([retentionPeriods(), retentionRuns.orderBy("atMs", "desc").limit(30).get()]);
+  return {
+    hr: me.hr,
+    groups: retentionLib.CATEGORIES.map((c) => ({
+      key: c.key, label: c.label, covers: c.covers, hr: !!c.hr, days: p[c.key], defaultDays: c.days, canChange: retentionLib.canChange(c, me),
+      choices: retentionLib.CHOICES.filter((d) => d == null || !c.minDays || d >= c.minDays).map((d) => ({ days: d, label: retentionLib.periodLabel(d) })),
+    })),
+    runs: runs.docs.map((d) => ({ id: d.id, atMs: d.get("atMs"), removed: d.get("removed") || {}, keptOpen: d.get("keptOpen") || {}, errors: d.get("errors") || [] })),
+  };
+});
+
+// Admins (HR access too for write-ups and injury reports): { key, days } (days null = never delete).
+exports.adminSaveRetention = onCall(async (req) => {
+  const me = await requireMember(req);
+  const cat = retentionLib.byKey(req.data?.key);
+  if (!cat) throw new HttpsError("invalid-argument", "Pick a group of records.");
+  if (!retentionLib.canChange(cat, me)) {
+    throw new HttpsError("permission-denied", cat.hr ? `Changing how long ${cat.label.toLowerCase()} are kept needs HR access.` : "Only Admins can change record retention.");
+  }
+  const { days, error } = retentionLib.cleanPeriod(cat.key, req.data?.days);
+  if (error) throw new HttpsError("invalid-argument", error);
+  const before = (await retentionPeriods())[cat.key];
+  await retentionDoc.set({ periods: { [cat.key]: days }, updatedBy: me.employeeNumber, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+  await auditLog.add({ type: "updated", kind: "record retention", recordId: cat.key, by: me.employeeNumber, at: FieldValue.serverTimestamp(), from: before, to: days });
+  return { ok: true, days };
 });

@@ -15,12 +15,21 @@ const ACTIONS = {
   rejected: "rejected", retired: "retired", restored: "brought back", deleted: "deleted (to trash)", "restored-from-trash": "restored from the trash",
   "restored-version": "restored an older version of", "restored-file": "put a file back on", "bulk-added": "bulk-added", imported: "copied from the old library:",
   reported: "reported a problem on", fixed: "marked fixed", "updated-media": "changed training media on", "marked-done": "marked done:",
-  "marked-not-done": "put back on the list:", synced: "synced", purged: "emptied old items from",
+  "marked-not-done": "put back on the list:", synced: "synced", purged: "emptied old items from", cleanup: "ran the nightly",
   "pin-reset": "reset the PIN of", unlocked: "unlocked", locked: "was locked out —", "pin-changed": "changed their PIN —",
 };
 
 function describe(e, name) {
   const action = ACTIONS[e.type] || e.type;
+  // Record retention (Decision 99): the nightly count per group, and period changes.
+  if (e.type === "cleanup") {
+    const parts = Object.entries(e.removed || {}).filter(([, n]) => n > 0).map(([k, n]) => `${k} ${n}`);
+    return `${action} record cleanup — removed ${parts.length ? parts.join(", ") : "nothing"}${e.errors ? ` (${e.errors} problem${e.errors === 1 ? "" : "s"} — see Record retention)` : ""}`;
+  }
+  if (e.kind === "record retention" && e.type === "updated") {
+    const days = (d) => (d == null ? "never delete" : `${d} days`);
+    return `changed how long “${e.recordId}” records are kept: ${days(e.from)} → ${days(e.to)}`;
+  }
   if (e.employeeNumber) return `${action} employee ${name(e.employeeNumber)}${e.type === "updated" && e.changes ? ` (${Object.keys(e.changes).join(", ")})` : ""}`;
   const what = e.title || e.name || e.term || e.machineId || e.recordId || "";
   const extra = e.type === "bulk-added" ? `${e.count} fixes` : e.type === "purged" ? `${e.fixes || 0} fixes, ${e.files || 0} files` : "";
