@@ -14,9 +14,9 @@ Tuck secondary things into the big `picker()` / `collapsible()` parts (ui.js) to
 urgent or daily items (alerts, sign-offs due, Report a problem, a role's main actions), and tell Chris what was tucked away and why.
 
 Every item appears on Home only once. Status colors: gray = not due yet (with due time), red ⚠ = last hour or overdue, green ✓ = done. No other status colors.
-Two-step duties (Shop Clean, station checklists): green only when both Done and Verified are signed.
+Two-step duties (every duty except line checks): green only when both Done and Verified are signed.
 Announcement priority labels are separate from status colors: Normal = plain (no badge), Important = orange ⚡ badge,
-Safety = red ⚠ badge. Unsigned announcements go first in Needs you.
+Safety = red ⚠ badge. Announcements still to read sit at the top of Home, under the name (not in Needs you).
 Exception: the Trucks board uses no red/green at all — plain status words and icons only (🕒 Expected · 📥 Arrived · 🚚 Out the door).
 
 "Done" means: checked at phone (375px), tablet (1024px), and desktop widths; self-reviewed against the standard;

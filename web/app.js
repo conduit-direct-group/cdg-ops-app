@@ -25,7 +25,7 @@ import { openTrainingAdmin } from "./trainingadmin.js";
 import { openNeedSomething, openRequest, openRequestTypesAdmin } from "./requests.js";
 import { pushState, turnOnPush, turnOffPush, refreshPush } from "./push.js";
 import { dashboard, stopDashboard, usesMachines } from "./dashboard.js";
-import { openAnnouncements, toSign as announcementsToSign } from "./announcements.js";
+import { openAnnouncements, toSign as announcementsToSign, noticeNewAnnouncements } from "./announcements.js";
 import { openHandoff, usesHandoffs } from "./handoff.js";
 import { openFormsAdmin, editableForms } from "./forms.js";
 import { openShopTasks, runsShopList } from "./shoptasks.js";
@@ -292,6 +292,7 @@ function renderHome() {
       el("div", { class: "home-hello" },
         el("h1", {}, `Hi, ${name}`),
         roles ? el("p", { class: "roles" }, `Employee ${state.claims.emp} · ${roles}`) : null),
+      p.annBar,
       p.viewAs,
       p.status),
     // Line tablets: a line down an hour with nobody tapping Call Maintenance (this tablet's line when it has one).
@@ -624,7 +625,7 @@ function refreshPushState() {
   pushState().then((s) => { pushNow = s; });
 }
 // The bar's Announcements badge follows the live data.
-onDataChange(() => { if (state.user) renderNav(); });
+onDataChange(() => { if (state.user) { renderNav(); noticeNewAnnouncements(state.claims?.emp); } });
 
 // Signing out also stops this person's notifications on a shared line tablet.
 async function signOutNow() {

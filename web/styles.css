@@ -1240,6 +1240,8 @@ details.fold.fold-ok { border-color: var(--green); background: var(--green-tint)
 .home-hello h1 { margin: 0; }
 .home-hello .roles { margin: var(--s1) 0 0; }
 .home-head .view-as { margin: 0; }
+.ann-bar { display: flex; flex-direction: column; gap: var(--s2); }
+.ann-bar .home-h2 { margin: var(--s2) 0 0; }
 .home-head .view-as .picker { min-height: 48px; }
 .view-note { margin: 0 0 var(--s3); color: var(--muted); font-size: var(--text-small); }
 .line-status { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: var(--s2); }

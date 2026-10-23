@@ -11,7 +11,7 @@ import { data, lineName } from "./data.js";
 import { overdueUnits, unitLabel, checklistUnits, pendingFor } from "./checklists.js";
 import { dueByShiftEnd } from "./shift.js";
 import { myOpenRequests } from "./requests.js";
-import { announcementItems } from "./announcements.js";
+import { announcementItems, announcementBar } from "./announcements.js";
 import { handoffItems } from "./handoff.js";
 import { shopItems } from "./shoptasks.js";
 import { stationItems } from "./stations.js";
@@ -399,7 +399,10 @@ export function dashboard(ctx) {
     ? el("section", { class: "glance", "aria-label": "At a glance" }, el("h2", { class: "home-h2" }, "At a glance"), el("div", { class: "dash-cards" }, ids.map((id) => (id === "silos" ? siloCard(ctx.go.silos) : card(cardData(id, ctx), id)))))
     : null;
 
-  return { status, viewAs, needs, quick, cards };
+  // Announcements still to read sit right under the name (Chris, 10-23-2026), live as they come in.
+  const annBar = announcementBar(ctx.emp, ctx.go.announcement, needRow);
+
+  return { status, viewAs, annBar, needs, quick, cards };
 }
 
 // Lines down for the Open issues button — from the same summary as the plant status bar.

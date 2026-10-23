@@ -90,22 +90,55 @@ export function annRow(a, emp, onclick) {
 // ---- Home item (Decision 66) ----------------------------------------------------------------------------------
 // One line on Home: gray = waiting, with its sign-by date; red ⚠ = a Safety announcement waiting, or past its
 // acknowledge-by date; green ✓ = all signed. Tapping opens the one to sign (or the list).
+// Needs you: only the green "all signed" line. The ones still to read are at the top of Home (announcementBar).
 export function announcementItems(emp, onOpen) {
   if (!data.announcements || !data.mySigs) return [];
-  const waiting = toSign(emp);
-  if (!waiting.length) {
-    return forMeNow(emp).length ? [{ key: "ann", icon: "📣", title: "Announcements", detail: "all signed", state: "done", onOpen: () => onOpen(null) }] : [];
+  if (toSign(emp).length || toSee(emp).length) return [];
+  return forMeNow(emp).length ? [{ key: "ann", icon: "📣", title: "Announcements", detail: "all signed", state: "done", onOpen: () => onOpen(null) }] : [];
+}
+
+// Important ones the crew doesn't sign: shown at the top until they open it once (Chris, 10-23-2026). Remembered on
+// this device per person (a convenience — nothing is signed).
+const seenKey = (emp, a) => `cdg-ann-seen:${emp}:${a.id}:v${version(a)}`;
+function wasSeen(emp, a) { try { return localStorage.getItem(seenKey(emp, a)) === "1"; } catch { return false; } }
+function markSeen(emp, a) { try { localStorage.setItem(seenKey(emp, a), "1"); } catch {} }
+const toSee = (emp) => (data.announcements || []).filter((a) => (a.audienceEmps || []).includes(emp) && !isEnded(a) && isRelay(a) && !iSign(a) && !wasSeen(emp, a));
+
+// Home, right under the name (Chris, 10-23-2026): every announcement still to read, live as soon as it's posted, one
+// line each with its priority badge. Safety first, then Important, then overdue, then soonest due. Null when none.
+export function announcementBar(emp, onOpen, row) {
+  if (!data.announcements || !data.mySigs) return null;
+  const items = [
+    ...toSign(emp).map((a) => ({
+      key: `ann:${a.id}`, icon: PRIORITY[a.priority]?.icon || "📣", badge: prioBadge(a.priority), title: a.title,
+      detail: [isOverdue(a) ? `was due ${fmtDay(a.ackBy)}` : a.priority === "safety" ? "read and sign now" : `sign by ${fmtDay(a.ackBy)}`,
+        isRelay(a) ? "read & relay to your crew" : ""].filter(Boolean).join(" · "),
+      state: a.priority === "safety" || isOverdue(a) ? "late" : "due", onOpen: () => onOpen(a.id),
+    })),
+    ...toSee(emp).map((a) => ({
+      key: `ann-see:${a.id}`, icon: PRIORITY[a.priority]?.icon || "📣", badge: prioBadge(a.priority), title: a.title,
+      detail: `${a.createdByName ? `from ${a.createdByName} · ` : ""}tap to read — no sign-off needed`, state: "due", onOpen: () => onOpen(a.id),
+    })),
+  ];
+  if (!items.length) return null;
+  return el("section", { class: "ann-bar", "aria-label": "Announcements", "aria-live": "polite" },
+    el("h2", { class: "home-h2" }, `📣 Announcements (${items.length})`),
+    el("div", { class: "need-list" }, items.map(row)));
+}
+
+// A short pop-up the moment a new announcement for me is posted (or one I signed is changed), on any screen.
+const known = new Map(); // id → version
+let primed = false;
+export function noticeNewAnnouncements(emp) {
+  if (!data.announcements || !emp) return;
+  for (const a of data.announcements) {
+    const was = known.get(a.id);
+    known.set(a.id, version(a));
+    if (!primed || isEnded(a) || !(a.audienceEmps || []).includes(emp) || a.createdBy === emp) continue;
+    if (was === undefined) toast(`📣 New announcement: ${a.title}`);
+    else if (was !== version(a) && iSign(a)) toast(`📣 Updated — please read again: ${a.title}`);
   }
-  // Each unsigned one is its own item, with its priority badge, pinned above everything else in Needs you
-  // (Chris, 10-23-2026). Safety first, then Important, then overdue, then soonest due.
-  return waiting.map((a) => ({
-    key: `ann:${a.id}`, icon: PRIORITY[a.priority]?.icon || "📣", pin: true, badge: prioBadge(a.priority),
-    title: a.title,
-    detail: [isOverdue(a) ? `was due ${fmtDay(a.ackBy)}` : a.priority === "safety" ? "read and sign now" : `sign by ${fmtDay(a.ackBy)}`,
-      isRelay(a) ? "read & relay to your crew" : ""].filter(Boolean).join(" · "),
-    state: a.priority === "safety" || isOverdue(a) ? "late" : "due",
-    onOpen: () => onOpen(a.id),
-  }));
+  primed = true;
 }
 
 // ---- upload (photo or PDF) -------------------------------------------------------------------------------------
@@ -245,6 +278,7 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
       return [backBtn(ui.back === "home" ? "Home" : "Announcements", leaveRead),
         !data.announcements ? spinner("Loading announcement…") : emptyState("Announcement not found", "It may have been for someone else.")];
     }
+    if (!iSign(a, me.roles)) markSeen(me.emp, a); // Important, crew: off the top of Home once opened
     const sig = mySig(a);
     const older = signedBefore(a);
     const file = a.file
