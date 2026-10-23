@@ -13,8 +13,9 @@ import {
   callHrReviewMessages, callHrMessageReviewLog,
 } from "./firebase.js";
 
+// Who starts messages: Line Lead and above unless an Admin changed it for a role (Admin → Roles, Decision 103).
 const START_ROLES = ["lead", "supervisor", "plant-manager", "admin"];
-export const canStartMessages = (roles = []) => roles.some((r) => START_ROLES.includes(r));
+export const roleStartsMessages = (role) => (typeof role.startMessages === "boolean" ? role.startMessages : START_ROLES.includes(role.id));
 const SHIFT_LINE = "You only receive messages during your shift.";
 const HR_LINE = "Messages are company records and may be reviewed by HR.";
 const MAINT_WORDS = /\b(down|leak|leaking|leaks|broken|broke|jam|jammed|jams|not working)\b/i;

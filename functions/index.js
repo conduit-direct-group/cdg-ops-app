@@ -542,6 +542,11 @@ exports.adminSaveRole = onCall(async (req) => {
       if (typeof d.postTrucks !== "boolean") throw new HttpsError("invalid-argument", "postTrucks must be true or false.");
       extra.postTrucks = d.postTrucks;
     }
+    // { startMessages: true|false } — may start messages (Decision 103). Unset = Line Lead, Supervisor, Production Manager, Admin.
+    if (d.startMessages !== undefined) {
+      if (typeof d.startMessages !== "boolean") throw new HttpsError("invalid-argument", "startMessages must be true or false.");
+      extra.startMessages = d.startMessages;
+    }
     // { editMachines: true|false } — may add and edit machine parts & specs (Machines). Unset = Maintenance and Admin.
     if (d.editMachines !== undefined) {
       if (typeof d.editMachines !== "boolean") throw new HttpsError("invalid-argument", "editMachines must be true or false.");
@@ -5454,8 +5459,13 @@ async function messagePeople(test) {
   return (await peopleList()).filter((p) => p.active && (test || !deptLib.isPracticeAccount(p.name)));
 }
 
-function requireMessageStarter(me) {
-  if (!messagingLib.canStart(me.roles)) throw new HttpsError("permission-denied", "Only Line Leads and above start messages. You can reply to messages you get.");
+// Who starts messages: Line Lead and above, or any role an Admin turned on in Admin → Roles (Decision 103).
+async function canStartMessages(me) {
+  const snap = await roles.get();
+  return messagingLib.canStartWith(snap.docs.map((d) => ({ id: d.id, ...d.data() })), me.roles);
+}
+async function requireMessageStarter(me) {
+  if (!(await canStartMessages(me))) throw new HttpsError("permission-denied", "Your role doesn't start messages. You can reply to messages you get.");
 }
 
 // What the target is called ("Team A", "Line 2", "Supervisors", "Everyone", a person's name).
@@ -5474,7 +5484,7 @@ exports.messageStart = onCall(async (req) => {
   const test = isTest(req);
   const [people, teamSnaps, lineSnaps, roleSnaps, mine] = await Promise.all([messagePeople(test), teams.get(), lines.get(), roles.get(), employees.doc(me.employeeNumber).get()]);
   const teamName = new Map(teamSnaps.docs.map((d) => [d.id, d.get("name") || d.id]));
-  const start = messagingLib.canStart(me.roles);
+  const start = messagingLib.canStartWith(roleSnaps.docs.map((d) => ({ id: d.id, ...d.data() })), me.roles);
   return {
     test, canStart: start, hr: me.hr, noticeSeen: !!mine.get("messagingNoticeAt"),
     people: (start || me.hr) ? people.filter((p) => p.id !== me.employeeNumber).map((p) => ({ emp: p.id, name: p.name, team: p.team ? teamName.get(p.team) || "" : "" })).sort((a, b) => a.name.localeCompare(b.name)) : [],
@@ -5488,7 +5498,7 @@ exports.messageStart = onCall(async (req) => {
 // Before sending: who it would reach now. { to } → { total, reach, why, name }
 exports.messagePreview = onCall(async (req) => {
   const me = await requireMember(req);
-  requireMessageStarter(me);
+  await requireMessageStarter(me);
   const test = isTest(req);
   const { to, error } = messagingLib.cleanTo(req.data?.to);
   if (error) throw new HttpsError("invalid-argument", error);
@@ -5500,7 +5510,7 @@ exports.messagePreview = onCall(async (req) => {
 // Line Lead and above: { to, text } → { id, delivered, total, why }
 exports.messageSend = onCall(async (req) => {
   const me = await requireMember(req);
-  requireMessageStarter(me);
+  await requireMessageStarter(me);
   const test = isTest(req);
   const { to, error } = messagingLib.cleanTo(req.data?.to);
   if (error) throw new HttpsError("invalid-argument", error);

@@ -19,6 +19,15 @@ test("messaging: only Line Lead and above start messages", () => {
   assert.strictEqual(m.startRole(["lead", "supervisor"]), "Supervisor");
 });
 
+test("messaging: an Admin can turn starting messages on or off per role (Admin → Roles)", () => {
+  const roles = [{ id: "lead" }, { id: "maintenance" }, { id: "office", startMessages: true }, { id: "supervisor", startMessages: false }, { id: "admin" }];
+  assert.ok(m.canStartWith(roles, ["lead"]));
+  assert.ok(!m.canStartWith(roles, ["maintenance"]));
+  assert.ok(m.canStartWith(roles, ["office"])); // turned on
+  assert.ok(!m.canStartWith(roles, ["supervisor"])); // turned off
+  assert.ok(!m.canStartWith([{ id: "lead", active: false }], ["lead"])); // retired role
+});
+
 test("messaging: on shift, absent, off shift, covering, no team", () => {
   const s = (id) => m.standing(people.find((p) => p.id === id), ctx);
   assert.deepStrictEqual(["9002", "9003", "9004", "9005", "9006"].map(s), ["on", "absent", "off", "covering", "noteam"]);

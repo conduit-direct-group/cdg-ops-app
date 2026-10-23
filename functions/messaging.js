@@ -23,6 +23,9 @@ const MAINT_WORDS = /\b(down|leak|leaking|leaks|broken|broke|jam|jammed|jams|not
 const M_NUMBER = /\bM-?\d{3}\b/i;
 
 const canStart = (roles = []) => roles.some((r) => START_ROLES.includes(r));
+// Admin → Roles can turn starting messages on or off per role (Decision 103): role.startMessages; unset = the default.
+const roleStarts = (role) => (typeof role.startMessages === "boolean" ? role.startMessages : START_ROLES.includes(role.id));
+const canStartWith = (roleDocs, myRoles = []) => (roleDocs || []).some((r) => r.active !== false && myRoles.includes(r.id) && roleStarts(r));
 const ROLE_LABELS = [["admin", "Admin"], ["plant-manager", "Production Manager"], ["supervisor", "Supervisor"], ["lead", "Line Lead"]];
 const startRole = (roles = []) => ROLE_LABELS.find(([r]) => roles.includes(r))?.[1] || "";
 
@@ -91,6 +94,6 @@ function cleanReason(v) {
 }
 
 module.exports = {
-  START_ROLES, TARGETS, MAX_TEXT, canStart, startRole, cleanText, cleanTo, standing, receives, audience, deliver, deliverOne,
+  START_ROLES, TARGETS, MAX_TEXT, canStart, roleStarts, canStartWith, startRole, cleanText, cleanTo, standing, receives, audience, deliver, deliverOne,
   maintenanceHint, machineNumber, conv, cleanReason,
 };
