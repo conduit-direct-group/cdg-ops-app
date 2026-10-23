@@ -30,6 +30,11 @@ const TEST_COLLECTIONS = [
   ["test_incidents", "Near-miss & incident reports"],
   ["test_incidentActions", "Incident corrective actions"],
   ["test_outboxReceipts", "Offline sign-off receipts"],
+  ["test_shiftReports", "Downtime & scrap shift reports"],
+  ["test_changeoverEvents", "Downtime & scrap changeovers"],
+  ["test_downtimeEvents", "Downtime & scrap downtime events"],
+  ["test_scrapEntries", "Downtime & scrap scrap entries"],
+  ["test_attendance", "Who's here today"],
 ];
 const DAY_MS = 86400000;
 

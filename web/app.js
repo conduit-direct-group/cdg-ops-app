@@ -38,6 +38,7 @@ import { openTrucks, canViewTrucks, canCheckTrucks } from "./trucks.js";
 import { openReels, openReelAdmin } from "./reels.js";
 import { startOutbox } from "./outbox.js";
 import { openDowntime, usesDowntime } from "./downtime.js";
+import { openCrew, usesCrewBoard } from "./crew.js";
 import { openDepartmentsAdmin, openProfile } from "./departments.js";
 import { openWhoToCall, openCallAdmin, lineDownReminder } from "./whotocall.js";
 import { openIncidents, openRotationAdmin, openInjuryExport, openHrAccess } from "./incidents.js";
@@ -282,6 +283,7 @@ function renderHome() {
       silos: () => openSiloScreen(),
       reels: (view) => openReelScreen(view),
       downtime: () => openDowntimeScreen(),
+      crew: () => openCrewScreen(),
       incidents: (view, id) => openIncidentScreen(view, id),
     },
   });
@@ -352,6 +354,7 @@ function openMore() {
   const act = (fn) => () => { close(); fn(); };
   const row = (icon, label, fn, cls = "") => el("button", { class: `more-item ${cls}`, type: "button", onclick: act(fn) }, el("span", { "aria-hidden": "true" }, icon), el("span", {}, label));
   const items = [
+    usesCrewBoard(roles) ? row("👥", "Who's here today", () => openCrewScreen()) : null,
     usesHandoffs(roles) ? row("📝", "Shift handoff", () => openHandoffScreen()) : null,
     runsShopList(roles) ? row("🧹", "Keep the Shop Clean", () => openShopScreen()) : null,
     usesMachines(roles) ? row("🔧", "Fix Library", () => openFixes()) : null,
@@ -550,6 +553,14 @@ function openDowntimeScreen(back = () => go("home"), backLabel = "Home") {
   setNav(back === openChecklistsHub ? "checklists" : "more");
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openDowntime(screen, { me: me(), onExit: back, backLabel });
+}
+
+// Who's here today (Crew Board step 1): Home's Needs you item / Crew today card, and More.
+function openCrewScreen(back = () => go("home"), backLabel = "Home") {
+  if (closeModule) closeModule();
+  setNav(back === openChecklistsHub ? "checklists" : "more");
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  closeModule = openCrew(screen, { onExit: back, backLabel });
 }
 
 // Silo levels (Checklists page, Home's silo card / low silo item, or a low silo notification: ?silos=1).

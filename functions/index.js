@@ -42,6 +42,7 @@ const hrLib = require("./hraccess");
 const offlineLib = require("./offline");
 const { AsyncLocalStorage } = require("node:async_hooks");
 const deptLib = require("./departments");
+const crewLib = require("./crew");
 const crypto = require("node:crypto");
 const { getMessaging } = require("firebase-admin/messaging");
 const { defineSecret } = require("firebase-functions/params");
@@ -4377,4 +4378,145 @@ exports.adminSaveDepartments = onCall(async (req) => {
   await departmentsDoc.set({ departments, headsReportTo: to, updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber });
   await auditLog.add({ type: "updated", kind: "departments", recordId: "departments", by: adminNumber, at: FieldValue.serverTimestamp(), departments: departments.map((dep) => dep.name), headsReportTo: to });
   return { ok: true };
+});
+
+// ---------------------------------------------------------------------------
+// Crew Board, step 1 — Who's here today (Chris, 10-21-2026, Decision 69; launch list 2). Rules in crew.js. Read and
+// written only through these functions (no database rules), so Out reasons stay with Supervisors, the Production
+// Manager, and Admins. Test site: test_attendance.
+// ---------------------------------------------------------------------------
+
+// This shift's attendance: { now, ref, saved, teamId, rotationTeam } — or null when no shift is running. The team is
+// the one saved on the record, else the rotation's; on a day with no team (Saturday) the lead picks it.
+async function crewShift(test) {
+  const now = await shiftAt(Date.now());
+  if (!now) return null;
+  const ref = col("attendance", test).doc(crewLib.docId(now.date, now.shift.id));
+  const [snap, rot] = await Promise.all([ref.get(), rotationDoc.get()]);
+  const rotTeam = rotationLib.teamOnShift(rot.get("teams") || [], now);
+  const saved = snap.exists ? snap.data() : null;
+  return { now, ref, saved, teamId: saved?.teamId || rotTeam || null, rotationTeam: !!rotTeam };
+}
+
+// The whole record, ready to write (set, not merge, so cleared marks really go).
+function crewRecord(s, saved, { teamId, teamName, added, marks, by, test }) {
+  return {
+    ...(saved || { createdAtMs: Date.now() }),
+    date: s.now.date, shiftId: s.now.shift.id, shiftName: s.now.shift.name || s.now.shift.id, startMs: s.now.startMs, endMs: s.now.endMs,
+    teamId, teamName, added, marks, updatedAtMs: Date.now(), updatedBy: by, ...(test ? { test: true } : {}),
+  };
+}
+
+const crewListFor = (people, teamId, added, test) => crewLib.crewList(people, { teamId, added, test, isPractice: deptLib.isPracticeAccount });
+
+function requireCrewMarker(me) {
+  if (!crewLib.canMark(me.roles)) throw new HttpsError("permission-denied", "Line Leads, Supervisors, the Production Manager, and Admins mark who's here.");
+}
+
+// Anyone signed in: this shift's crew, Here / Out / not marked yet. Out reasons only for Supervisors, the Production
+// Manager, and Admins. forMe: a Line Lead or Supervisor whose team is on (any of them on a day with no team yet).
+exports.crewToday = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const s = await crewShift(test);
+  if (!s) return { noShift: true, test };
+  const [people, teamSnaps] = await Promise.all([peopleList(), teams.get()]);
+  const teamList = teamSnaps.docs.filter((d) => d.get("active") !== false).map((d) => ({ id: d.id, name: d.get("name") || d.id }));
+  const teamName = (id) => teamSnaps.docs.find((d) => d.id === id)?.get("name") || id;
+  const marks = s.saved?.marks || {};
+  const list = crewListFor(people, s.teamId, s.saved?.added || [], test);
+  const mark = crewLib.canMark(me.roles);
+  const myself = people.find((p) => p.id === me.employeeNumber) || {};
+  const leadRoles = me.roles.filter((r) => r === "lead" || r === "supervisor");
+  const onCrew = new Set(list.map((p) => p.id));
+  return {
+    test,
+    shift: { date: s.now.date, shiftId: s.now.shift.id, shiftName: s.now.shift.name || s.now.shift.id, startMs: s.now.startMs, endMs: s.now.endMs, dueMs: crewLib.dueMs(s.now.startMs) },
+    team: s.teamId ? { id: s.teamId, name: teamName(s.teamId) } : null,
+    canMark: mark, canPickTeam: mark && !s.rotationTeam, canSeeReasons: crewLib.canSeeReasons(me.roles),
+    forMe: leadRoles.length > 0 && (!s.teamId || leadRoles.some((r) => deptLib.covers(myself, s.teamId, r))),
+    reasons: crewLib.OUT_REASONS,
+    teams: mark ? teamList : [],
+    people: crewLib.crewView(list, marks, { reasons: crewLib.canSeeReasons(me.roles) }),
+    counts: crewLib.counts(list, marks),
+    others: mark ? people.filter((p) => p.active && !onCrew.has(p.id) && (test || !deptLib.isPracticeAccount(p.name)))
+      .map((p) => ({ emp: p.id, name: p.name, team: p.team ? teamName(p.team) : "" })).sort((a, b) => a.name.localeCompare(b.name)) : [],
+  };
+});
+
+// Line Leads, Supervisors, Production Manager, Admins: { emp, status: "here" | "out" | null, reason (Out) } or
+// { all: true } (everyone not marked yet → Here).
+exports.crewMark = onCall(async (req) => {
+  const me = await requireMember(req);
+  requireCrewMarker(me);
+  const test = isTest(req);
+  const all = req.data?.all === true;
+  const { mark, error } = all ? { mark: { status: "here" } } : crewLib.cleanMark(req.data);
+  if (error) throw new HttpsError("invalid-argument", error);
+  const s = await crewShift(test);
+  if (!s) throw new HttpsError("failed-precondition", "No shift is running right now (Admin → Forms sets the shift times).");
+  if (!s.teamId) throw new HttpsError("failed-precondition", "Pick the team that's working first.");
+  const [people, team] = await Promise.all([peopleList(), teams.doc(s.teamId).get()]);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(s.ref);
+    const saved = snap.exists ? snap.data() : null;
+    const added = saved?.added || [];
+    const list = crewListFor(people, s.teamId, added, test);
+    const marks = { ...(saved?.marks || {}) };
+    const stamp = { by: me.employeeNumber, byName: me.name, atMs: Date.now() };
+    let changed;
+    if (all) {
+      changed = list.filter((p) => !marks[p.id]).map((p) => p.id);
+      for (const id of changed) marks[id] = { status: "here", ...stamp };
+    } else {
+      const emp = String(req.data?.emp || "");
+      if (!list.some((p) => p.id === emp)) throw new HttpsError("not-found", "That person isn't on this shift's crew.");
+      if (mark) marks[emp] = { ...mark, ...stamp };
+      else delete marks[emp];
+      changed = [emp];
+    }
+    tx.set(s.ref, crewRecord(s, saved, { teamId: s.teamId, teamName: team.get("name") || s.teamId, added, marks, by: me.employeeNumber, test }));
+    auditRecord(tx, "marked", "attendance", s.ref.id, me.employeeNumber, { emps: changed, status: mark?.status || null, test });
+    return { ok: true, count: changed.length, counts: crewLib.counts(list, marks) };
+  });
+});
+
+// Line Leads, Supervisors, Production Manager, Admins: { teamId } (only on a day the rotation has no team),
+// { add: emp } (covering from another team), or { remove: emp } (someone added by mistake; their mark goes too).
+exports.crewSetup = onCall(async (req) => {
+  const me = await requireMember(req);
+  requireCrewMarker(me);
+  const test = isTest(req);
+  const s = await crewShift(test);
+  if (!s) throw new HttpsError("failed-precondition", "No shift is running right now (Admin → Forms sets the shift times).");
+  let teamId = s.teamId;
+  if (req.data?.teamId !== undefined) {
+    if (s.rotationTeam) throw new HttpsError("failed-precondition", "The shift rotation sets today's team (Admin → Shift rotation).");
+    teamId = String(req.data.teamId || "");
+  }
+  if (!teamId) throw new HttpsError("failed-precondition", "Pick the team that's working first.");
+  const [people, team] = await Promise.all([peopleList(), teams.doc(teamId).get()]);
+  if (!team.exists || team.get("active") === false) throw new HttpsError("invalid-argument", "Pick a team from the list.");
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(s.ref);
+    const saved = snap.exists ? snap.data() : null;
+    let added = [...(saved?.added || [])];
+    const marks = { ...(saved?.marks || {}) };
+    const add = req.data?.add ? String(req.data.add) : null;
+    const remove = req.data?.remove ? String(req.data.remove) : null;
+    if (add) {
+      const p = people.find((x) => x.id === add && x.active);
+      if (!p) throw new HttpsError("not-found", "That person isn't in the app.");
+      if (crewListFor(people, teamId, added, test).some((x) => x.id === add)) throw new HttpsError("already-exists", `${p.name} is already on the crew.`);
+      added.push(add);
+    }
+    if (remove) {
+      if (!added.includes(remove)) throw new HttpsError("failed-precondition", "Only people added to this shift can be taken off. Admin → People sets each person's team.");
+      added = added.filter((x) => x !== remove);
+      delete marks[remove];
+    }
+    tx.set(s.ref, crewRecord(s, saved, { teamId, teamName: team.get("name") || teamId, added, marks, by: me.employeeNumber, test }));
+    auditRecord(tx, "updated", "attendance", s.ref.id, me.employeeNumber, { teamId, add, remove, test });
+    return { ok: true };
+  });
 });

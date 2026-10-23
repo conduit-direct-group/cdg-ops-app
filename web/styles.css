@@ -1513,3 +1513,14 @@ a.btn { text-decoration: none; }
 .org-title { color: var(--muted); font-size: var(--text-small); overflow-wrap: anywhere; }
 .org-count { margin-left: auto; padding: 0 var(--s2); border-radius: var(--radius); background: var(--surface-3); font-size: var(--text-small); }
 .filter-pick { margin: var(--s2) 0; }
+
+/* Who's here today (Crew Board step 1) */
+.crew-count { font-size: var(--text-section); text-align: center; margin: 0 0 var(--s2); }
+.crew-due { color: var(--muted); text-align: center; margin: 0 0 var(--s3); }
+@media (min-width: 760px) { main[data-width="wide"] .crew-count, main[data-width="wide"] .crew-due { text-align: left; } }
+.crew-due.late { color: var(--white); background: var(--red-tint); border: 1px solid var(--red); border-radius: var(--radius); padding: var(--s2) var(--s3); }
+.crew-list { display: grid; grid-template-columns: 1fr; gap: var(--s2); margin: var(--s3) 0; }
+@media (min-width: 768px) { .crew-list { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 1200px) { .crew-list { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.crew-person { display: flex; flex-direction: column; gap: var(--s2); margin: 0; }
+.crew-who { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }

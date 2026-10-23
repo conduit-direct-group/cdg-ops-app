@@ -18,6 +18,7 @@ import { lineCheckItems } from "./linecheck.js";
 import { db, TEST_MODE, callAdminListEmployees, callAnnouncementSummary } from "./firebase.js";
 import { siloItems, siloCard } from "./silos.js";
 import { downtimeItems } from "./downtime.js";
+import { crewItems, crewCard } from "./crew.js";
 import { reelItems, reelCard } from "./reels.js";
 import { incidentItems, incidentCard } from "./incidents.js";
 import { collection, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
@@ -27,8 +28,8 @@ import { collection, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/
 // requests, safety concerns) are gone — Needs you covers them.
 export const ROLE_CARDS = [
   ["admin", "Admin", ["system-alerts", "waiting-login"]],
-  ["plant-manager", "Production Manager", ["pm-people", "ack-gaps", "silos", "reels-week", "incidents-open"]],
-  ["supervisor", "Supervisor", ["crew-gaps", "silos"]],
+  ["plant-manager", "Production Manager", ["crew-today", "pm-people", "ack-gaps", "silos", "reels-week", "incidents-open"]],
+  ["supervisor", "Supervisor", ["crew-today", "crew-gaps", "silos"]],
   ["lead", "Line Lead", []],
   ["operator", "Operator", []],
   ["maintenance", "Maintenance", []],
@@ -145,6 +146,8 @@ function cardData(id, ctx) {
   const down = Object.entries(data.plantStatus?.down || {});
   const openIssues = data.openIssues || [];
   switch (id) {
+    case "crew-today":
+      return crewCard(go.crew, () => redraw());
     case "trainees": {
       watchTraining();
       const t = extra.training;
@@ -217,12 +220,12 @@ function card(c, id) {
     : el("div", { class: c.alert ? "dash-card alert" : "dash-card", "data-card": id }, body);
 }
 
-// Card ids for these roles, in role order, duplicates merged. Production Manager may have 5; others 4.
+// Card ids for these roles, in role order, duplicates merged. Production Manager may have 6 (with Crew today); others 4.
 export function cardsFor(roles) {
   const out = [];
   for (const [role, , ids] of ROLE_CARDS) {
     if (!roles.includes(role)) continue;
-    const max = role === "plant-manager" ? 5 : 4;
+    const max = role === "plant-manager" ? 6 : 4;
     ids.slice(0, max).forEach((id) => { if (!out.includes(id)) out.push(id); });
   }
   return out;
@@ -288,6 +291,7 @@ function needsItems(ctx, roles) {
   items.push(...siloItems(roles, go.silos, ctx.emp));
   items.push(...reelItems(roles, () => go.reels("list")));
   items.push(...downtimeItems(roles, data.myself, go.downtime, () => redraw?.()));
+  items.push(...crewItems(roles, go.crew, () => redraw?.()));
   items.push(...incidentItems(roles, { emp: ctx.emp }, go.incidents));
   items.push(...handoffItems(me, go.handoff));
   items.push(...shopItems(me, roles, go.shop));
