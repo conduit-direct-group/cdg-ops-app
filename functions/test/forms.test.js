@@ -12,14 +12,6 @@ const form = {
 };
 const lines = [{ id: "line-1", name: "Line 1" }, { id: "line-2", name: "Line 2" }];
 
-test("form editing: admins always; other roles only for the forms listed on the Roles screen", () => {
-  const roles = [{ id: "admin" }, { id: "training-safety", editForms: ["handoff"] }, { id: "office" }];
-  assert.strictEqual(f.canEditForm(roles, ["admin"], "anything"), true);
-  assert.strictEqual(f.canEditForm(roles, ["training-safety"], "handoff"), true);
-  assert.strictEqual(f.canEditForm(roles, ["training-safety"], "clean-shop"), false);
-  assert.strictEqual(f.canEditForm(roles, ["office"], "handoff"), false);
-});
-
 test("a template needs a name, kind, sections, labelled typed fields; ids come from labels and are unique", () => {
   const { template } = f.cleanTemplate(form);
   assert.deepStrictEqual(template.sections.map((s) => s.id), ["counts", "checks"]);

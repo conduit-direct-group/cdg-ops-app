@@ -335,7 +335,7 @@ export function openCrew(container, { onExit, backLabel = "Home", onSop = null, 
 // ---- Admin → Crew Board stations ------------------------------------------------------------------------------------
 // The stations, levels, SOPs, A–E rotation and call-off order (company data from the Shift Station Assignment sheet —
 // loaded from a file, never kept in the code). Shows what's saved; "Load from a file" replaces it after a preview.
-export function openCrewStationsAdmin(container, { onExit }) {
+export function openCrewStationsAdmin(container, { onExit, backLabel = "Admin" }) {
   const ui = { setup: undefined, draft: null, draftText: "", loadError: "", busy: false, message: "", messageKind: "", retry: null };
   async function load() {
     ui.loadError = "";
@@ -369,7 +369,7 @@ export function openCrewStationsAdmin(container, { onExit }) {
   ];
   function render() {
     container.replaceChildren(...[
-      el("button", { class: "link-btn", type: "button", onclick: onExit }, "← Admin"),
+      el("button", { class: "link-btn", type: "button", onclick: onExit }, `← ${backLabel}`),
       el("h1", {}, "🧭 Crew Board stations"),
       el("p", { class: "hint" }, "From the Shift Station Assignment sheet: Ideal level and Key SOPs."),
       banner(ui),

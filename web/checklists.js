@@ -1,6 +1,7 @@
 // Operator checklists (Plan Phase 3) — same checklists and 14-day rule as the old Line Fix Library, signed by
 // the signed-in person instead of initials. Overdue checklists show as a red banner at the top of the
-// Fix Library (never hidden). Admins edit the checklists and their training photos/videos.
+// Fix Library (never hidden). Admins and the checklists' department head edit them and their training photos/videos
+// in 📁 Documents & forms (Decision 116).
 //
 // Rules match functions/checklists.js (the server checks every sign-off the same way).
 
@@ -172,7 +173,7 @@ function mediaView(item) {
     ...(item.videos || []).map((u) => el("video", { class: "fix-video", src: u, controls: true, preload: "metadata", playsinline: true })),
     ...(item.photos || []).map((u, n) => el("a", { href: u, target: "_blank", rel: "noopener" }, el("img", { class: "fix-photo", src: u, alt: `Training photo ${n + 1}`, loading: "lazy" }))),
   ];
-  return parts.length ? el("div", { class: "fix-media" }, parts) : emptyState("No training videos or photos yet", "An admin can add them here.");
+  return parts.length ? el("div", { class: "fix-media" }, parts) : emptyState("No training videos or photos yet", "");
 }
 
 // ===========================================================================
@@ -268,8 +269,8 @@ export function openChecklist(container, { me, unitId: id, onExit }) {
                 el("span", { class: late ? "ck-last late" : "ck-last" }, rec?.at ? `Last: ${fmtDate(rec.at)}${rec.byName ? ` · ${rec.byName}` : ""}${rec.test ? " (test)" : ""}${late ? " · overdue" : ""}` : "Never done")
               )
             ),
-            media || me.admin
-              ? el("button", { class: "link-btn", type: "button", onclick: () => { ui.itemId = item.id; show("media"); } }, media ? `🎥 How to (${media})` : "＋ Add training media")
+            media
+              ? el("button", { class: "link-btn", type: "button", onclick: () => { ui.itemId = item.id; show("media"); } }, `🎥 How to (${media})`)
               : null
           );
         })
@@ -279,61 +280,16 @@ export function openChecklist(container, { me, unitId: id, onExit }) {
     ];
   }
 
-  // Training photos/videos for one item; admins add and remove them.
+  // Training photos/videos for one item (added in 📁 Documents & forms).
   function renderMedia() {
     const u = unit();
     const item = u?.template.items.find((i) => i.id === ui.itemId);
     if (!item) return renderList();
-    async function save(photos, videos, msg, again) {
-      Object.assign(ui, { busy: true, message: "", retry: null });
-      render();
-      try {
-        await callAdminSetChecklistMedia({ templateId: u.template.id, itemId: item.id, photos, videos });
-        show("media", msg, "ok");
-      } catch (err) {
-        Object.assign(ui, { busy: false, message: friendlyError(err), messageKind: "error", retry: again });
-        render();
-      }
-    }
-    async function add(file) {
-      if (!/^(image|video)\//.test(file.type)) return Object.assign(ui, { message: "Photos or videos only.", messageKind: "error" }), render();
-      if (!navigator.onLine) return Object.assign(ui, { message: friendlyError({ code: "offline" }), messageKind: "error" }), render();
-      Object.assign(ui, { busy: true, message: "" });
-      try {
-        const url = await upload(file, me, (p) => { ui.upload = `Uploading ${file.name}: ${p}%`; render(); });
-        ui.upload = "";
-        const isVideo = file.type.startsWith("video/");
-        await save(isVideo ? item.photos || [] : [...(item.photos || []), url], isVideo ? [...(item.videos || []), url] : item.videos || [], isVideo ? "Video added" : "Photo added", () => add(file));
-      } catch (err) {
-        Object.assign(ui, { busy: false, upload: "", message: friendlyError(err), messageKind: "error", retry: () => add(file) });
-        render();
-      }
-    }
-    async function remove(kind, url) {
-      if (!(await confirmSheet({ title: "Remove this from the training media?", text: "It goes to the trash bin for 30 days.", confirmLabel: "Remove", danger: true }))) return;
-      const next = { photos: [...(item.photos || [])], videos: [...(item.videos || [])] };
-      next[kind] = next[kind].filter((x) => x !== url);
-      await save(next.photos, next.videos, "Removed — in the trash for 30 days", () => remove(kind, url));
-    }
     return [
       back(unitLabel(u), () => show("list")),
       el("h1", { class: "fix-title" }, item.text),
       el("p", { class: "hint" }, u.template.name),
-      banner(ui),
-      ui.upload ? spinner(ui.upload) : null,
       mediaView(item),
-      me.admin
-        ? el(
-            "div",
-            { class: "card" },
-            el("strong", {}, "Admin: training media"),
-            el("label", { class: "btn secondary file-btn" }, "🎥 Add video", el("input", { type: "file", accept: "video/*", hidden: true, disabled: ui.busy, onchange: (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) add(f); } })),
-            el("label", { class: "btn secondary file-btn" }, "📷 Add photo", el("input", { type: "file", accept: "image/*", hidden: true, disabled: ui.busy, onchange: (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) add(f); } })),
-            [...(item.videos || []).map((url, n) => ["videos", url, `Video ${n + 1}`]), ...(item.photos || []).map((url, n) => ["photos", url, `Photo ${n + 1}`])].map(([kind, url, label]) =>
-              el("div", { class: "import-row" }, el("span", { class: "gap-term" }, label), el("button", { class: "link-btn", type: "button", disabled: ui.busy, onclick: () => remove(kind, url) }, "Remove"))
-            )
-          )
-        : null,
     ];
   }
 
@@ -346,11 +302,12 @@ export function openChecklist(container, { me, unitId: id, onExit }) {
 }
 
 // ===========================================================================
-// Admin → Checklists: the list, add/edit, starting checklists, copy from the old library.
+// Checklist editor (📁 Documents & forms opens it on one checklist, or "new"): add/edit, training media; the list with
+// the starting checklists and the copy from the old library when opened without one.
 // ===========================================================================
 
-export function openChecklistAdmin(container, { me, onExit }) {
-  const ui = { view: "list", id: null, draft: null, busy: false, message: "", messageKind: "", retry: null };
+export function openChecklistAdmin(container, { me, onExit, backLabel = "Admin", templateId = null, department = undefined }) {
+  const ui = { view: "list", id: null, draft: null, busy: false, message: "", messageKind: "", retry: null, itemId: null, upload: "" };
   const show = (view, message = "", kind = "") => {
     Object.assign(ui, { view, busy: false, retry: null, message: kind === "ok" ? "" : message, messageKind: kind });
     render();
@@ -385,7 +342,7 @@ export function openChecklistAdmin(container, { me, onExit }) {
       if (r) show("list", `Copied ${r.datesCopied} sign-off dates and training media for ${r.itemsWithMedia} items${r.fileProblems.length ? ` (${r.fileProblems.length} files couldn't be copied)` : ""}`, r.fileProblems.length ? "error" : "ok");
     }
     return [
-      back("Admin", onExit),
+      back(backLabel, onExit),
       el("h1", {}, "Checklists"),
       el("p", { class: "hint" }, "Operator checklists. Each one is done per line (or once for the plant), and each item is due every N days."),
       banner(ui),
@@ -421,13 +378,14 @@ export function openChecklistAdmin(container, { me, onExit }) {
     const d = ui.draft;
     async function save(e) {
       e?.preventDefault();
-      const payload = { ...(ui.id ? { id: ui.id } : { create: true }), name: d.name, machineTypes: d.machineTypes, perLine: d.perLine, everyDays: Number(d.everyDays), active: d.active, items: d.items.filter((i) => i.text.trim()) };
-      if (await act(() => callAdminSaveChecklist(payload), save)) show("list", "Checklist saved", "ok");
+      const payload = { ...(ui.id ? { id: ui.id } : { create: true, department }), name: d.name, machineTypes: d.machineTypes, perLine: d.perLine, everyDays: Number(d.everyDays), active: d.active, items: d.items.filter((i) => i.text.trim()) };
+      if (!(await act(() => callAdminSaveChecklist(payload), save))) return;
+      if (templateId) { toast("Checklist saved"); onExit(); } else show("list", "Checklist saved", "ok");
     }
     const typeChip = (t) =>
       el("button", { class: d.machineTypes.includes(t) ? "chip on" : "chip", type: "button", onclick: () => { d.machineTypes = d.machineTypes.includes(t) ? d.machineTypes.filter((x) => x !== t) : [...d.machineTypes, t]; render(); } }, t);
     return [
-      back("Checklists", () => show("list")),
+      back(templateId ? backLabel : "Checklists", () => (templateId ? onExit() : show("list"))),
       el("h1", {}, ui.id ? "Edit checklist" : "Add a checklist"),
       banner(ui),
       el(
@@ -445,14 +403,19 @@ export function openChecklistAdmin(container, { me, onExit }) {
         el("label", { class: "field-label", for: "ck-days" }, "Each item is due every (days)"),
         picker({ id: "ck-days", title: "Due every", value: d.everyDays, options: ["7", "14", "30", "60", "90"].map((v) => ({ value: v, label: `${v} days` })), onChange: (v) => { d.everyDays = v; render(); } }),
         el("p", { class: "field-label" }, "Items"),
-        d.items.map((item, n) =>
-          el(
-            "div",
-            { class: "link-row" },
-            el("input", { class: "field", "aria-label": `Item ${n + 1}`, maxlength: "200", value: item.text, oninput: (e) => { item.text = e.target.value; } }),
-            el("button", { class: "btn secondary", type: "button", onclick: () => { d.items.splice(n, 1); render(); } }, "Remove")
-          )
-        ),
+        d.items.map((item, n) => {
+          const saved = item.id && (data.checklistTemplates || []).find((x) => x.id === ui.id)?.items.find((i) => i.id === item.id);
+          const media = saved ? (saved.photos || []).length + (saved.videos || []).length : 0;
+          return [
+            el(
+              "div",
+              { class: "link-row" },
+              el("input", { class: "field", "aria-label": `Item ${n + 1}`, maxlength: "200", value: item.text, oninput: (e) => { item.text = e.target.value; } }),
+              el("button", { class: "btn secondary", type: "button", onclick: () => { d.items.splice(n, 1); render(); } }, "Remove")
+            ),
+            saved ? el("button", { class: "link-btn", type: "button", onclick: () => { ui.itemId = item.id; show("media"); } }, media ? `🎥 Training media (${media})` : "＋ Add training media") : null,
+          ];
+        }),
         el("button", { class: "btn secondary", type: "button", onclick: () => { d.items.push({ text: "" }); render(); } }, "+ Add an item"),
         ui.id
           ? el("label", { class: "check-row" }, el("input", { type: "checkbox", checked: !d.active, onchange: (e) => { d.active = !e.target.checked; } }), el("span", {}, "Retire this checklist (hidden; history kept)"))
@@ -462,10 +425,67 @@ export function openChecklistAdmin(container, { me, onExit }) {
     ];
   }
 
-  function render() {
-    container.replaceChildren(...[(ui.view === "form" ? renderForm : renderList)()].flat(3).filter(Boolean));
+  // Training photos/videos for one item (master copies — uploaded only here, Decision 116 e).
+  function renderMedia() {
+    const t = (data.checklistTemplates || []).find((x) => x.id === ui.id);
+    const item = t?.items.find((i) => i.id === ui.itemId);
+    if (!item) return renderForm();
+    async function save(photos, videos, msg, again) {
+      Object.assign(ui, { busy: true, message: "", retry: null });
+      render();
+      try {
+        await callAdminSetChecklistMedia({ templateId: t.id, itemId: item.id, photos, videos });
+        show("media", msg, "ok");
+      } catch (err) {
+        Object.assign(ui, { busy: false, message: friendlyError(err), messageKind: "error", retry: again });
+        render();
+      }
+    }
+    async function add(file) {
+      if (!/^(image|video)\//.test(file.type)) return Object.assign(ui, { message: "Photos or videos only.", messageKind: "error" }), render();
+      if (!navigator.onLine) return Object.assign(ui, { message: friendlyError({ code: "offline" }), messageKind: "error" }), render();
+      Object.assign(ui, { busy: true, message: "" });
+      try {
+        const url = await upload(file, me, (p) => { ui.upload = `Uploading ${file.name}: ${p}%`; render(); });
+        ui.upload = "";
+        const isVideo = file.type.startsWith("video/");
+        await save(isVideo ? item.photos || [] : [...(item.photos || []), url], isVideo ? [...(item.videos || []), url] : item.videos || [], isVideo ? "Video added" : "Photo added", () => add(file));
+      } catch (err) {
+        Object.assign(ui, { busy: false, upload: "", message: friendlyError(err), messageKind: "error", retry: () => add(file) });
+        render();
+      }
+    }
+    async function remove(kind, url) {
+      if (!(await confirmSheet({ title: "Remove this from the training media?", text: "It goes to the trash bin for 30 days.", confirmLabel: "Remove", danger: true }))) return;
+      const next = { photos: [...(item.photos || [])], videos: [...(item.videos || [])] };
+      next[kind] = next[kind].filter((x) => x !== url);
+      await save(next.photos, next.videos, "Removed — in the trash for 30 days", () => remove(kind, url));
+    }
+    return [
+      back(t.name, () => show("form")),
+      el("h1", { class: "fix-title" }, item.text),
+      el("p", { class: "hint" }, t.name),
+      banner(ui),
+      ui.upload ? spinner(ui.upload) : null,
+      mediaView(item),
+      el(
+        "div",
+        { class: "card" },
+        el("strong", {}, "Training media"),
+        el("label", { class: "btn secondary file-btn" }, "🎥 Add video", el("input", { type: "file", accept: "video/*", hidden: true, disabled: ui.busy, onchange: (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) add(f); } })),
+        el("label", { class: "btn secondary file-btn" }, "📷 Add photo", el("input", { type: "file", accept: "image/*", hidden: true, disabled: ui.busy, onchange: (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) add(f); } })),
+        [...(item.videos || []).map((url, n) => ["videos", url, `Video ${n + 1}`]), ...(item.photos || []).map((url, n) => ["photos", url, `Photo ${n + 1}`])].map(([kind, url, label]) =>
+          el("div", { class: "import-row" }, el("span", { class: "gap-term" }, label), el("button", { class: "link-btn", type: "button", disabled: ui.busy, onclick: () => remove(kind, url) }, "Remove"))
+        )
+      ),
+    ];
   }
-  const stop = onDataChange(() => { if (!ui.busy && ui.view === "list") render(); });
-  render();
+
+  function render() {
+    container.replaceChildren(...[(ui.view === "form" ? renderForm : ui.view === "media" ? renderMedia : renderList)()].flat(3).filter(Boolean));
+  }
+  const stop = onDataChange(() => { if (!ui.busy && ui.view !== "form") render(); });
+  if (templateId) edit(templateId === "new" ? null : (data.checklistTemplates || []).find((t) => t.id === templateId) || null);
+  else render();
   return stop;
 }

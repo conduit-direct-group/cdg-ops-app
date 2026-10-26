@@ -188,6 +188,9 @@ export const callReviewLineLog = call("reviewLineLog");
 export const callLineLogReviewers = call("lineLogReviewers");
 // Reference documents
 export const callSaveRefDoc = call("saveRefDoc");
+export const callDocumentsList = call("documentsList");
+export const callDocHistory = call("docHistory");
+export const callDocSetDepartment = call("docSetDepartment");
 // Machines — parts & specs
 export const callSaveMachineSpecs = call("saveMachineSpecs");
 // Near-miss & incident reports, shift rotation

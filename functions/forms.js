@@ -26,12 +26,6 @@ const clean = (v, max) => (typeof v === "string" ? v.replace(/\r\n/g, "\n").trim
 const slug = (v) => String(v || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
 const isId = (v) => typeof v === "string" && /^[a-z][a-z0-9-]{0,39}$/.test(v);
 
-// Can this person edit this form? Admins always; other roles when the Roles screen lists the form for them.
-function canEditForm(roleDocs, myRoles, formId) {
-  if ((myRoles || []).includes("admin")) return true;
-  return (roleDocs || []).some((r) => r.active !== false && (myRoles || []).includes(r.id) && (r.editForms || []).includes(formId));
-}
-
 // A template from the editor or a form file. Returns { template } or { error }.
 // Field ids are kept when a field is reworded, so records stay comparable across revisions.
 function cleanTemplate(data) {
@@ -356,5 +350,5 @@ module.exports = {
   FIELD_TYPES, FORM_KINDS, HANDOFF_ROLES, HANDOFF_BACKUP_ROLES, TASKLIST_ROLES, CHECK_ROLES,
   SHIFT_FORM, cleanShifts, plantClock, plantTimeToMs, currentShift, taskListState, stationMissing,
   LINECHECK_TYPES, appliesTo, limitsFor, cleanRound, dueState,
-  canEditForm, cleanTemplate, describeChange, cleanValue, cleanValues, cleanHandoffHeader, canReceive, incomingLeads,
+  cleanTemplate, describeChange, cleanValue, cleanValues, cleanHandoffHeader, canReceive, incomingLeads,
 };

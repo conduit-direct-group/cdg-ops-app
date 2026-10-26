@@ -42,6 +42,7 @@ const hrLib = require("./hraccess");
 const offlineLib = require("./offline");
 const { AsyncLocalStorage } = require("node:async_hooks");
 const deptLib = require("./departments");
+const docsLib = require("./documents");
 const crewLib = require("./crew");
 const verifyLib = require("./verify");
 const annTasksLib = require("./anntasks");
@@ -529,11 +530,6 @@ exports.adminSaveRole = onCall(async (req) => {
     if (d.canPostAnnouncements !== undefined) {
       if (typeof d.canPostAnnouncements !== "boolean") throw new HttpsError("invalid-argument", "canPostAnnouncements must be true or false.");
       extra.canPostAnnouncements = d.canPostAnnouncements;
-    }
-    // { editForms: [formId, …] } — the forms people with this role may edit (Admin → Forms).
-    if (d.editForms !== undefined) {
-      if (!Array.isArray(d.editForms) || d.editForms.length > 50 || !d.editForms.every(records.isRecordId)) throw new HttpsError("invalid-argument", "Pick forms from the list.");
-      extra.editForms = [...new Set(d.editForms)];
     }
     // { postTrucks: true|false } — may post the day's trucks (Trucks board). Unset = Logistics & Distribution.
     if (d.postTrucks !== undefined) {
@@ -1621,11 +1617,14 @@ function trashTemplateFiles(tx, before, after, templateId, by) {
   }
 }
 
-// Admins: create { create: true, name, machineTypes, perLine, everyDays, items: [{ text }] }
-// or update { id, ...same, active? }. Items keep their history and training media when reworded.
+// Admins and the checklist department's head (Decision 116): create { create: true, department?, name, machineTypes,
+// perLine, everyDays, items: [{ text }] } or update { id, ...same, active? }. Items keep their history and training
+// media when reworded.
 exports.adminSaveChecklist = onCall(async (req) => {
-  const adminNumber = await requireAdmin(req);
   const isNew = req.data?.create === true;
+  const key = isNew ? `checklist:${records.idFromName(String(req.data?.name || "")) || "new"}` : `checklist:${String(req.data?.id || "")}`;
+  const { me, dept } = await requireDocEditor(req, key, isNew ? { newDept: req.data?.department } : {});
+  const adminNumber = me.employeeNumber;
   return db.runTransaction(async (tx) => {
     if (isNew) {
       const template = requireTemplate(req.data, null);
@@ -1636,7 +1635,8 @@ exports.adminSaveChecklist = onCall(async (req) => {
       // Revisions (Decision 108): rev 1 now; every change saves the new words as the next revision.
       const doc = { ...template, rev: 1, createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() };
       tx.create(ref, doc);
-      tx.create(ref.collection("revisions").doc("1"), { ...template, rev: 1, savedAt: FieldValue.serverTimestamp(), savedBy: adminNumber });
+      tx.create(ref.collection("revisions").doc("1"), { ...template, rev: 1, savedAt: FieldValue.serverTimestamp(), savedBy: adminNumber, savedByName: me.name });
+      if (dept) tx.set(docDeptsDoc, { departments: { [`checklist:${id}`]: dept } }, { merge: true });
       auditRecord(tx, "created", "checklist", id, adminNumber, { name: template.name });
       return { id };
     }
@@ -1648,15 +1648,15 @@ exports.adminSaveChecklist = onCall(async (req) => {
     // Old sign-offs keep the rev and words they signed; this saves the new words as the next revision.
     const rev = (snap.get("rev") || 1) + 1;
     tx.update(ref, { ...template, rev, updatedAt: FieldValue.serverTimestamp() });
-    tx.create(ref.collection("revisions").doc(String(rev)), { ...template, rev, savedAt: FieldValue.serverTimestamp(), savedBy: adminNumber });
+    tx.create(ref.collection("revisions").doc(String(rev)), { ...template, rev, savedAt: FieldValue.serverTimestamp(), savedBy: adminNumber, savedByName: me.name });
     auditRecord(tx, "updated", "checklist", ref.id, adminNumber, { name: template.name, items: template.items.length, active: template.active, rev });
     return { id: ref.id, rev };
   });
 });
 
-// Admins: { templateId, itemId, photos, videos } — training photos/videos for one checklist item.
+// Admins and the checklist department's head: { templateId, itemId, photos, videos } — training photos/videos for one item.
 exports.adminSetChecklistMedia = onCall(async (req) => {
-  const adminNumber = await requireAdmin(req);
+  const adminNumber = (await requireDocEditor(req, `checklist:${String(req.data?.templateId || "")}`)).me.employeeNumber;
   const photos = fixesLib.cleanLinks(req.data?.photos);
   const videos = fixesLib.cleanLinks(req.data?.videos);
   if (!photos || !videos) throw new HttpsError("invalid-argument", "Photo and video links must be full https:// links (20 max each).");
@@ -2461,24 +2461,18 @@ async function refreshAnnouncementLists() {
 // Forms admins edit without code changes (rules in forms.js). The wording lives only here in the database.
 //   formTemplates/{formId}                 name, kind, intro, sections, rev, revAt, revBy, revByName, revNote
 //   formTemplates/{formId}/revisions/{n}   every revision as it was (records keep the revision they started on)
-// Who may edit: Admins, and roles that list the form in Admin → Roles (role.editForms).
+// Who may edit: Admins, and the head of the form's department (Decision 116, replacing the per-role switch of Decision 60).
 // ---------------------------------------------------------------------------
 
 const formTemplates = db.collection("formTemplates");
 
-async function requireFormEditor(req, formId) {
-  const me = await requireMember(req);
-  const roleDocs = (await roles.get()).docs.map((d) => ({ id: d.id, ...d.data() }));
-  if (!formsLib.canEditForm(roleDocs, me.roles, formId)) throw new HttpsError("permission-denied", "Your role can't edit this form. An admin can allow it in Admin → Roles.");
-  return me;
-}
-
-// { formId, create?, name, kind, intro, sections, note } — saves a new revision (or the first one).
+// { formId, create?, department? (new forms), name, kind, intro, sections, note } — saves a new revision (or the first one).
 // Records already started keep the revision they started on; the next one started uses this.
 exports.saveFormTemplate = onCall(async (req) => {
   const formId = String(req.data?.formId || "");
   if (!records.isRecordId(formId)) throw new HttpsError("invalid-argument", "Form id must start with a letter (e.g. handoff).");
-  const me = await requireFormEditor(req, formId);
+  const isNew = req.data?.create === true;
+  const { me, dept } = await requireDocEditor(req, `form:${formId}`, isNew ? { newDept: req.data?.department } : {});
   const { template, error } = formsLib.cleanTemplate(req.data);
   if (error) throw new HttpsError("invalid-argument", error);
   const note = typeof req.data?.note === "string" ? req.data.note.trim().slice(0, 300) : "";
@@ -2494,6 +2488,7 @@ exports.saveFormTemplate = onCall(async (req) => {
     const doc = { ...template, rev, revAt: FieldValue.serverTimestamp(), revBy: me.employeeNumber, revByName: me.name, revNote: note || changes, revChanges: changes, active: true };
     tx.set(ref, doc);
     tx.create(ref.collection("revisions").doc(String(rev)), doc);
+    if (!before && dept) tx.set(docDeptsDoc, { departments: { [`form:${formId}`]: dept } }, { merge: true });
     auditRecord(tx, before ? "revised" : "created", "form", formId, me.employeeNumber, { rev, note: note || changes });
     return { formId, rev, changes };
   });
@@ -3208,17 +3203,18 @@ exports.lineLogReviewers = onCall(async (req) => {
 
 // ---------------------------------------------------------------------------
 // Reference documents (Decision 65) — e.g. the Shift Station Assignment Sheet, viewable from the Shop Map and the
-// Training page. The file is in our storage (uploads/…); the list is here (signed-in people read it). Admins only.
+// Training page. The file is in our storage (uploads/…); the list is here (signed-in people read it). Admins and the
+// document's department head change it (Documents & forms, Decision 116).
 //   refDocs/{auto}   name, url, kind ("pdf" | "image"), fileName, rev, history [{rev, url, fileName, at, by}], active
 // ---------------------------------------------------------------------------
 
 const refDocs = db.collection("refDocs");
 
-// Admins: add { name, url, kind, fileName, note } or change { id, name, url?, kind?, fileName?, active? }.
+// Add { department?, name, url, kind, fileName, note } or change { id, name, url?, kind?, fileName?, active? }.
 // A new file is a new revision; earlier files stay in the history.
 exports.saveRefDoc = onCall(async (req) => {
-  const adminNumber = await requireAdmin(req);
-  const me = await requireMember(req);
+  const { me, dept } = await requireDocEditor(req, req.data?.id ? `refdoc:${String(req.data.id)}` : "refdoc:new", req.data?.id ? {} : { newDept: req.data?.department });
+  const adminNumber = me.employeeNumber;
   const name = records.cleanName(req.data?.name, 120);
   if (!name) throw new HttpsError("invalid-argument", "Give the document a title (120 characters max).");
   const url = req.data?.url ? String(req.data.url) : null;
@@ -3239,6 +3235,7 @@ exports.saveRefDoc = onCall(async (req) => {
       ...(url ? { url, kind, fileName, rev, history: [...(cur.history || []), { rev, url, fileName, at: new Date(), by: me.name }] } : {}),
     };
     tx.set(ref, doc, { merge: true });
+    if (!id && dept) tx.set(docDeptsDoc, { departments: { [`refdoc:${ref.id}`]: dept } }, { merge: true });
     auditRecord(tx, id ? (active ? "updated" : "retired") : "created", "reference document", ref.id, adminNumber, { name, rev });
     return { id: ref.id, rev };
   });
@@ -4264,7 +4261,8 @@ exports.purgeTestData = onSchedule({ schedule: "every day 03:30", timeZone: "Ame
 //   floorMap/layout          size, building outline, zones, icons
 //   floorStations/{id}       position, shape, label, description, linked documents, machineId (M-number or null)
 //   sops/{key}               full SOP / safety / troubleshooting text
-// Admins load it from the original map file (Admin → Shop map) and link stations to machines.
+// Admins and the map's department head load the map file (Documents & forms; every load is kept as a revision);
+// Admins link stations to machines (Admin → Shop map).
 // ---------------------------------------------------------------------------
 
 const floorStations = db.collection("floorStations");
@@ -4273,9 +4271,11 @@ const sopsCol = db.collection("sops");
 // Admins: { map } — the original's plant-data.json. Re-importing updates everything but keeps each
 // station's machine link. Stations no longer in the file are retired (kept in history), never deleted.
 exports.adminImportFloorMap = onCall({ memory: "512MiB" }, async (req) => {
-  const adminNumber = await requireAdmin(req);
+  const { me } = await requireDocEditor(req, "map");
+  const adminNumber = me.employeeNumber;
   const { layout, stations, sops, error } = floorMapLib.cleanMap(req.data?.map);
   if (error) throw new HttpsError("invalid-argument", error);
+  const rev = await saveLoadRevision("map", { layout, stations, sops }, me, `${layout.zones.length} areas · ${stations.length} stations · ${Object.keys(sops).length} SOPs`);
   const existing = await floorStations.get();
   const now = FieldValue.serverTimestamp();
   const writes = [
@@ -4289,8 +4289,8 @@ exports.adminImportFloorMap = onCall({ memory: "512MiB" }, async (req) => {
     writes.slice(i, i + 400).forEach((w) => w(batch));
     await batch.commit();
   }
-  await auditLog.add({ type: "imported", kind: "shop map", recordId: "layout", by: adminNumber, at: now, stations: stations.length, sops: Object.keys(sops).length });
-  return { zones: layout.zones.length, stations: stations.length, sops: Object.keys(sops).length };
+  await auditLog.add({ type: "imported", kind: "shop map", recordId: "layout", by: adminNumber, at: now, stations: stations.length, sops: Object.keys(sops).length, rev });
+  return { zones: layout.zones.length, stations: stations.length, sops: Object.keys(sops).length, rev };
 });
 
 // Admins: { stationId, machineId } — link a map station to a machine (M-number), or null for an area.
@@ -4340,7 +4340,7 @@ exports.adminEnsureOdooEquipment = onCall({ secrets: [odooKey] }, async (req) =>
 // Training (the training team's trainer app, in CDG Ops) — see training-api.js.
 // ---------------------------------------------------------------------------
 
-Object.assign(exports, trainingApi({ db, auditLog, requireMember, requireAdmin, isTest, col }));
+Object.assign(exports, trainingApi({ db, auditLog, requireMember, requireAdmin, isTest, col, requireDocEditor, saveLoadRevision }));
 
 // ---------------------------------------------------------------------------
 // Downtime & Scrap shift report (Chris, 10-22-2026). Rules in downtime.js. Line Leads and Supervisors enter each
@@ -5226,20 +5226,23 @@ async function crewLineOpAlert(test, s, me) {
   });
 }
 
-// Admins: the station setup — { setup } (null until loaded).
+// Admins and the stations file's department head: the station setup — { setup } (null until loaded).
 exports.adminCrewStations = onCall(async (req) => {
-  await requireAdmin(req);
+  await requireDocEditor(req, "stations");
   return { setup: await crewSetupNow() };
 });
 
-// Admins: save the station setup (Admin → Crew Board stations, from the private sheet file): { setup }.
+// Admins and the stations file's department head: save the station setup (Documents & forms → Crew Board stations,
+// from the private sheet file): { setup }. Every save is kept as a revision.
 exports.adminSaveCrewStations = onCall(async (req) => {
-  const adminNumber = await requireAdmin(req);
+  const { me } = await requireDocEditor(req, "stations");
+  const adminNumber = me.employeeNumber;
   const { setup, error } = crewSeatsLib.cleanSetup(req.data?.setup);
   if (error) throw new HttpsError("invalid-argument", error);
+  const rev = await saveLoadRevision("stations", { setup }, me, `${setup.stations.length} stations`);
   await crewStationsDoc.set({ setup, updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber });
-  await auditLog.add({ type: "updated", kind: "crew stations", recordId: "crewStations", by: adminNumber, at: FieldValue.serverTimestamp(), stations: setup.stations.length });
-  return { ok: true, stations: setup.stations.length };
+  await auditLog.add({ type: "updated", kind: "crew stations", recordId: "crewStations", by: adminNumber, at: FieldValue.serverTimestamp(), stations: setup.stations.length, rev });
+  return { ok: true, stations: setup.stations.length, rev };
 });
 
 // Line Leads, Supervisors, Production Manager, Admins: { seat, emp } (emp null = empty the seat). Only people marked
@@ -5919,4 +5922,132 @@ exports.hrMessageReviewLog = onCall(async (req) => {
   const test = isTest(req);
   const snap = await col("messageReviews", test).orderBy("atMs", "desc").limit(50).get();
   return { reviews: snap.docs.map((d) => ({ id: d.id, byName: d.get("byName"), empName: d.get("empName"), reason: d.get("reason"), atMs: d.get("atMs") })) };
+});
+// ---------------------------------------------------------------------------
+// Documents & forms (Chris, 10-26-2026, Decision 116). Rules in documents.js. Every master copy has a department;
+// Admins edit everything, a department head edits their department's items, and the server checks it on every save.
+//   meta/docDepartments          departments { "<item key>": departmentId } (Admins change it; missing = the default)
+//   docRevisions/{key}/revs/{n}  each load of the map file, the Crew Board stations file, and the training data
+//                                (who, when, what); the file itself is kept in Storage at doc-revisions/{key}/{n}.json
+// ---------------------------------------------------------------------------
+
+const docDeptsDoc = db.collection("meta").doc("docDepartments");
+const docRevisions = db.collection("docRevisions");
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const toMs = (t) => (t?.toMillis ? t.toMillis() : t instanceof Date ? t.getTime() : typeof t === "number" ? t : null);
+
+async function docContext() {
+  const [o, set] = await Promise.all([orgData(), docDeptsDoc.get()]);
+  return { departments: o.departments, heads: o.headIds, people: o.people, set: set.get("departments") || {} };
+}
+
+// The person, if they may change this item: an Admin, or the head of its department. A new item passes
+// { newDept } (the department picked when adding; missing = the default for its kind).
+async function requireDocEditor(req, key, { newDept } = {}) {
+  const me = await requireMember(req);
+  if (!docsLib.parseKey(key)) throw new HttpsError("invalid-argument", "Unknown document.");
+  const ctx = await docContext();
+  if (newDept && !ctx.departments.some((d) => d.id === newDept && d.active !== false)) throw new HttpsError("invalid-argument", "Pick a department from the list.");
+  const dept = newDept || docsLib.departmentOf(key, ctx.set, ctx.departments);
+  if (!docsLib.canEdit(me, dept, ctx.heads)) {
+    const name = ctx.departments.find((d) => d.id === dept)?.name;
+    throw new HttpsError("permission-denied", name ? `Only Admins and the head of ${name} can change this.` : "Only Admins can change this (it has no department head).");
+  }
+  return { me, dept };
+}
+
+// Keeps a copy of a loaded file as the item's next revision (Decision 116 b). Returns the revision number.
+async function saveLoadRevision(key, payload, me, summary) {
+  const ref = docRevisions.doc(key);
+  const rev = ((await ref.get()).get("rev") || 0) + 1;
+  const path = `doc-revisions/${key}/${rev}.json`;
+  await getStorage().bucket().file(path).save(JSON.stringify(payload), { contentType: "application/json", resumable: false });
+  const entry = { rev, at: FieldValue.serverTimestamp(), by: me.employeeNumber, byName: me.name, summary, path };
+  const b = db.batch();
+  b.set(ref, entry);
+  b.set(ref.collection("revs").doc(String(rev)), entry);
+  await b.commit();
+  return rev;
+}
+
+// Admins and department heads: every item they can change, with its department, revision, and where it's used.
+exports.documentsList = onCall(async (req) => {
+  const me = await requireMember(req);
+  const ctx = await docContext();
+  const admin = me.roles.includes("admin");
+  const mine = docsLib.myDepartments(me, ctx.departments.filter((d) => d.active !== false), ctx.heads);
+  if (!admin && !mine.length) throw new HttpsError("permission-denied", "Documents & forms is for Admins and department heads.");
+  const [forms, checks, refs, layout, crew, training, revs, live] = await Promise.all([
+    formTemplates.get(), checklistTemplates.get(), refDocs.get(), db.collection("floorMap").doc("layout").get(),
+    crewStationsDoc.get(), db.collection("trainingRef").doc("data").get(), docRevisions.get(), liveUnits(),
+  ]);
+  const revOf = new Map(revs.docs.map((d) => [d.id, d.data()]));
+  const units = new Map();
+  for (const u of live.units) units.set(u.templateId, (units.get(u.templateId) || 0) + 1);
+  const items = [];
+  const push = (key, x) => items.push({ key, kind: docsLib.parseKey(key).kind, department: docsLib.departmentOf(key, ctx.set, ctx.departments), ...x });
+  for (const d of forms.docs) {
+    const t = d.data();
+    push(`form:${d.id}`, { id: d.id, name: t.name, rev: t.rev || 1, at: toMs(t.revAt), byName: t.revByName || "", note: t.revNote || "", active: t.active !== false, usedOn: docsLib.usedOn("form", { formKind: t.kind }) });
+  }
+  for (const d of checks.docs) {
+    const t = d.data();
+    push(`checklist:${d.id}`, { id: d.id, name: t.name, rev: t.rev || null, at: toMs(t.updatedAt), byName: "", note: plural((t.items || []).length, "item"), active: t.active !== false, usedOn: docsLib.usedOn("checklist", { units: units.get(d.id) || 0 }) });
+  }
+  for (const d of refs.docs) {
+    const t = d.data();
+    push(`refdoc:${d.id}`, { id: d.id, name: t.name, rev: t.rev || 1, at: toMs(t.updatedAt), byName: t.updatedByName || "", note: t.fileName || "", active: t.active !== false, url: t.url || null, fileKind: t.kind || "pdf", usedOn: docsLib.usedOn("refdoc") });
+  }
+  const loaded = (key, name, exists, loadedAt, note) => {
+    const r = revOf.get(key);
+    push(key, { id: key, name, rev: r?.rev || null, at: toMs(r?.at) || toMs(loadedAt), byName: r?.byName || "", note: exists ? r?.summary || note : "Not loaded yet", active: true, loaded: exists, usedOn: docsLib.usedOn(key) });
+  };
+  const L = layout.exists ? layout.data() : null;
+  loaded("map", "Shop map file", !!L, L?.importedAt, L ? `${(L.zones || []).length} areas` : "");
+  const setup = crew.exists ? crew.get("setup") : null;
+  loaded("stations", "Crew Board stations file", !!setup, crew.exists ? crew.get("updatedAt") : null, setup ? `${(setup.stations || []).length} stations` : "");
+  loaded("training", "Training data", training.exists, training.exists ? training.get("importedAt") : null, training.exists ? `data ${training.get("rev") || "—"}` : "");
+  const shown = items.filter((i) => admin || mine.includes(i.department));
+  const nameOf = new Map(ctx.people.map((p) => [p.id, p.name]));
+  return {
+    admin, mine,
+    departments: ctx.departments.filter((d) => d.active !== false).map((d) => ({ id: d.id, name: d.name, head: ctx.heads.get(d.id) ? nameOf.get(ctx.heads.get(d.id)) : null })),
+    items: shown.sort((a, b) => String(a.name).localeCompare(String(b.name))),
+  };
+});
+
+// Admins and the item's department head: its revisions, newest first — { key } → { history: [{ rev, at, byName, note }] }.
+exports.docHistory = onCall(async (req) => {
+  const key = String(req.data?.key || "");
+  await requireDocEditor(req, key);
+  const { kind, id } = docsLib.parseKey(key);
+  let history = [];
+  if (kind === "form") {
+    const snap = await formTemplates.doc(id).collection("revisions").orderBy("rev", "desc").limit(50).get();
+    history = snap.docs.map((d) => ({ rev: d.get("rev"), at: toMs(d.get("revAt")), byName: d.get("revByName") || "", note: d.get("revNote") || "" }));
+  } else if (kind === "checklist") {
+    const [snap, people] = await Promise.all([checklistTemplates.doc(id).collection("revisions").orderBy("rev", "desc").limit(50).get(), peopleList()]);
+    const nameOf = new Map(people.map((p) => [p.id, p.name]));
+    history = snap.docs.map((d) => ({ rev: d.get("rev"), at: toMs(d.get("savedAt")), byName: d.get("savedByName") || nameOf.get(d.get("savedBy")) || "", note: plural((d.get("items") || []).length, "item") }));
+  } else if (kind === "refdoc") {
+    const snap = await refDocs.doc(id).get();
+    history = (snap.get("history") || []).slice().reverse().map((h) => ({ rev: h.rev, at: toMs(h.at), byName: h.by || "", note: h.fileName || "", url: h.url || null }));
+  } else {
+    const snap = await docRevisions.doc(key).collection("revs").orderBy("rev", "desc").limit(50).get();
+    history = snap.docs.map((d) => ({ rev: d.get("rev"), at: toMs(d.get("at")), byName: d.get("byName") || "", note: d.get("summary") || "" }));
+  }
+  return { history };
+});
+
+// Admins: { key, department } — move an item to another department (null = back to the default).
+exports.docSetDepartment = onCall(async (req) => {
+  const adminNumber = await requireAdmin(req);
+  const key = String(req.data?.key || "");
+  if (!docsLib.parseKey(key)) throw new HttpsError("invalid-argument", "Unknown document.");
+  const dept = req.data?.department ? String(req.data.department) : null;
+  const ctx = await docContext();
+  if (dept && !ctx.departments.some((d) => d.id === dept && d.active !== false)) throw new HttpsError("invalid-argument", "Pick a department from the list.");
+  await docDeptsDoc.set({ departments: { [key]: dept || FieldValue.delete() } }, { merge: true });
+  await auditLog.add({ type: "updated", kind: "document department", recordId: key, by: adminNumber, at: FieldValue.serverTimestamp(), department: dept });
+  return { department: dept || docsLib.departmentOf(key, { ...ctx.set, [key]: undefined }, ctx.departments) };
 });

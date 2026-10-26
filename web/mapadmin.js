@@ -1,9 +1,9 @@
-// Admin → Shop map: load the plant map from the original's map file, and link each station to its machine.
+// Admin → Shop map: link each station to its machine. The map file itself is loaded in 📁 Documents & forms (Decision 116).
 // The map's content goes straight to the database (signed-in people only) — it is never stored in this repo.
 
 import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, picker } from "./ui.js";
 import { data, onDataChange } from "./data.js";
-import { db, callAdminImportFloorMap, callAdminSetStationMachine, callAdminEnsureOdooEquipment } from "./firebase.js";
+import { db, callAdminSetStationMachine, callAdminEnsureOdooEquipment } from "./firebase.js";
 import { collection, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 
 export function openMapAdmin(container, { onExit }) {
@@ -22,19 +22,6 @@ export function openMapAdmin(container, { onExit }) {
       render();
       return null;
     }
-  }
-
-  async function importFile(file) {
-    let map;
-    try {
-      map = JSON.parse(await file.text());
-    } catch {
-      Object.assign(ui, { message: "That file isn't the map file (plant-data.json).", messageKind: "error" });
-      return render();
-    }
-    if (ui.layout && !(await confirmSheet({ title: "Load this map file?", text: "It replaces the map, stations, and SOP text. Station-to-machine links are kept.", confirmLabel: "Load map" }))) return;
-    const r = await act(() => callAdminImportFloorMap({ map }), () => importFile(file));
-    if (r) toast(`Map loaded — ${r.zones} areas, ${r.stations} stations, ${r.sops} SOPs`);
   }
 
   async function link(st, machineId) {
@@ -65,13 +52,12 @@ export function openMapAdmin(container, { onExit }) {
       el("p", { class: "hint" }, "The plant floor map. Its content lives in the database (signed-in people only), never in the app's code."),
       banner(ui),
       ui.layout === undefined ? spinner() : null,
-      ui.layout === null ? emptyState("No map loaded yet", "Load the map file (plant-data.json) below.") : null,
+      ui.layout === null ? emptyState("No map loaded yet", "Load the map file (plant-data.json) in More → 📁 Documents & forms.") : null,
       ui.layout
         ? el("div", { class: "card" }, el("strong", {}, `${ui.layout.zones?.length || 0} areas · ${all.length} stations`),
             el("p", { class: "card-note" }, `Loaded ${ui.layout.importedAt?.toDate?.().toLocaleString() || ""}`))
         : null,
-      el("label", { class: "btn secondary file-btn" }, ui.busy ? "Working…" : ui.layout ? "⇪ Load the map file again" : "⇪ Load the map file (plant-data.json)",
-        el("input", { type: "file", accept: ".json,application/json", hidden: true, disabled: ui.busy, onchange: (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) importFile(f); } })),
+      ui.layout ? el("p", { class: "hint" }, "To load a new map file: More → 📁 Documents & forms (every load is kept as a revision).") : null,
       all.length
         ? [
             el("h2", {}, "Stations → machines"),

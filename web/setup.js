@@ -607,14 +607,7 @@ export function openRoles(container, { onExit }) {
       // Who posts announcements and starts messages is a fixed list now (Decision 106: department heads, Admins, and people ticked in Admin → People post;
       // Line Leads, Supervisors, department heads, Production Manager, Admins start messages) — no per-role switch.
       members: (r, { kit, show }) => {
-        // Which forms people with this role may edit in Forms (Decision 60). Admins edit every form.
-        const editing = r.editForms || [];
-        const toggleForm = async (formId) => {
-          const next = editing.includes(formId) ? editing.filter((x) => x !== formId) : [...editing, formId];
-          const ok = await kit.act(() => callAdminSaveRole({ id: r.id, name: r.name, editForms: next }), () => toggleForm(formId));
-          if (ok) show("item", `${r.name}: forms they can edit updated`, "ok");
-        };
-        const forms = (data.formTemplates || []).filter((t) => t.active !== false);
+        // Who edits forms isn't a role setting any more: Admins and the form's department head (Decision 116).
         // Who may post the day's trucks (Trucks board). Starts on for Logistics & Distribution.
         const postsTrucks = rolePostsTrucks(r);
         const flipTrucks = async () => {
@@ -654,14 +647,6 @@ export function openRoles(container, { onExit }) {
             el("strong", {}, "🚚 Trucks"),
             el("p", { class: "card-note" }, postsTrucks ? "People with this role post the day's trucks (add, edit, copy from yesterday) and get a notification when one arrives or leaves." : "People with this role can't post trucks. (Logistics & Distribution always checks trucks off.)"),
             el("button", { class: postsTrucks ? "btn secondary" : "btn", type: "button", disabled: kit.busy, onclick: flipTrucks }, postsTrucks ? "Turn off posting" : "✔ Allow posting")),
-          el("div", { class: "card" },
-            el("strong", {}, "📝 Forms this role can edit"),
-            r.id === "admin"
-              ? el("p", { class: "card-note" }, "Admins can edit every form.")
-              : [
-                  el("p", { class: "card-note" }, forms.length ? "Tap a form to let people with this role edit it (fields, order, help text). Every change is a new revision." : "No forms yet — an admin loads them in Admin → Forms."),
-                  el("div", { class: "chips" }, forms.map((t) => el("button", { class: editing.includes(t.id) ? "chip on" : "chip", type: "button", "aria-pressed": String(editing.includes(t.id)), disabled: kit.busy, onclick: () => toggleForm(t.id) }, `${editing.includes(t.id) ? "✓ " : ""}${t.name}`))),
-                ]),
         ];
       },
       starters: () => STARTING_ROLES, startersTitle: "Add the starting roles",

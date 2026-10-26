@@ -22,7 +22,7 @@ const pin = require("./pin");
 const T = require("./training");
 const signoffsLib = require("./signoffs");
 
-module.exports = function trainingApi({ db, auditLog, requireMember, requireAdmin, isTest, col }) {
+module.exports = function trainingApi({ db, auditLog, requireMember, requireAdmin, isTest, col, requireDocEditor, saveLoadRevision }) {
   const refCol = db.collection("trainingRef");
   const queueCol = db.collection("trainingWbQueue");
   const C = (name, test) => col(name, test);
@@ -481,12 +481,15 @@ module.exports = function trainingApi({ db, auditLog, requireMember, requireAdmi
 
   // --- admins -------------------------------------------------------------------------------------------
 
-  // { data, lib, entra } — the original app's CDG_DATA / CDG_LIB (Admin → Training setup → load the original
+  // { data, lib, entra } — the original app's CDG_DATA / CDG_LIB (Documents & forms → Training data → load the original
   // training app file). Saved as text; the workbook PIN column is dropped. Real data on both sites, like the Shop map.
+  // Admins and the training data's department head (Decision 116); every load is kept as a revision.
   const adminImportTrainingData = onCall({ memory: "512MiB" }, async (req) => {
-    const adminNumber = await requireAdmin(req);
+    const { me } = await requireDocEditor(req, "training");
+    const adminNumber = me.employeeNumber;
     const { data, lib, error } = T.cleanReference(req.data?.data, req.data?.lib);
     if (error) throw new HttpsError("invalid-argument", error);
+    const rev = await saveLoadRevision("training", { data, lib }, me, `data ${data.rev || "—"} · ${data.modules.length} modules · ${data.roster.length} on the roster`);
     const now = FieldValue.serverTimestamp();
     const b = db.batch();
     b.set(refCol.doc("data"), { json: JSON.stringify(data), rev: String(data.rev || ""), importedAt: now, importedBy: adminNumber });
@@ -494,8 +497,8 @@ module.exports = function trainingApi({ db, auditLog, requireMember, requireAdmi
     const e = req.data?.entra;
     if (T.isObj(e)) b.set(refCol.doc("entra"), { clientId: String(e.clientId || "").slice(0, 100), tenantId: String(e.tenantId || "").slice(0, 100), link: String(e.link || "").slice(0, 2000) });
     await b.commit();
-    await auditLog.add({ type: "imported", kind: "training data", recordId: "trainingRef", by: adminNumber, at: now, modules: data.modules.length, roster: data.roster.length });
-    return { modules: data.modules.length, roster: data.roster.length, sops: Object.keys(lib.sops).length, guides: Object.keys(lib.guides).length };
+    await auditLog.add({ type: "imported", kind: "training data", recordId: "trainingRef", by: adminNumber, at: now, modules: data.modules.length, roster: data.roster.length, rev });
+    return { modules: data.modules.length, roster: data.roster.length, sops: Object.keys(lib.sops).length, guides: Object.keys(lib.guides).length, rev };
   });
 
   // Import from the old tablet's backup file, in parts (the file can be several MB because of signatures):

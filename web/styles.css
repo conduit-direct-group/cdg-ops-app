@@ -1693,3 +1693,12 @@ th.col-cost { text-align: right; }
 .msg-person .task-row { flex-basis: 100%; }
 .msg-task { margin: var(--s2) 0; }
 .msg-taskbox { display: flex; flex-direction: column; gap: var(--s1); padding: var(--s2) var(--s3); border-left: 3px solid var(--orange); background: var(--surface-2); border-radius: var(--radius); }
+
+/* Documents & forms (Decision 116): one card per master copy, grouped by department. */
+.doc-group { margin: var(--s4) 0 var(--s2); }
+.doc-group .card-note { font-size: var(--text-small); font-weight: normal; }
+.doc-card .doc-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); }
+.doc-card .btn-row { margin-top: var(--s2); align-items: center; }
+.doc-dept { display: flex; align-items: center; gap: var(--s2); margin-top: var(--s2); }
+.doc-dept .card-note { margin: 0; }
+.doc-dept .picker { flex: 1; min-width: 0; }

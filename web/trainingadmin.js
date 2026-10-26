@@ -34,7 +34,7 @@ function jsonAfter(text, name) {
   const body = text.slice(start, next < 0 ? undefined : next).trim().replace(/;$/, "");
   return JSON.parse(body);
 }
-async function readOriginal(file) {
+export async function readOriginal(file) {
   const parts = await unpackParts(await file.text());
   const dataText = parts.find((p) => p.includes("window.CDG_DATA"));
   if (!dataText) throw new Error("That file doesn't have the training data in it. Pick original_CDG_Training_App.html or cdg-data.js.");
@@ -121,19 +121,6 @@ export function openTrainingAdmin(container, { onExit }) {
       render();
       return null;
     }
-  }
-
-  async function loadOriginal(file) {
-    let parsed;
-    try {
-      parsed = await readOriginal(file);
-    } catch (err) {
-      Object.assign(ui, { message: err.message || "Couldn't read that file.", messageKind: "error", retry: null });
-      return render();
-    }
-    if (ui.ref && !(await confirmSheet({ title: "Load this training data?", text: "It replaces the modules, roster, SOP and trainer-guide text. Sign-offs and other records in the app are kept.", confirmLabel: "Load training data" }))) return;
-    const r = await run(async () => (await callAdminImportTrainingData(parsed)).data, () => loadOriginal(file));
-    if (r) toast(`Training data loaded — ${r.modules} modules, ${r.roster} on the roster, ${r.sops} SOPs`);
   }
 
   async function pickBackup(file) {
@@ -224,10 +211,9 @@ export function openTrainingAdmin(container, { onExit }) {
 
       el("h2", {}, "1. Training data"),
       ref === undefined ? spinner() : null,
-      ref === null ? emptyState("Not loaded yet", "Load the original training app file: original_CDG_Training_App.html (in C:\\CDG\\reference\\training-app). cdg-data.js works too.") : null,
+      ref === null ? emptyState("Not loaded yet", "Load the original training app file in More → 📁 Documents & forms.") : null,
       ref ? el("div", { class: "card" }, el("strong", {}, `Loaded · data ${ref.rev || "—"}`), el("p", { class: "card-note" }, `${ref.importedAt?.toDate?.().toLocaleString() || ""}`)) : null,
-      el("label", { class: "btn secondary file-btn" }, ui.busy ? "Working…" : ref ? "⇪ Load the training data again" : "⇪ Load the original training app file",
-        el("input", { type: "file", accept: ".html,.htm,.js,text/html,text/javascript", hidden: true, disabled: ui.busy, onchange: (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) loadOriginal(f); } })),
+      ref ? el("p", { class: "hint" }, "To load new training data: More → 📁 Documents & forms (every load is kept as a revision).") : null,
 
       el("h2", {}, "2. Records from the old tablet"),
       el("p", { class: "hint" }, `${ui.people ? ui.people.length : "…"} trainees have records in the app${TEST_MODE ? " (test copy)" : ""}.`),

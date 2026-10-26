@@ -18,7 +18,7 @@ import { openLines, openRoles, openTeams, openMachineTypes } from "./setup.js";
 import { openFixLibrary } from "./fixlib.js";
 import { startData, stopData, data, onDataChange, lineName } from "./data.js";
 import { openIssueBoard, openReportForm } from "./issues.js";
-import { openChecklist, openChecklistAdmin, checklistUnits, unitStatus, statusTag as checklistTag } from "./checklists.js";
+import { openChecklist, checklistUnits, unitStatus, statusTag as checklistTag } from "./checklists.js";
 import { openActivity } from "./activity.js";
 import { openShopMap } from "./shopmap.js";
 import { openMapAdmin } from "./mapadmin.js";
@@ -28,7 +28,7 @@ import { pushState, turnOnPush, turnOffPush, refreshPush } from "./push.js";
 import { dashboard, stopDashboard, usesMachines } from "./dashboard.js";
 import { openAnnouncements, toSign as announcementsToSign, noticeNewAnnouncements } from "./announcements.js";
 import { openHandoff, usesHandoffs } from "./handoff.js";
-import { openFormsAdmin, editableForms } from "./forms.js";
+import { openDocuments, usesDocuments } from "./documents.js";
 import { openShopTasks, runsShopList } from "./shoptasks.js";
 import { openStations, stationForms } from "./stations.js";
 import { openLineCheck } from "./linecheck.js";
@@ -39,7 +39,7 @@ import { openTrucks, canViewTrucks, canCheckTrucks } from "./trucks.js";
 import { openReels, openReelAdmin } from "./reels.js";
 import { startOutbox } from "./outbox.js";
 import { openDowntime, usesDowntime } from "./downtime.js";
-import { openCrew, openCrewStationsAdmin, usesCrewBoard, stationPanel } from "./crew.js";
+import { openCrew, usesCrewBoard, stationPanel } from "./crew.js";
 import { openDepartmentsAdmin, openProfile } from "./departments.js";
 import { openWhoToCall, openCallAdmin, lineDownReminder } from "./whotocall.js";
 import { openIncidents, openRotationAdmin, openInjuryExport, openHrAccess } from "./incidents.js";
@@ -391,7 +391,8 @@ function openMore() {
     // Everyone else sees their own reports' status from Home's Near miss / incident button (Decision 115).
     safetyAll ? row("🦺", "All safety reports", () => openIncidentScreen()) : null,
     canWriteUps(roles, viewing ? false : m.hr) ? row("🧾", "Write-ups", () => openWriteupsScreen()) : null,
-    (viewing ? editableForms(roles).length : !m.admin && editableForms(m.roles).length) ? row("📝", "Edit forms", () => openFormsScreen()) : null,
+    // Master copies (Decision 116): Admins and department heads.
+    usesDocuments(roles, viewing ? null : data.myself) ? row("📁", "Documents & forms", () => openDocumentsScreen()) : null,
     m.admin && !viewing ? row("⚙", "Admin", () => go("adminMenu")) : null]),
     ...group("History", [row("📣", "Past announcements", () => openAnn())]),
     ...group("Account", [
@@ -687,12 +688,12 @@ function openDocsScreen(back = () => go("home"), backLabel = "Home") {
   closeModule = openRefDocs(screen, { me: me(), onExit: back, backLabel });
 }
 
-// Forms editor for non-admins allowed on the Roles screen (admins use Admin → Forms).
-function openFormsScreen() {
+// 📁 Documents & forms (Decision 116): every master copy, by department — Admins and department heads.
+function openDocumentsScreen(back = () => go("home"), backLabel = "Home") {
   if (closeModule) closeModule();
   setNav("more");
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
-  closeModule = openFormsAdmin(screen, { me: me(), onExit: () => go("home"), backLabel: "Home" });
+  closeModule = openDocuments(screen, { me: me(), onExit: back, backLabel });
 }
 
 function openRequestScreen(id) {
@@ -853,15 +854,13 @@ function renderAdminMenu() {
     el("button", { class: "btn", type: "button", onclick: () => openModule(openDepartmentsAdmin) }, "🏢 Departments"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openTeams) }, "🅰 Teams"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openRoles) }, "🏷 Roles"),
-    el("button", { class: "btn", type: "button", onclick: () => openModule((c, o) => openChecklistAdmin(c, { ...o, me: me() })) }, "📋 Checklists"),
+    el("button", { class: "btn", type: "button", onclick: () => openDocumentsScreen(() => go("adminMenu"), "Admin") }, "📁 Documents & forms"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openRequestTypesAdmin) }, "🙋 Request types & routing"),
-    el("button", { class: "btn", type: "button", onclick: () => openModule((c, o) => openFormsAdmin(c, { ...o, me: me() })) }, "📝 Forms"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openMapAdmin) }, "🗺 Shop map setup"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openSiloAdmin) }, "🛢 Silo alerts"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openReelAdmin) }, "🏷 QC hold lists"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openCallAdmin) }, "📞 Who to Call"),
     el("button", { class: "btn", type: "button", onclick: () => openModule(openRotationAdmin) }, "🗓 Shift rotation"),
-    el("button", { class: "btn", type: "button", onclick: () => openModule(openCrewStationsAdmin) }, "🧭 Crew Board stations"),
     me().hr ? el("button", { class: "btn", type: "button", onclick: () => openModule(openInjuryExport) }, "🗂 Export injury reports (PDF)") : null,
     me().hr ? el("button", { class: "btn", type: "button", onclick: () => openModule(openHrAccess) }, "🔒 HR access") : null,
     el("button", { class: "btn", type: "button", onclick: () => openModule(openTrainingAdmin) }, "🎓 Training setup"),

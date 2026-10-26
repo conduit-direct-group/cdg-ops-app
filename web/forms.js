@@ -1,7 +1,8 @@
 // Admin → Forms: the app's versions of the paper forms, edited with no code change (Decision 60).
 // Add, remove, reword, or reorder sections and fields; change types, units, help text. Every save is a new
 // revision (number, date, who, what changed). Records already started finish on the revision they started with.
-// Who may edit: Admins, and roles that list the form in Admin → Roles. The wording lives only in the database.
+// Opened from 📁 Documents & forms on one form (Decision 116): Admins and the form's department head edit it — the
+// server checks. The wording lives only in the database.
 
 import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, picker, collapsible } from "./ui.js";
 import { data, onDataChange } from "./data.js";
@@ -14,23 +15,18 @@ export const FIELD_TYPES = [
 ];
 const KIND_NAMES = { handoff: "Shift handoff", tasklist: "Shift task list", station: "Station checklist", linecheck: "Line check log" };
 
-// Same rule as the server (functions/forms.js).
-export function canEditForm(myRoles, formId) {
-  if ((myRoles || []).includes("admin")) return true;
-  return (data.roles || []).some((r) => r.active !== false && (myRoles || []).includes(r.id) && (r.editForms || []).includes(formId));
-}
-export const editableForms = (myRoles) => (data.formTemplates || []).filter((t) => canEditForm(myRoles, t.id));
-
 const toMs = (t) => (t?.toMillis ? t.toMillis() : 0);
 const fmtWhen = (t) => (toMs(t) ? new Date(toMs(t)).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }) : "");
 const copy = (x) => JSON.parse(JSON.stringify(x));
 
-export function openFormsAdmin(container, { me, onExit, backLabel = "Admin" }) {
+export function openFormsAdmin(container, { me, onExit, backLabel = "Admin", formId = null }) {
   const ui = { view: "list", id: null, draft: null, note: "", busy: false, message: "", messageKind: "", retry: null, revs: null };
   let stopRevs = null;
   const say = (message, retry = null) => { Object.assign(ui, { message, messageKind: "error", retry, busy: false }); render(); };
   const show = (view, extra = {}) => { Object.assign(ui, { view, busy: false, message: "", retry: null, ...extra }); render(); window.scrollTo(0, 0); };
   const back = (label, onclick) => el("button", { class: "link-btn", type: "button", onclick, disabled: ui.busy }, `← ${label}`);
+  // Opened on one form: leaving the editor goes straight back.
+  const leave = () => { stopRevs?.(); if (formId) onExit(); else show("list"); };
 
   async function save(payload, again) {
     Object.assign(ui, { busy: true, message: "", retry: null });
@@ -47,7 +43,7 @@ export function openFormsAdmin(container, { me, onExit, backLabel = "Admin" }) {
 
   // ---- list --------------------------------------------------------------------------------------------------------
   function renderList() {
-    const list = (data.formTemplates || []).filter((t) => canEditForm(me.roles, t.id));
+    const list = data.formTemplates || [];
     async function importFile(file) {
       let parsed;
       try { parsed = JSON.parse(await file.text()); } catch { return say("That file isn't a form file (.json)."); }
@@ -195,10 +191,10 @@ export function openFormsAdmin(container, { me, onExit, backLabel = "Admin" }) {
       e?.preventDefault();
       if (!(await confirmSheet({ title: `Save as revision ${t.rev + 1}?`, text: "It applies to the next one started. Anything already in progress finishes on the version it started with, and past sign-offs keep theirs.", confirmLabel: "✔ Save revision" }))) return;
       const r = await save({ formId: t.id, ...d, note: ui.note }, submit);
-      if (r) show("list");
+      if (r) leave();
     }
     return [
-      back("Forms", () => { stopRevs?.(); show("list"); }),
+      back(formId ? backLabel : "Forms", leave),
       el("h1", {}, `Edit: ${t.name}`),
       el("p", { class: "hint" }, `Now on revision ${t.rev} (${fmtWhen(t.revAt)}, ${t.revByName || ""}).`),
       banner(ui),
@@ -238,6 +234,7 @@ export function openFormsAdmin(container, { me, onExit, backLabel = "Admin" }) {
     container.replaceChildren(...[(ui.view === "edit" ? renderEdit : renderList)()].flat(3).filter(Boolean));
   }
   const stop = onDataChange(() => { if (!ui.busy && ui.view === "list") render(); });
-  render();
+  const start = formId && (data.formTemplates || []).find((t) => t.id === formId);
+  if (start) openEditor(start); else render();
   return () => { stop(); stopRevs?.(); };
 }
