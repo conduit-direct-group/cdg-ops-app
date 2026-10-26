@@ -30,6 +30,9 @@ const ids = (v) => (Array.isArray(v) ? [...new Set(v.map(String).filter(Boolean)
 function rolePosts(role) {
   return typeof role.canPostAnnouncements === "boolean" ? role.canPostAnnouncements : DEFAULT_POSTER_ROLES.includes(role.id);
 }
+// Decision 106: only department heads and Admins post announcements. person: { roles, deptHead }.
+const canPostNow = (person) => (person?.roles || []).includes("admin") || person?.deptHead === true;
+// (Older rule, kept for screens not yet updated: the per-role switch in Admin → Roles.)
 function canPost(roleDocs, myRoles) {
   return (roleDocs || []).some((r) => r.active !== false && (myRoles || []).includes(r.id) && rolePosts(r));
 }
@@ -72,7 +75,7 @@ function cleanAnnouncement(data, known, bucketPath, today) {
   if (audience.roleTeams.some((id) => !known.teams.includes(id))) return { error: "Pick teams from the list." };
   if (audience.people.some((p) => !/^[A-Za-z0-9]{1,12}$/.test(p))) return { error: "Pick people from the list." };
 
-  return { announcement: { title, body, priority, ackBy: data.ackBy, endDate, file, audience, keepForNewHires: data?.keepForNewHires === true } };
+  return { announcement: { title, body, priority, ackBy: data.ackBy, endDate, file, audience, keepForNewHires: data?.keepForNewHires === true, isTask: data?.isTask === true } };
 }
 
 // Audience -> employee numbers of everyone on (active) who matches.
@@ -167,7 +170,7 @@ function cleanDevice(d) {
 }
 
 module.exports = {
-  PRIORITIES, DEFAULT_POSTER_ROLES, SEE_ALL_ROLES, CREW_ROLES, IN_PERSON_ROLES, RELAY_ROLES, signsIt, signersOf,
+  PRIORITIES, canPostNow, DEFAULT_POSTER_ROLES, SEE_ALL_ROLES, CREW_ROLES, IN_PERSON_ROLES, RELAY_ROLES, signsIt, signersOf,
   rolePosts, canPost, cleanAnnouncement, matchAudience, crewOf, trackScope, trackersFor, refreshedAudience,
   contentChanged, isEnded, isOverdue, personStatus, countUp, cleanDevice,
 };

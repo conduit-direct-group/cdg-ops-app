@@ -246,8 +246,9 @@ function watchAnnouncements(me) {
 function watchAnnTasks(me) {
   const c = collection(db, TEST_MODE ? "test_annTasks" : "annTasks");
   const mine = { key: "my announcement tasks", source: query(c, where("emp", "==", me.emp)), test: TEST_MODE };
-  const sort = (a, b) => String(a.dueDate).localeCompare(String(b.dueDate));
-  const sources = [mine];
+  const assigned = { key: "tasks I assigned", source: query(c, where("assignedBy", "==", me.emp)), test: TEST_MODE }; // Decision 106
+  const sort = (a, b) => (a.dueMs || Date.parse(a.dueDate || "") || 0) - (b.dueMs || Date.parse(b.dueDate || "") || 0);
+  const sources = [mine, assigned];
   const seesAll = (me.roles || []).some((r) => ["supervisor", "plant-manager", "admin"].includes(r));
   if (!seesAll && (me.roles || []).includes("lead")) {
     let stop = () => {};
@@ -255,8 +256,8 @@ function watchAnnTasks(me) {
     getDoc(doc(db, "employees", me.emp)).then((snap) => {
       if (cancelled) return;
       const team = snap.exists() ? snap.data()?.team || null : null;
-      stop = watchUnion("annTasks", team ? [mine, { key: "my team's announcement tasks", source: query(c, where("team", "==", team)), test: TEST_MODE }] : [mine], sort);
-    }, () => { if (!cancelled) stop = watchUnion("annTasks", [mine], sort); });
+      stop = watchUnion("annTasks", team ? [mine, assigned, { key: "my team's announcement tasks", source: query(c, where("team", "==", team)), test: TEST_MODE }] : [mine, assigned], sort);
+    }, () => { if (!cancelled) stop = watchUnion("annTasks", [mine, assigned], sort); });
     return () => { cancelled = true; stop(); };
   }
   if (seesAll) {

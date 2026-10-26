@@ -18,6 +18,7 @@ const CATEGORIES = [
   { key: "incidents", label: "Near misses, property damage, spills", covers: "Near miss, property damage, and spill reports with their photos and actions — counted from closing", days: null },
   { key: "writeups", label: "Write-ups", covers: "Employee write-ups", days: null, hr: true },
   { key: "messages", label: "Messages", covers: "In-app messages and replies (Decision 102: kept 90 days)", days: 90 },
+  { key: "tasks", label: "Task records", covers: "Message and announcement tasks — who assigned, who did it, when done, who confirmed (kept after the message is gone)", days: 365 },
 ];
 const CHOICES = [30, 60, 90, 182, YEAR, 2 * YEAR, 3 * YEAR, 5 * YEAR, 7 * YEAR, 10 * YEAR, null];
 const INJURY_TYPES = ["injury", "first-aid"];
@@ -71,6 +72,7 @@ const OPEN = {
   incidents: (d, ctx) => d.status !== "closed" || (d.openActions || 0) > 0 || ctx.openActionIncidents.has(d.id),
   writeups: (d) => d.status === "waiting",
   messages: () => false,
+  annTasks: (d) => d.status === "open" || d.status === "done",
 };
 
 const isInjury = (inc) => INJURY_TYPES.includes(inc?.type);

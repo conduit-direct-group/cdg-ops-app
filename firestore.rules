@@ -252,10 +252,10 @@ service cloud.firestore {
       return member() && employee().roles.hasAny(['lead']) && resource.data.team != null && resource.data.team == employee().get('team', null);
     }
     match /annTasks/{id} {
-      allow read: if member() && (resource.data.emp == me() || annTaskReader() || annTaskTeamLead());
+      allow read: if member() && (resource.data.emp == me() || annTaskReader() || annTaskTeamLead()) || (member() && resource.data.assignedBy == me());
     }
     match /test_annTasks/{id} {
-      allow read: if member() && (resource.data.emp == me() || annTaskReader() || annTaskTeamLead());
+      allow read: if member() && (resource.data.emp == me() || annTaskReader() || annTaskTeamLead()) || (member() && resource.data.assignedBy == me());
     }
     // Every sign-off ever (checklists, announcements, …) — admins only.
     match /signoffs/{id} {

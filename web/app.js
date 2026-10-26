@@ -289,6 +289,7 @@ function renderHome() {
       crew: () => openCrewScreen(),
       incidents: (view, id) => openIncidentScreen(view, id),
       messages: () => openMessagesScreen(),
+      messageRoot: (rootId) => openMessagesScreen(rootId),
     },
   });
   return [
@@ -770,12 +771,12 @@ function openReport(machineTypes = null, back = () => go("home"), machineId = nu
 // Messages (Decision 102): More → Messages, Home's new-messages line, a message notification (?messages=1).
 // "Send as Maintenance Request" on a message opens the request with the message's words (and machine, if named).
 let onMessagesScreen = false;
-function openMessagesScreen() {
+function openMessagesScreen(startRoot = null) {
   if (closeModule) closeModule();
   setNav("more");
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   const close = openMessages(screen, {
-    me: me(), onExit: () => go("home"), backLabel: "Home",
+    me: me(), onExit: () => go("home"), backLabel: "Home", startRoot, onAnnouncement: (id) => openAnn(id),
     onMaintenance: usesMachines(me().roles) ? (machineId, text) => openReport(null, () => openMessagesScreen(), machineId, text) : null,
   });
   onMessagesScreen = true;

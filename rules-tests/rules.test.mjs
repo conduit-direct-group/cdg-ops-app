@@ -149,6 +149,17 @@ test("open issues board: Maintenance, Production Manager, Admin only", async () 
 
 // ---- announcement tasks ---------------------------------------------------------------------------------------------
 
+test("tasks (Decision 106): whoever assigned a task reads it, even for someone on another team — no one else gains access", async () => {
+  await env.withSecurityRulesDisabled(async (ctx) => {
+    await setDoc(doc(ctx.firestore(), "annTasks", "m1"), { emp: "9005", status: "done", annTitle: "Sweep bay 2", team: "b", source: "message", assignedBy: "9011" });
+    await setDoc(doc(ctx.firestore(), "employees", "9011"), { name: "Lead A", roles: ["lead"], active: true, team: "a" });
+  });
+  await assertSucceeds(getDoc(doc(db(9011), "annTasks", "m1"))); // the assigner (a Team A lead), task on Team B
+  await assertSucceeds(getDocs(query(collection(db(9011), "annTasks"), where("assignedBy", "==", "9011"))));
+  await assertFails(getDoc(doc(db(9001), "annTasks", "m1"))); // an operator not on it
+  await assertFails(setDoc(doc(db(9011), "annTasks", "m2"), { emp: "9001", assignedBy: "9011" })); // nobody writes from a phone
+});
+
 test("announcement tasks: the person sees their own; supervisors, Production Manager, Admins see all; a Line Lead only their own team's; nobody writes", async () => {
   await env.withSecurityRulesDisabled(async (ctx) => {
     await setDoc(doc(ctx.firestore(), "annTasks", "t1"), { emp: "9001", status: "open", annTitle: "Wipe the panels", team: "a" });

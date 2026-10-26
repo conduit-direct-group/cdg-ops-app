@@ -14,19 +14,37 @@ const people = [
 // Today's line assignments (Crew Board, Decision 104) — no home lines.
 const ctx = { teamOnShift: "a", marks: { 9002: { status: "here" }, 9003: { status: "out" }, 9005: { status: "here" } }, lineNow: { 9002: ["l1"], 9005: ["l1", "l2"] } };
 
-test("messaging: only Line Lead and above start messages", () => {
-  assert.ok(m.canStart(["lead"]) && m.canStart(["supervisor"]) && m.canStart(["plant-manager"]) && m.canStart(["admin"]));
-  assert.ok(!m.canStart(["operator"]) && !m.canStart(["maintenance", "office"]) && !m.canStart([]));
+test("messaging (Decision 106): Line Leads, Supervisors, department heads, Production Manager, Admins start messages", () => {
+  for (const r of ["lead", "supervisor", "plant-manager", "admin"]) assert.ok(m.canStart({ roles: [r] }), r);
+  assert.ok(m.canStart({ roles: ["office"], deptHead: true })); // a department head, whatever the role
+  assert.ok(!m.canStart({ roles: ["maintenance", "office"] }) && !m.canStart({ roles: ["operator"] }) && !m.canStart({ roles: [] }) && !m.canStart(null));
   assert.strictEqual(m.startRole(["lead", "supervisor"]), "Supervisor");
 });
 
-test("messaging: an Admin can turn starting messages on or off per role (Admin → Roles)", () => {
-  const roles = [{ id: "lead" }, { id: "maintenance" }, { id: "office", startMessages: true }, { id: "supervisor", startMessages: false }, { id: "admin" }];
-  assert.ok(m.canStartWith(roles, ["lead"]));
-  assert.ok(!m.canStartWith(roles, ["maintenance"]));
-  assert.ok(m.canStartWith(roles, ["office"])); // turned on
-  assert.ok(!m.canStartWith(roles, ["supervisor"])); // turned off
-  assert.ok(!m.canStartWith([{ id: "lead", active: false }], ["lead"])); // retired role
+test("messaging: quick replies only Got it / Done / Need help", () => {
+  assert.deepStrictEqual(m.cleanQuick("help"), { kind: "help", text: "Need help – see me" });
+  assert.deepStrictEqual(m.cleanQuick("got"), { kind: "got", text: "Got it" });
+  assert.ok(m.cleanQuick("lol").error);
+});
+
+test("messaging: a task goes only to people the message reached, due by a time", () => {
+  const now = 1000000000000;
+  assert.deepStrictEqual(m.cleanMessageTask(null, ["1"], now), { task: null });
+  assert.deepStrictEqual(m.cleanMessageTask({ emps: ["1", "1"], dueMs: now + 5 }, ["1", "2"], now), { task: { emps: ["1"], dueMs: now + 5 } });
+  assert.match(m.cleanMessageTask({ emps: ["3"], dueMs: now + 5 }, ["1"], now).error, /reaches/);
+  assert.match(m.cleanMessageTask({ emps: ["1"], dueMs: now - 3600000 }, ["1"], now).error, /passed/);
+  assert.match(m.cleanMessageTask({ emps: [], dueMs: now }, ["1"], now).error, /who/);
+});
+
+test("messaging: acknowledged or the shift ended → off the screen; the sender sees Not acknowledged", () => {
+  const root = { shiftEndMs: 100, acks: { 1: { kind: "got", atMs: 10 } } };
+  assert.strictEqual(m.ackStatus(root, "1", 50), "got");
+  assert.strictEqual(m.ackStatus(root, "2", 50), "waiting");
+  assert.strictEqual(m.ackStatus(root, "2", 100), "not-acknowledged");
+  assert.ok(m.clearedFor(root, "1", 50, true));
+  assert.ok(!m.clearedFor(root, "1", 50, false)); // their task isn't confirmed yet
+  assert.ok(!m.clearedFor(root, "2", 50));
+  assert.ok(m.clearedFor(root, "2", 100)); // end of the shift
 });
 
 test("messaging: on shift, absent, off shift, covering, no team", () => {

@@ -11,7 +11,8 @@ import { data, lineName } from "./data.js";
 import { overdueUnits, unitLabel, checklistUnits, pendingFor } from "./checklists.js";
 import { dueByShiftEnd } from "./shift.js";
 import { myOpenRequests } from "./requests.js";
-import { announcementItems, announcementBar, annTaskItems } from "./announcements.js";
+import { announcementItems, announcementBar } from "./announcements.js";
+import { taskItems } from "./tasks.js";
 import { messageBar } from "./messages.js";
 import { handoffItems } from "./handoff.js";
 import { shopItems } from "./shoptasks.js";
@@ -294,7 +295,7 @@ function needsItems(ctx, roles) {
   items.push(...reelItems(roles, () => go.reels("list")));
   items.push(...downtimeItems(roles, data.myself, go.downtime, () => redraw?.()));
   items.push(...crewItems(roles, go.crew, () => redraw?.()));
-  items.push(...annTaskItems(ctx.emp, go.announcement));
+  items.push(...taskItems({ emp: ctx.emp, name: data.myself?.name || "", roles }, { announcement: go.announcement, message: go.messageRoot }, () => redraw?.()));
   items.push(...incidentItems(roles, { emp: ctx.emp }, go.incidents));
   items.push(...handoffItems(me, go.handoff));
   items.push(...shopItems(me, roles, go.shop));

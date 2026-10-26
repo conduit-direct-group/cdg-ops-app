@@ -1,6 +1,9 @@
 // In-app messaging (Chris, 10-23-2026, Decision 102; launch list 5). Rules: functions/messaging.js.
-// Line Lead and above start messages (one person, a team, a line, a role, or everyone); everyone replies to what they
-// got, and a reply to a group message goes only to its sender. You get messages only while on your shift and not
+// Line Leads, Supervisors, department heads, the Production Manager, and Admins start messages (Decision 106) and can
+// type replies; everyone else answers with quick buttons — Got it / Done / Need help – see me. A reply to a group
+// message goes only to its sender. A message can be a task (one or more people, due by a time).
+// Clearing (Decision 106): a message leaves your list once you answer it (and your task on it is confirmed), or at the
+// end of the shift it came in — then it's in History (90 days), with the announcements you've finished. You get messages only while on your shift and not
 // marked absent — the server decides that when a message is sent, and anything else is never delivered.
 // Every conversation is between the starter and one person: "{rootId}__{participant}". A group message the starter
 // sent shows as one item with its replies grouped by person. HR access opens one person's messages only with a reason.
@@ -8,6 +11,7 @@
 
 import { el, breakable, friendlyError, spinner, emptyState, banner, toast, picker, confirmSheet, collapsible } from "./ui.js";
 import { data, onDataChange } from "./data.js";
+import { taskRow, fmtDue } from "./tasks.js";
 import {
   callMessageStart, callMessagePreview, callMessageSend, callMessageReply, callMessagesSeenNow, callMessagingNoticeSeen,
   callHrReviewMessages, callHrMessageReviewLog,
@@ -64,12 +68,17 @@ export function conversations(emp) {
     }
   }
   const items = [];
+  const now = Date.now();
+  const myTaskOk = (rootId) => (data.annTasks || []).filter((t) => t.rootId === rootId && t.emp === emp && t.status !== "removed").every((t) => t.status === "verified");
   for (const c of byConv.values()) {
     c.messages.sort((a, b) => a.atMs - b.atMs);
     const root = roots.get(c.rootId);
     if (root && root.fromEmp === emp && root.to?.type !== "person") { c.groupRoot = root; } // a person's thread inside my group message
+    c.root = root || c.groupRoot || null;
     c.last = c.messages[c.messages.length - 1];
-    c.unread = c.messages.filter((m) => m.fromEmp !== emp && (m.recipients || []).includes(emp) && m.atMs > (seen[c.key] || 0)).length;
+    // Off my list (into History): I got it and answered it (task confirmed), or the shift it came in has ended.
+    c.cleared = !!c.root && (now >= (c.root.shiftEndMs || Infinity) || (c.root.fromEmp !== emp && !!c.root.acks?.[emp] && myTaskOk(c.root.id)));
+    c.unread = c.cleared ? 0 : c.messages.filter((m) => m.fromEmp !== emp && (m.recipients || []).includes(emp) && m.atMs > (seen[c.key] || 0)).length;
     c.title = c.otherName || "Message";
     if (!c.groupRoot) items.push(c);
   }
@@ -77,6 +86,7 @@ export function conversations(emp) {
     const threads = [...byConv.values()].filter((c) => c.groupRoot?.id === g.rootId);
     g.threads = threads;
     g.last = [g.root, ...threads.map((t) => t.last)].sort((a, b) => b.atMs - a.atMs)[0];
+    g.cleared = now >= (g.root.shiftEndMs || Infinity);
     g.unread = threads.reduce((n, t) => n + t.unread, 0);
     g.title = g.root.to?.label || "Group message";
     items.push(g);
@@ -112,11 +122,17 @@ export function noticeNewMessages(emp, onMessages) {
 }
 
 // ---- the screen --------------------------------------------------------------------------------------------------
-export function openMessages(container, { me, onExit, backLabel = "Home", onMaintenance = null }) {
+export function openMessages(container, { me, onExit, backLabel = "Home", onMaintenance = null, startRoot = null, onAnnouncement = null }) {
   const ui = {
     view: "list", key: null, setup: null, loadError: "", busy: false, message: "", messageKind: "", retry: null,
-    draft: "", form: null, preview: null, hr: null,
+    draft: "", form: null, preview: null, hr: null, tab: "now",
   };
+  // Opened from a task on Home: go straight to that message.
+  if (startRoot) {
+    const root = (data.messages || []).find((m) => m.id === startRoot);
+    if (root?.fromEmp === me.emp && root.to?.type !== "person") Object.assign(ui, { view: "group", key: root.id });
+    else if (root) Object.assign(ui, { view: "conv", key: root.fromEmp === me.emp ? conv(root.id, root.to.id) : conv(root.id, me.emp) });
+  }
   let active = true;
 
   async function load() {
@@ -163,20 +179,24 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
         : null);
   }
 
-  async function sendReply(c) {
+  async function sendReply(c, quick = null) {
     const text = ui.draft.trim();
-    if (!text) return;
-    if (!navigator.onLine) { Object.assign(ui, { message: friendlyError({ code: "offline" }), messageKind: "error", retry: () => sendReply(c) }); return render(); }
+    if (!quick && !text) return;
+    if (!navigator.onLine) { Object.assign(ui, { message: friendlyError({ code: "offline" }), messageKind: "error", retry: () => sendReply(c, quick) }); return render(); }
     Object.assign(ui, { busy: true, message: "" });
     render();
     try {
-      const { data: r } = await callMessageReply({ rootId: c.rootId, participant: c.participant, text });
-      ui.draft = "";
-      toast(r.delivered ? "Sent" : `Not delivered — ${r.why === "absent" ? "they're absent today" : "they're off shift"}`);
-    } catch (err) { Object.assign(ui, { message: friendlyError(err), messageKind: "error", retry: () => sendReply(c) }); }
+      const { data: r } = await callMessageReply({ rootId: c.rootId, participant: c.participant, ...(quick ? { quick } : { text }) });
+      if (!quick) ui.draft = "";
+      toast(r.delivered ? (quick === "help" ? "Sent — they've been alerted" : "Sent") : `Not delivered — ${r.why === "absent" ? "they're absent today" : "they're off shift"}`);
+    } catch (err) { Object.assign(ui, { message: friendlyError(err), messageKind: "error", retry: () => sendReply(c, quick) }); }
     ui.busy = false;
     render();
   }
+  const QUICK = [["got", "👍 Got it"], ["done", "✔ Done"], ["help", "🆘 Need help – see me"]];
+  const ACK_LABEL = { got: "✓ Got it", done: "✓ Done", help: "🆘 Need help", reply: "✓ Replied", "not-acknowledged": "Not acknowledged", waiting: "Waiting" };
+  const ackOf = (root, emp) => (root.acks?.[emp] ? root.acks[emp].kind : Date.now() >= (root.shiftEndMs || Infinity) ? "not-acknowledged" : "waiting");
+  const tasksOn = (rootId) => (data.annTasks || []).filter((t) => t.rootId === rootId && t.status !== "removed");
 
   // ---- views ----
   const notices = () => el("div", { class: "msg-notices" }, el("p", {}, `🕒 ${SHIFT_LINE}`), el("p", {}, `🔒 ${HR_LINE}`));
@@ -184,27 +204,40 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
   function listView() {
     const s = ui.setup;
     const { items } = conversations(me.emp);
+    const now = items.filter((c) => !c.cleared);
+    const past = items.filter((c) => c.cleared);
+    const anns = (data.announcements || []).filter((a) => (a.audienceEmps || []).includes(me.emp) && (!!data.mySigs?.[a.id] || (data.myOpens || []).some((o) => o.annId === a.id)))
+      .sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+    const row = (c) => {
+      const mineLast = c.last?.fromEmp === me.emp;
+      const sub = c.kind === "group"
+        ? `Delivered to ${(c.root.recipients || []).length} of ${c.root.total} · ${c.replies} repl${c.replies === 1 ? "y" : "ies"}`
+        : `${mineLast ? "You: " : ""}${c.last?.text || ""}`;
+      return el("button", { class: c.unread ? "msg-item unread" : "msg-item", type: "button", onclick: () => go(c.kind === "group" ? "group" : "conv", c.key) },
+        el("span", { class: "msg-item-icon", "aria-hidden": "true" }, c.kind === "group" ? TO_ICON[c.root.to?.type] || "📢" : c.root?.task ? "📋" : "👤"),
+        el("span", { class: "msg-item-text" }, el("strong", {}, c.title), el("span", { class: "person-meta msg-preview" }, sub)),
+        el("span", { class: "msg-item-side" }, el("span", { class: "person-meta" }, fmtWhen(c.last?.atMs)), c.unread ? el("span", { class: "msg-dot", "aria-label": `${c.unread} unread` }, String(c.unread)) : null));
+    };
+    const tabs = el("div", { class: "msg-tabs", role: "tablist" },
+      [["now", `Messages${now.length ? ` (${now.length})` : ""}`], ["history", "History"]].map(([k, label]) =>
+        el("button", { class: ui.tab === k ? "choice on" : "choice", type: "button", role: "tab", "aria-selected": String(ui.tab === k), onclick: () => { ui.tab = k; render(); } }, label)));
     return [
       el("button", { class: "link-btn", type: "button", onclick: onExit }, `← ${backLabel}`),
       el("h1", {}, "💬 Messages"),
       notices(),
       banner(ui),
       ui.loadError ? banner({ message: ui.loadError, messageKind: "error", retry: load }) : null,
-      s?.canStart ? el("button", { class: "btn", type: "button", onclick: () => { ui.form = { type: "person", id: "", text: "" }; ui.preview = null; go("new"); } }, "✎ New message") : null,
+      s?.canStart ? el("button", { class: "btn", type: "button", onclick: () => { ui.form = { type: "person", id: "", text: "", isTask: false, taskEmps: null, dueMs: null }; ui.preview = null; go("new"); } }, "✎ New message") : null,
+      tabs,
       !data.messages ? spinner("Loading messages…")
-        : items.length ? el("div", { class: "msg-list" }, items.map((c) => {
-            const mineLast = c.last?.fromEmp === me.emp;
-            const sub = c.kind === "group"
-              ? `Delivered to ${(c.root.recipients || []).length} of ${c.root.total} · ${c.replies} repl${c.replies === 1 ? "y" : "ies"}`
-              : `${mineLast ? "You: " : ""}${c.last?.text || ""}`;
-            return el("button", { class: c.unread ? "msg-item unread" : "msg-item", type: "button", onclick: () => go(c.kind === "group" ? "group" : "conv", c.key) },
-              el("span", { class: "msg-item-icon", "aria-hidden": "true" }, c.kind === "group" ? TO_ICON[c.root.to?.type] || "📢" : "👤"),
-              el("span", { class: "msg-item-text" },
-                el("strong", {}, c.title),
-                el("span", { class: "person-meta msg-preview" }, sub)),
-              el("span", { class: "msg-item-side" }, el("span", { class: "person-meta" }, fmtWhen(c.last?.atMs)), c.unread ? el("span", { class: "msg-dot", "aria-label": `${c.unread} unread` }, String(c.unread)) : null));
-          }))
-        : emptyState("No messages yet", s?.canStart ? "Tap “New message” to send one." : "Messages from your Line Lead and Supervisors show here."),
+        : ui.tab === "now"
+          ? now.length ? el("div", { class: "msg-list" }, now.map(row)) : emptyState("Nothing new", s?.canStart ? "Tap “New message” to send one. Answered messages move to History." : "Messages from your leads show here. Answered ones move to History.")
+          : [el("p", { class: "card-note" }, "Your messages from the last 90 days that you answered or that ended with the shift, and announcements you've finished."),
+             past.length ? el("div", { class: "msg-list" }, past.map(row)) : el("p", { class: "card-note" }, "No past messages."),
+             anns.length ? [el("h2", { class: "home-h2" }, "📣 Announcements you've finished"), el("div", { class: "msg-list" }, anns.map((a) => el("button", { class: "msg-item", type: "button", onclick: () => onAnnouncement?.(a.id) },
+               el("span", { class: "msg-item-icon", "aria-hidden": "true" }, "📣"),
+               el("span", { class: "msg-item-text" }, el("strong", {}, a.title), el("span", { class: "person-meta msg-preview" }, a.createdByName ? `from ${a.createdByName}` : "")),
+               el("span", { class: "msg-item-side" }, el("span", { class: "person-meta" }, fmtWhen(a.createdAt?.toMillis?.() || 0))))))] : null],
       s?.noTeam?.length ? collapsible("msg-noteam", `👥 No team yet — always receive messages (${s.noTeam.length})`,
         el("p", { class: "card-note" }, "Until they have a team (Admin → People), these people are treated as always on shift."),
         el("p", {}, s.noTeam.join(", "))) : null,
@@ -223,17 +256,26 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
     const rootMsg = root || c.groupRoot;
     const canReply = iStarted ? (rootMsg?.recipients || []).includes(c.participant) : (rootMsg?.recipients || []).includes(me.emp);
     const msgs = c.groupRoot ? [c.groupRoot, ...c.messages] : c.messages;
+    const canType = !!ui.setup?.canStart;
+    const myAck = !iStarted && rootMsg?.acks?.[me.emp];
+    const tasks = rootMsg ? tasksOn(rootMsg.id).filter((t) => (iStarted ? t.emp === c.participant : t.emp === me.emp)) : [];
     return [
       el("button", { class: "link-btn", type: "button", onclick: () => (c.groupRoot ? go("group", c.groupRoot.id) : go("list")) }, c.groupRoot ? "← Group message" : "← Messages"),
       el("h1", {}, `💬 ${c.title}`),
       c.groupRoot ? el("p", { class: "hint" }, `Your message to ${c.groupRoot.to.label}, and ${c.title}'s replies — only you see them.`) : null,
       el("div", { class: "msg-thread" }, msgs.map((m) => bubble(m, { mine: m.fromEmp === me.emp, showTo: m.kind === "new" && m.to?.type !== "person" }))),
+      iStarted && rootMsg && (rootMsg.recipients || []).includes(c.participant) ? el("p", { class: "msg-ack" }, `${c.title}: ${ACK_LABEL[ackOf(rootMsg, c.participant)]}`) : null,
+      tasks.length ? el("section", { class: "card msg-task" }, el("strong", {}, "📋 Task"), el("div", { class: "task-list" }, tasks.map((t) => taskRow(t, me, { busy: ui.busy })))) : null,
       banner(ui),
-      canReply
-        ? el("form", { class: "msg-compose", onsubmit: (e) => { e.preventDefault(); sendReply(c); } },
-            el("textarea", { class: "field", rows: "2", maxlength: "2000", placeholder: iStarted ? `Reply to ${c.title}` : `Reply to ${c.title} (only they see it)`, "aria-label": "Reply", oninput: (e) => { ui.draft = e.target.value; } }, ui.draft),
-            el("button", { class: "btn", type: "submit", disabled: ui.busy }, ui.busy ? "Sending…" : "Send"))
-        : el("p", { class: "card-note" }, "This message didn't reach them, so there's nothing to reply to."),
+      !canReply ? el("p", { class: "card-note" }, "This message didn't reach them, so there's nothing to reply to.")
+        : [
+            !iStarted ? el("div", { class: "msg-quick" },
+              myAck ? el("p", { class: "card-note" }, `You answered: ${ACK_LABEL[myAck.kind]}`) : null,
+              QUICK.map(([k, label]) => el("button", { class: k === "help" ? "btn secondary help-btn" : "btn secondary", type: "button", disabled: ui.busy, onclick: () => sendReply(c, k) }, label))) : null,
+            canType ? el("form", { class: "msg-compose", onsubmit: (e) => { e.preventDefault(); sendReply(c); } },
+              el("textarea", { class: "field", rows: "2", maxlength: "2000", placeholder: iStarted ? `Reply to ${c.title}` : `Reply to ${c.title} (only they see it)`, "aria-label": "Reply", oninput: (e) => { ui.draft = e.target.value; } }, ui.draft),
+              el("button", { class: "btn", type: "submit", disabled: ui.busy }, ui.busy ? "Sending…" : "Send")) : null,
+          ],
       notices(),
     ];
   }
@@ -249,6 +291,16 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
       el("button", { class: "link-btn", type: "button", onclick: () => go("list") }, "← Messages"),
       el("h1", {}, `${TO_ICON[g.root.to.type] || "📢"} ${g.root.to.label}`),
       el("div", { class: "msg-thread" }, bubble(g.root, { mine: true })),
+      el("h2", { class: "home-h2" }, "Who got it"),
+      el("div", { class: "msg-people" }, (g.root.recipients || []).map((e) => {
+        const ack = ackOf(g.root, e);
+        const t = tasksOn(g.rootId).find((x) => x.emp === e);
+        return el("div", { class: ack === "not-acknowledged" ? "msg-person warn" : ack === "help" ? "msg-person help" : "msg-person" },
+          el("span", { class: "person-name" }, names.get(e) || `#${e}`),
+          el("span", { class: "person-meta" }, [ACK_LABEL[ack], t ? `task: ${t.status === "verified" ? "confirmed" : t.status === "done" ? "waiting for your confirmation" : "not done"}` : ""].filter(Boolean).join(" · ")),
+          t && t.status === "done" ? taskRow(t, me, { busy: ui.busy }) : null);
+      })),
+      g.root.notDelivered ? el("p", { class: "card-note" }, `${g.root.notDelivered} didn't get it (off shift or absent).`) : null,
       el("h2", { class: "home-h2" }, `Replies (${g.replies})`),
       g.threads.length
         ? el("div", { class: "msg-list" }, g.threads.sort((a, b) => b.last.atMs - a.last.atMs).map((t) => el("button", { class: t.unread ? "msg-item unread" : "msg-item", type: "button", onclick: () => go("conv", t.key) },
@@ -286,6 +338,9 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
     ui.preview = null;
     if (!f.id && f.type !== "all") return render();
     try { ui.preview = (await callMessagePreview({ to: { type: f.type, id: f.type === "all" ? "all" : f.id } })).data; } catch { ui.preview = null; }
+    // A task goes to people it reaches; all of them unless the sender unticks some. Due: end of this shift.
+    f.taskEmps = new Set((ui.preview?.reachList || []).map((p) => p.emp));
+    if (!f.dueMs) f.dueMs = ui.preview?.shiftEndMs || Date.now() + 8 * 3600000;
     if (active) render();
   }
   async function send() {
@@ -302,9 +357,11 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
     Object.assign(ui, { busy: true, message: "" });
     render();
     try {
-      const { data: r } = await callMessageSend({ to: { type: f.type, id: f.type === "all" ? "all" : f.id }, text: f.text });
+      const task = f.isTask ? { emps: [...(f.taskEmps || [])], dueMs: f.dueMs } : null;
+      if (task && !task.emps.length) { Object.assign(ui, { busy: false, message: "Pick who does the task — only people it reaches now.", messageKind: "error", retry: null }); return render(); }
+      const { data: r } = await callMessageSend({ to: { type: f.type, id: f.type === "all" ? "all" : f.id }, text: f.text, task });
       ui.busy = false;
-      toast(f.type === "person" ? (r.delivered ? "Sent" : "Not delivered") : `Delivered to ${r.delivered} of ${r.total}`);
+      toast(`${f.type === "person" ? (r.delivered ? "Sent" : "Not delivered") : `Delivered to ${r.delivered} of ${r.total}`}${r.tasks ? ` · task for ${r.tasks}` : ""}`);
       go(f.type === "person" ? "conv" : "group", f.type === "person" ? conv(r.id, f.id) : r.id);
     } catch (err) { Object.assign(ui, { busy: false, message: friendlyError(err), messageKind: "error", retry: send }); render(); }
   }
@@ -332,6 +389,19 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
         reach,
         el("span", { class: "field-label strong" }, "Message"),
         el("textarea", { class: "field", rows: "4", maxlength: "2000", oninput: (e) => { f.text = e.target.value; const h = maintenanceHint(f.text); if (h !== !!ui.hint) { ui.hint = h; render(); } } }, f.text),
+        el("label", { class: "check-row" },
+          el("input", { type: "checkbox", checked: !!f.isTask, onchange: (e) => { f.isTask = e.target.checked; render(); } }),
+          el("span", {}, el("strong", {}, "📋 This is a task"), " — they tap Done; you confirm it.")),
+        f.isTask ? el("div", { class: "msg-taskbox" },
+          (pv?.reachList || []).length
+            ? [el("span", { class: "field-label" }, "Who does it? (people it reaches now)"),
+               el("div", { class: "ck-list" }, pv.reachList.map((p) => el("div", { class: f.taskEmps?.has(p.emp) ? "ck-item on" : "ck-item" },
+                 el("label", { class: "check-row" },
+                   el("input", { type: "checkbox", checked: !!f.taskEmps?.has(p.emp), onchange: (e) => { if (e.target.checked) f.taskEmps.add(p.emp); else f.taskEmps.delete(p.emp); render(); } }),
+                   el("span", { class: "person-name" }, p.name)))))]
+            : el("p", { class: "card-note" }, "Pick who it's for first — the task goes to the people it reaches now."),
+          f.dueMs ? [el("label", { class: "field-label", for: "msg-due" }, `Due by (starts at the end of this shift: ${fmtDue(f.dueMs)})`),
+            el("input", { class: "field", id: "msg-due", type: "datetime-local", value: new Date(f.dueMs - new Date(f.dueMs).getTimezoneOffset() * 60000).toISOString().slice(0, 16), onchange: (e) => { const ms = new Date(e.target.value).getTime(); if (Number.isFinite(ms)) f.dueMs = ms; } })] : null) : null,
         ui.hint && onMaintenance ? el("div", { class: "msg-maint" },
           el("span", { class: "card-note" }, "Sounds like a machine problem — you can also send it to Maintenance."),
           el("button", { class: "btn secondary", type: "button", onclick: () => onMaintenance(machineIn(f.text), f.text) }, "🚨 Send as Maintenance Request")) : null,

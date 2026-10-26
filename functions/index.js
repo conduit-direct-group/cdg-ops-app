@@ -541,11 +541,6 @@ exports.adminSaveRole = onCall(async (req) => {
       if (typeof d.postTrucks !== "boolean") throw new HttpsError("invalid-argument", "postTrucks must be true or false.");
       extra.postTrucks = d.postTrucks;
     }
-    // { startMessages: true|false } — may start messages (Decision 103). Unset = Line Lead, Supervisor, Production Manager, Admin.
-    if (d.startMessages !== undefined) {
-      if (typeof d.startMessages !== "boolean") throw new HttpsError("invalid-argument", "startMessages must be true or false.");
-      extra.startMessages = d.startMessages;
-    }
     // { editMachines: true|false } — may add and edit machine parts & specs (Machines). Unset = Maintenance and Admin.
     if (d.editMachines !== undefined) {
       if (typeof d.editMachines !== "boolean") throw new HttpsError("invalid-argument", "editMachines must be true or false.");
@@ -2093,12 +2088,15 @@ const announcementPush = (a, test, kind) => ({
   urgent: a.priority === "safety",
 });
 
-// Posters (roles allowed in Admin → Roles) and people who see everything: the people list for picking an audience.
+// Posters (department heads and Admins — Decision 106) and people who see everything: the people list for an audience.
+async function canPostAnnouncements(me) {
+  const snap = await employees.doc(me.employeeNumber).get();
+  return annLib.canPostNow({ roles: me.roles, deptHead: snap.get("deptHead") === true });
+}
 exports.announcementPeople = onCall(async (req) => {
   const me = await requireMember(req);
-  const roleDocs = (await roles.get()).docs.map((d) => ({ id: d.id, ...d.data() }));
-  if (!annLib.canPost(roleDocs, me.roles) && !hasRole(me.roles, annLib.SEE_ALL_ROLES)) {
-    throw new HttpsError("permission-denied", "Your role can't post announcements. An admin can turn it on in Admin → Roles.");
+  if (!(await canPostAnnouncements(me)) && !hasRole(me.roles, annLib.SEE_ALL_ROLES)) {
+    throw new HttpsError("permission-denied", "Only department heads and Admins post announcements.");
   }
   const people = withShiftLines((await peopleList()).filter((p) => p.active), await shiftLineAssignments(isTest(req)));
   people.sort((x, y) => x.name.localeCompare(y.name));
@@ -2127,7 +2125,7 @@ exports.postAnnouncement = onCall(async (req) => {
   const now = FieldValue.serverTimestamp();
 
   if (!editId) {
-    if (!annLib.canPost(roleDocs, me.roles)) throw new HttpsError("permission-denied", "Your role can't post announcements. An admin can turn it on in Admin → Roles.");
+    if (!(await canPostAnnouncements(me))) throw new HttpsError("permission-denied", "Only department heads and Admins post announcements.");
     const ref = annCol(test).doc();
     const doc = {
       ...announcement, version: 1, audienceEmps, trackers, ended: false,
@@ -4854,34 +4852,38 @@ async function openAnnTask(tx, test, id) {
   return { ref, task: snap.data() };
 }
 
-// The people I can assign this announcement to: { annId } → { people: [{ emp, name, team }] }.
+// People on the shift running now (on their team's shift, or covering, and not absent) — who tasks go to (Decision 106).
+async function shiftCrew(test) {
+  const [people, ctx, s] = await Promise.all([messagePeople(test), messageShiftContext(test), crewShift(test)]);
+  const onShift = (p) => ["on", "covering"].includes(messagingLib.standing(p, ctx));
+  return { people, ctx, onShift, crew: people.filter(onShift), shiftEndMs: s?.now?.endMs || null };
+}
+
+// The people I can assign this announcement to: { annId } → { people: [{ emp, name, team }], shiftEndMs }.
 exports.annTaskPeople = onCall(async (req) => {
   const me = await requireMember(req);
   if (!annTasksLib.canAssign(me.roles)) throw new HttpsError("permission-denied", "Line Leads and Supervisors assign announcement tasks.");
-  const people = await peopleList();
-  const myself = people.find((p) => p.id === me.employeeNumber) || { id: me.employeeNumber, roles: me.roles };
+  const { crew, shiftEndMs } = await shiftCrew(isTest(req));
   const teamName = new Map((await teams.get()).docs.map((d) => [d.id, d.get("name") || d.id]));
-  // myTeam / covers: so the screen can say why the list is empty (no team set yet, or no one else on it).
   return {
-    myTeam: myself.team ? teamName.get(myself.team) || myself.team : null,
-    covers: (myself.supervisesTeams || []).map((t) => teamName.get(t) || t),
-    people: annTasksLib.crewFor(myself, people).map((p) => ({ emp: p.id, name: p.name, team: p.team ? teamName.get(p.team) || p.team : "", loginEnabled: p.loginEnabled })),
+    shiftEndMs,
+    people: crew.filter((p) => p.id !== me.employeeNumber).sort((a, b) => a.name.localeCompare(b.name))
+      .map((p) => ({ emp: p.id, name: p.name, team: p.team ? teamName.get(p.team) || p.team : "", loginEnabled: p.loginEnabled })),
   };
 });
 
-// Assign: { annId, emps: [employee #], dueDate: "YYYY-MM-DD", note? }. Someone with an open task on it already is skipped.
+// Assign: { annId, emps: [employee #], dueMs, note? } — people on my shift. Someone with an open task on it is skipped.
 exports.assignAnnouncementTask = onCall(async (req) => {
   const me = await requireMember(req);
   if (!annTasksLib.canAssign(me.roles)) throw new HttpsError("permission-denied", "Line Leads and Supervisors assign announcement tasks.");
   const test = isTest(req);
   const { snap } = await findAnnouncement(test, String(req.data?.annId || ""));
   const a = snap.data();
+  if (!a.isTask) throw new HttpsError("failed-precondition", "This announcement isn't marked as a task.");
   if (!(a.audienceEmps || []).includes(me.employeeNumber)) throw new HttpsError("permission-denied", "This announcement wasn't sent to you.");
   if (annLib.isEnded(a, plantToday())) throw new HttpsError("failed-precondition", "This announcement has ended.");
-  const people = await peopleList();
-  const myself = people.find((p) => p.id === me.employeeNumber) || { id: me.employeeNumber, roles: me.roles };
-  const crew = annTasksLib.crewFor(myself, people);
-  const { task, error } = annTasksLib.cleanAssign(req.data, { today: plantToday(), crewIds: crew.map((p) => p.id) });
+  const { people, crew } = await shiftCrew(test);
+  const { task, error } = annTasksLib.cleanAssign(req.data, { nowMs: Date.now(), crewIds: crew.filter((p) => p.id !== me.employeeNumber).map((p) => p.id) });
   if (error) throw new HttpsError("invalid-argument", error);
   const existing = await annTaskCol(test).where("annId", "==", snap.id).get();
   const busy = new Set(existing.docs.filter((d) => ["open", "done"].includes(d.get("status"))).map((d) => d.get("emp")));
@@ -4891,16 +4893,16 @@ exports.assignAnnouncementTask = onCall(async (req) => {
   for (const emp of fresh) {
     const p = byId.get(emp);
     batch.create(annTaskCol(test).doc(), {
-      annId: snap.id, annVersion: a.version || 1, annTitle: a.title, priority: a.priority, emp, name: p.name, team: p.team || null,
-      dueDate: task.dueDate, note: task.note, assignedBy: me.employeeNumber, assignedByName: me.name, status: "open", done: null, verified: null,
-      createdAt: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}),
+      source: "announcement", annId: snap.id, annVersion: a.version || 1, annTitle: a.title, priority: a.priority, emp, name: p.name, team: p.team || null,
+      dueMs: task.dueMs, dueDate: plantDayOf(task.dueMs), note: task.note, assignedBy: me.employeeNumber, assignedByName: me.name, status: "open", done: null, verified: null,
+      returns: [], createdAt: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}),
     });
   }
   if (fresh.length) {
-    batch.create(auditLog.doc(), { type: "assigned", kind: "announcement task", recordId: snap.id, by: me.employeeNumber, at: FieldValue.serverTimestamp(), emps: fresh, dueDate: task.dueDate, test });
+    batch.create(auditLog.doc(), { type: "assigned", kind: "announcement task", recordId: snap.id, by: me.employeeNumber, at: FieldValue.serverTimestamp(), emps: fresh, dueMs: task.dueMs, test });
     await batch.commit();
     await pushTo(test ? [me.employeeNumber] : fresh, {
-      title: `${test ? "[TEST] " : ""}📋 Task from ${me.name}`, body: `${a.title} — due ${task.dueDate}. Sign it done in the app.`, url: `/?ann=${snap.id}`,
+      title: `${test ? "[TEST] " : ""}📋 Task from ${me.name}`, body: `${a.title} — due ${fmtClock(task.dueMs)}. Tap Done in the app when it's finished.`, url: `/?ann=${snap.id}`,
     });
   }
   return { assigned: fresh.length, skipped: task.emps.length - fresh.length, test };
@@ -4923,20 +4925,30 @@ exports.markAnnTaskDone = onCall(signable(async (req) => {
   return { ok: true, name: signer.name, title: out, test };
 }));
 
-// The second sign-off, once it's done: { id, signer: { emp, pin }, device }. A Line Lead or Supervisor on that team (or
-// whoever assigned it), or the Production Manager — never the person who did it.
+// Who may confirm right now (Decision 106): the assigner; when the assigner is off shift, a Line Lead or Supervisor on
+// the current shift. → (person, task) => { role, roleName } | { error }
+async function confirmCheck(test) {
+  const { people, onShift } = await shiftCrew(test);
+  const byId = new Map(people.map((p) => [p.id, p]));
+  const on = (emp) => { const p = byId.get(emp); return !!p && (onShift(p) || !p.team); };
+  return (person, task) => annTasksLib.canConfirm(person, task, { assignerOnShift: on(task.assignedBy), personOnShift: on(person.id) });
+}
+
+// Confirm, once it's done: { id, signer: { emp, pin }, device }. The assigner — or, when they're off shift, a Line Lead or
+// Supervisor on this shift. Never the person who did it.
 exports.signAnnTask = onCall(signable(async (req) => {
   const me = await requireMember(req);
   const test = isTest(req);
   const signer = await requireSignature(req.data);
   const device = annLib.cleanDevice(req.data?.device);
+  const check = await confirmCheck(test);
   const w = await db.runTransaction(async (tx) => {
     const { ref, task } = await openAnnTask(tx, test, req.data?.id);
-    if (task.status === "open") throw new HttpsError("failed-precondition", `${task.name} hasn't signed it done yet.`);
-    if (task.status === "verified") throw new HttpsError("failed-precondition", `Already signed off by ${task.verified?.name}.`);
-    const who = annTasksLib.secondSigner({ id: signer.employeeNumber, roles: signer.roles, team: signer.employee.team || null, supervisesTeams: signer.employee.supervisesTeams || [] }, task);
+    if (task.status === "open") throw new HttpsError("failed-precondition", `${task.name} hasn't tapped Done yet.`);
+    if (task.status === "verified") throw new HttpsError("failed-precondition", `Already confirmed by ${task.verified?.name}.`);
+    const who = check({ id: signer.employeeNumber, roles: signer.roles }, task);
     if (who.error) throw new HttpsError("permission-denied", who.error);
-    tx.update(ref, { status: "verified", verified: { emp: signer.employeeNumber, name: signer.name, at: new Date(), device, role: who.role, roleName: who.roleName } });
+    tx.update(ref, { status: "verified", closedAtMs: Date.now(), verified: { emp: signer.employeeNumber, name: signer.name, at: new Date(), device, role: who.role, roleName: who.roleName } });
     logSignoff(tx, test, { kind: "announcement-task-verify", refId: ref.id, version: task.annVersion, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber, role: who.role });
     return who;
   });
@@ -4953,7 +4965,7 @@ exports.removeAnnTask = onCall(async (req) => {
     const { ref, task } = await openAnnTask(tx, test, req.data?.id);
     if (!annTasksLib.canRemove(myself, task)) throw new HttpsError("permission-denied", "The person who assigned it, a lead or supervisor on that team, or the Production Manager can take it back.");
     if (task.status !== "open") throw new HttpsError("failed-precondition", "It's already signed done — it can't be taken back.");
-    tx.update(ref, { status: "removed", removedBy: me.employeeNumber, removedByName: me.name, removedAt: new Date() });
+    tx.update(ref, { status: "removed", closedAtMs: Date.now(), removedBy: me.employeeNumber, removedByName: me.name, removedAt: new Date() });
     auditRecord(tx, "removed", "announcement task", ref.id, me.employeeNumber, { test });
   });
   return { ok: true };
@@ -4967,9 +4979,60 @@ exports.annTaskSigners = onCall(async (req) => {
   if (!snap.exists) throw new HttpsError("not-found", "That task no longer exists.");
   const task = snap.data();
   const people = (await peopleList()).filter((p) => p.active && p.loginEnabled && p.id !== me.employeeNumber);
-  const list = req.data?.step === "verify" ? people.filter((p) => !annTasksLib.secondSigner(p, task).error) : people.filter((p) => p.id === task.emp);
+  const check = req.data?.step === "verify" ? await confirmCheck(test) : null;
+  const list = check ? people.filter((p) => !check(p, task).error) : people.filter((p) => p.id === task.emp);
   return { people: list.map((p) => ({ emp: p.id, name: p.name })) };
 });
+
+// Send it back (Decision 106): { id, note } — whoever may confirm it; it goes back to the person as not done.
+exports.returnAnnTask = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const { note, error } = annTasksLib.cleanReturn(req.data?.note);
+  if (error) throw new HttpsError("invalid-argument", error);
+  const check = await confirmCheck(test);
+  const task = await db.runTransaction(async (tx) => {
+    const { ref, task: t } = await openAnnTask(tx, test, req.data?.id);
+    if (t.status !== "done") throw new HttpsError("failed-precondition", t.status === "open" ? "It isn't marked done yet." : "It's already confirmed.");
+    const who = check({ id: me.employeeNumber, roles: me.roles }, t);
+    if (who.error) throw new HttpsError("permission-denied", who.error);
+    tx.update(ref, { status: "open", done: null, returns: [...(t.returns || []), { by: me.employeeNumber, byName: me.name, note, atMs: Date.now() }] });
+    auditRecord(tx, "sent back", "task", ref.id, me.employeeNumber, { note, test });
+    return t;
+  });
+  await pushTo(test ? [me.employeeNumber] : [task.emp], { title: `${test ? "[TEST] " : ""}↩ Task sent back by ${me.name}`, body: `${task.annTitle}: ${note}`, url: task.annId ? `/?ann=${task.annId}` : "/?messages=1" });
+  return { ok: true };
+});
+
+// Tasks I can confirm right now (Home): { tasks: [{ id, annTitle, name, emp, annId, rootId, dueMs, assignedByName }] }.
+exports.tasksToConfirm = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const snaps = await annTaskCol(test).where("status", "==", "done").get();
+  if (snaps.empty) return { tasks: [] };
+  const check = await confirmCheck(test);
+  const tasks = snaps.docs.map((d) => ({ id: d.id, ...d.data() })).filter((t) => !check({ id: me.employeeNumber, roles: me.roles }, t).error)
+    .map((t) => ({ id: t.id, annTitle: t.annTitle, name: t.name, emp: t.emp, annId: t.annId || null, rootId: t.rootId || null, dueMs: annTasksLib.dueMsOf(t), assignedByName: t.assignedByName }));
+  return { tasks };
+});
+
+// Every 15 minutes: an open task past its due time stays with the person (red) and its assigner is told once.
+exports.taskOverdueAlerts = onSchedule({ schedule: "every 15 minutes", timeZone: "America/Chicago", retryCount: 0 }, async () => {
+  const now = Date.now();
+  for (const test of [false, true]) {
+    const snaps = await annTaskCol(test).where("status", "==", "open").get();
+    for (const d of snaps.docs) {
+      const t = d.data();
+      if (t.overdueAlertedAtMs || annTasksLib.dueMsOf(t) > now) continue;
+      await d.ref.update({ overdueAlertedAtMs: now });
+      await pushTo([t.assignedBy], { title: `${test ? "[TEST] " : ""}⚠ Task not done: ${t.name}`, body: `${t.annTitle} was due ${fmtClock(annTasksLib.dueMsOf(t))}. It stays with ${t.name} until it's done.`, url: t.annId ? `/?ann=${t.annId}` : "/?messages=1" });
+    }
+  }
+});
+
+// Plant-time helpers for tasks.
+const plantDayOf = (ms) => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago" }).format(new Date(ms));
+const fmtClock = (ms) => new Date(ms).toLocaleString("en-US", { timeZone: "America/Chicago", weekday: "short", hour: "numeric", minute: "2-digit" });
 
 // ---------------------------------------------------------------------------
 // Crew Board step 2 — stations (Decision 69; levels and SOPs from the Shift Station Assignment sheet, Chris 10-23-2026).
@@ -5389,6 +5452,9 @@ async function runRetention(nowMs = Date.now()) {
   if (p.annSigs != null) await step("annSigs", async () => {
     add("annSigs", await retentionSweep("announcementSigs", "at", at(p.annSigs), O.announcementSigs, {}));
   });
+  if (p.tasks != null) await step("tasks", async () => {
+    add("tasks", await retentionSweep("annTasks", "closedAtMs", retentionLib.cutoffMs(nowMs, p.tasks), O.annTasks, {}));
+  });
   if (p.messages != null) await step("messages", async () => {
     add("messages", await retentionSweep("messages", "atMs", retentionLib.cutoffMs(nowMs, p.messages), O.messages, {}));
   });
@@ -5470,7 +5536,7 @@ const messagesSeen = (test) => col("messagesSeen", test);
 // The shift on now, for the delivery check: { teamOnShift, marks }.
 async function messageShiftContext(test) {
   const [s, onLines] = await Promise.all([crewShift(test), shiftLineAssignments(test)]);
-  return { teamOnShift: s?.teamId || null, marks: s?.saved?.marks || {}, lineNow: onLines.now };
+  return { teamOnShift: s?.teamId || null, marks: s?.saved?.marks || {}, lineNow: onLines.now, shiftEndMs: s?.now?.endMs || null };
 }
 
 // Active people (practice accounts only on the test site), shaped for messaging.js.
@@ -5478,13 +5544,13 @@ async function messagePeople(test) {
   return (await peopleList()).filter((p) => p.active && (test || !deptLib.isPracticeAccount(p.name)));
 }
 
-// Who starts messages: Line Lead and above, or any role an Admin turned on in Admin → Roles (Decision 103).
+// Who starts messages (Decision 106): Line Leads, Supervisors, department heads, the Production Manager, Admins.
 async function canStartMessages(me) {
-  const snap = await roles.get();
-  return messagingLib.canStartWith(snap.docs.map((d) => ({ id: d.id, ...d.data() })), me.roles);
+  const snap = await employees.doc(me.employeeNumber).get();
+  return messagingLib.canStart({ roles: me.roles, deptHead: snap.get("deptHead") === true });
 }
 async function requireMessageStarter(me) {
-  if (!(await canStartMessages(me))) throw new HttpsError("permission-denied", "Your role doesn't start messages. You can reply to messages you get.");
+  if (!(await canStartMessages(me))) throw new HttpsError("permission-denied", "Only Line Leads, Supervisors, department heads, the Production Manager, and Admins start messages. You can answer with Got it, Done, or Need help.");
 }
 
 // What the target is called ("Team A", "Line 2", "Supervisors", "Everyone", a person's name).
@@ -5503,7 +5569,7 @@ exports.messageStart = onCall(async (req) => {
   const test = isTest(req);
   const [people, teamSnaps, lineSnaps, roleSnaps, mine] = await Promise.all([messagePeople(test), teams.get(), lines.get(), roles.get(), employees.doc(me.employeeNumber).get()]);
   const teamName = new Map(teamSnaps.docs.map((d) => [d.id, d.get("name") || d.id]));
-  const start = messagingLib.canStartWith(roleSnaps.docs.map((d) => ({ id: d.id, ...d.data() })), me.roles);
+  const start = messagingLib.canStart({ roles: me.roles, deptHead: mine.get("deptHead") === true });
   return {
     test, canStart: start, hr: me.hr, noticeSeen: !!mine.get("messagingNoticeAt"),
     people: (start || me.hr) ? people.filter((p) => p.id !== me.employeeNumber).map((p) => ({ emp: p.id, name: p.name, team: p.team ? teamName.get(p.team) || "" : "" })).sort((a, b) => a.name.localeCompare(b.name)) : [],
@@ -5524,7 +5590,12 @@ exports.messagePreview = onCall(async (req) => {
   const [people, ctx] = await Promise.all([messagePeople(test), messageShiftContext(test)]);
   const d = messagingLib.deliver(people, to, me.employeeNumber, ctx);
   const label = to.type === "line" ? await messageTargetLabel(to, people) : "";
-  return { total: d.total, reach: d.recipients.length, why: d.why, name: to.type === "person" ? people.find((p) => p.id === to.id)?.name || "" : label, noOneOnLine: to.type === "line" && !d.total };
+  const nameOf = new Map(people.map((p) => [p.id, p.name]));
+  return {
+    total: d.total, reach: d.recipients.length, why: d.why, name: to.type === "person" ? people.find((p) => p.id === to.id)?.name || "" : label, noOneOnLine: to.type === "line" && !d.total,
+    // For "This is a task" (Decision 106): who it reaches now, and when this shift ends (the default due time).
+    reachList: d.recipients.map((e) => ({ emp: e, name: nameOf.get(e) || `#${e}` })), shiftEndMs: ctx.shiftEndMs || null,
+  };
 });
 
 // Line Lead and above: { to, text } → { id, delivered, total, why }
@@ -5542,24 +5613,46 @@ exports.messageSend = onCall(async (req) => {
   const d = messagingLib.deliver(people, to, me.employeeNumber, ctx);
   if (to.type === "line" && !d.total) throw new HttpsError("failed-precondition", `No one is assigned to ${label} yet this shift.`);
   if (!d.total) throw new HttpsError("failed-precondition", "No one is in that group yet.");
+  const nowMs = Date.now();
+  const tk = messagingLib.cleanMessageTask(req.data?.task || null, d.recipients, nowMs);
+  if (tk.error) throw new HttpsError("invalid-argument", tk.error);
   const ref = col("messages", test).doc();
-  await ref.set({
+  const batch = db.batch();
+  batch.set(ref, {
     rootId: ref.id, conv: "", kind: "new", fromEmp: me.employeeNumber, fromName: me.name, fromRole: messagingLib.startRole(me.roles),
-    to: { ...to, label }, text: t.text, atMs: Date.now(), at: FieldValue.serverTimestamp(),
-    recipients: d.recipients, total: d.total, notDelivered: d.notDelivered, why: d.why, ...(test ? { test: true } : {}),
+    to: { ...to, label }, text: t.text, atMs: nowMs, at: FieldValue.serverTimestamp(), shiftEndMs: ctx.shiftEndMs || nowMs + 12 * 3600000,
+    recipients: d.recipients, total: d.total, notDelivered: d.notDelivered, why: d.why, acks: {}, task: tk.task, ...(test ? { test: true } : {}),
   });
-  if (d.recipients.length) {
-    await pushTo(test ? [me.employeeNumber] : d.recipients, { title: `${test ? "[TEST] " : ""}💬 ${me.name}`, body: t.text.slice(0, 140), url: "/?messages=1" });
+  // A task on a message (Decision 106): one task per person, in the same task list as announcement tasks.
+  const byId = new Map(people.map((p) => [p.id, p]));
+  for (const emp of tk.task?.emps || []) {
+    batch.create(annTaskCol(test).doc(), {
+      source: "message", rootId: ref.id, annId: null, annTitle: t.text.slice(0, 80), emp, name: byId.get(emp)?.name || `#${emp}`, team: byId.get(emp)?.team || null,
+      dueMs: tk.task.dueMs, dueDate: plantDayOf(tk.task.dueMs), note: "", assignedBy: me.employeeNumber, assignedByName: me.name, status: "open", done: null, verified: null,
+      returns: [], createdAt: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}),
+    });
   }
-  return { id: ref.id, delivered: d.recipients.length, total: d.total, why: d.why };
+  await batch.commit();
+  if (d.recipients.length) {
+    const tasked = new Set(tk.task?.emps || []);
+    const plain = d.recipients.filter((e) => !tasked.has(e));
+    if (plain.length) await pushTo(test ? [me.employeeNumber] : plain, { title: `${test ? "[TEST] " : ""}💬 ${me.name}`, body: t.text.slice(0, 140), url: "/?messages=1" });
+    if (tasked.size) await pushTo(test ? [me.employeeNumber] : [...tasked], { title: `${test ? "[TEST] " : ""}📋 Task from ${me.name}`, body: `${t.text.slice(0, 120)} — due ${fmtClock(tk.task.dueMs)}`, url: "/?messages=1" });
+  }
+  return { id: ref.id, delivered: d.recipients.length, total: d.total, why: d.why, tasks: tk.task?.emps.length || 0 };
 });
 
 // Reply in a conversation: { rootId, participant (the starter names who), text } → { id, delivered, why }.
 // The starter replies to one participant; anyone who received the message replies to its starter only.
+// Quick replies (Decision 106): { rootId, quick: "got" | "done" | "help" } — anyone who got the message; marks it
+// acknowledged for them. Typed replies ({ text }) only for the people who start messages.
 exports.messageReply = onCall(async (req) => {
   const me = await requireMember(req);
   const test = isTest(req);
-  const t = messagingLib.cleanText(req.data?.text);
+  const quick = req.data?.quick ? messagingLib.cleanQuick(req.data.quick) : null;
+  if (quick?.error) throw new HttpsError("invalid-argument", quick.error);
+  if (!quick && !(await canStartMessages(me))) throw new HttpsError("permission-denied", "Reply with Got it, Done, or Need help – see me.");
+  const t = quick ? { text: quick.text } : messagingLib.cleanText(req.data?.text);
   if (t.error) throw new HttpsError("invalid-argument", t.error);
   const rootId = String(req.data?.rootId || "");
   if (!/^[A-Za-z0-9]{1,40}$/.test(rootId)) throw new HttpsError("invalid-argument", "Pick a message.");
@@ -5584,10 +5677,17 @@ exports.messageReply = onCall(async (req) => {
   await ref.set({
     rootId, conv: messagingLib.conv(rootId, participant), kind: "reply", fromEmp: me.employeeNumber, fromName: me.name, fromRole: messagingLib.startRole(me.roles),
     to: { type: "person", id: toEmp, label: person?.name || r.fromName }, text: t.text, atMs: Date.now(), at: FieldValue.serverTimestamp(),
-    recipients: d.recipients, total: 1, notDelivered: d.recipients.length ? 0 : 1, why: d.why, ...(test ? { test: true } : {}),
+    recipients: d.recipients, total: 1, notDelivered: d.recipients.length ? 0 : 1, why: d.why, quick: quick?.kind || null, ...(test ? { test: true } : {}),
   });
+  // Someone who got the message answered: it's acknowledged for them (clears from their screen — Decision 106).
+  if (participant === me.employeeNumber && r.fromEmp !== me.employeeNumber) {
+    await root.ref.update({ [`acks.${me.employeeNumber}`]: { kind: quick?.kind || "reply", atMs: Date.now() } });
+  }
   if (d.recipients.length) {
-    await pushTo(test ? [me.employeeNumber] : d.recipients, { title: `${test ? "[TEST] " : ""}💬 ${me.name}`, body: t.text.slice(0, 140), url: "/?messages=1" });
+    const help = quick?.kind === "help";
+    await pushTo(test ? [me.employeeNumber] : d.recipients, {
+      title: `${test ? "[TEST] " : ""}${help ? "🆘 Need help – see me: " : "💬 "}${me.name}`, body: help ? r.text.slice(0, 120) : t.text.slice(0, 140), url: "/?messages=1", ...(help ? { urgent: true } : {}),
+    });
   }
   return { id: ref.id, delivered: d.recipients.length, why: d.why };
 });

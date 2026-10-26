@@ -5,8 +5,6 @@
 
 import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, picker } from "./ui.js";
 import { data, onDataChange, lineName } from "./data.js";
-import { rolePosts } from "./announcements.js";
-import { roleStartsMessages } from "./messages.js";
 import { roleEditsMachines } from "./machines.js";
 import { rolePostsTrucks } from "./trucks.js";
 import { callAdminSaveLine, callAdminSaveMachine, callAdminSaveRole, callAdminSaveTeam, callAdminSaveMachineType, callAdminListEmployees } from "./firebase.js";
@@ -604,14 +602,10 @@ export function openRoles(container, { onExit }) {
       title: "Roles", noun: "role", a: "a role", plural: "roles", nameLabel: "Role name (e.g. Quality)",
       hint: "A person's roles decide what shows on their home screen and what they can do.",
       items: () => data.roles, save: callAdminSaveRole, rename: true,
-      meta: (r) => [rolePosts(r) ? "📣 Can post announcements" : null, roleStartsMessages(r) ? "💬 Can start messages" : null, roleEditsMachines(r) ? "⚙ Can edit machines" : null, rolePostsTrucks(r) ? "🚚 Can post trucks" : null].filter(Boolean).join(" · ") || null,
-      // Who may post announcements (Decision 58). Starts on for Admin, Production Manager, Supervisor, Training & Safety, Office.
+      meta: (r) => [roleEditsMachines(r) ? "⚙ Can edit machines" : null, rolePostsTrucks(r) ? "🚚 Can post trucks" : null].filter(Boolean).join(" · ") || null,
+      // Who posts announcements and starts messages is a fixed list now (Decision 106: department heads and Admins post;
+      // Line Leads, Supervisors, department heads, Production Manager, Admins start messages) — no per-role switch.
       members: (r, { kit, show }) => {
-        const on = rolePosts(r);
-        const flip = async () => {
-          const ok = await kit.act(() => callAdminSaveRole({ id: r.id, name: r.name, canPostAnnouncements: !on }), flip);
-          if (ok) show("item", on ? `${r.name}: posting announcements turned off` : `${r.name} can now post announcements`, "ok");
-        };
         // Which forms people with this role may edit in Forms (Decision 60). Admins edit every form.
         const editing = r.editForms || [];
         const toggleForm = async (formId) => {
@@ -626,12 +620,6 @@ export function openRoles(container, { onExit }) {
           const ok = await kit.act(() => callAdminSaveRole({ id: r.id, name: r.name, postTrucks: !postsTrucks }), flipTrucks);
           if (ok) show("item", postsTrucks ? `${r.name}: posting trucks turned off` : `${r.name} can now post trucks`, "ok");
         };
-        // Who may start messages (Decision 103). Starts on for Line Lead, Supervisor, Production Manager, Admin.
-        const starts = roleStartsMessages(r);
-        const flipMessages = async () => {
-          const ok = await kit.act(() => callAdminSaveRole({ id: r.id, name: r.name, startMessages: !starts }), flipMessages);
-          if (ok) show("item", starts ? `${r.name}: starting messages turned off` : `${r.name} can now start messages`, "ok");
-        };
         // Who may add and edit machine parts & specs (Decision 51). Starts on for Maintenance and Admin.
         const edits = roleEditsMachines(r);
         const flipMachines = async () => {
@@ -639,14 +627,7 @@ export function openRoles(container, { onExit }) {
           if (ok) show("item", edits ? `${r.name}: editing machines turned off` : `${r.name} can now edit machines`, "ok");
         };
         return [
-          el("div", { class: "card" },
-            el("strong", {}, "📣 Announcements"),
-            el("p", { class: "card-note" }, on ? "People with this role can post announcements." : "People with this role can't post announcements."),
-            el("button", { class: on ? "btn secondary" : "btn", type: "button", disabled: kit.busy, onclick: flip }, on ? "Turn off posting" : "✔ Allow posting")),
-          el("div", { class: "card" },
-            el("strong", {}, "💬 Messages"),
-            el("p", { class: "card-note" }, starts ? "People with this role can start messages — to a person, a team, a line, a role, or everyone." : "People with this role can only reply to messages they get."),
-            el("button", { class: starts ? "btn secondary" : "btn", type: "button", disabled: kit.busy, onclick: flipMessages }, starts ? "Turn off starting messages" : "✔ Allow starting messages")),
+          el("p", { class: "card-note" }, "📣 Announcements: department heads and Admins post them. 💬 Messages: Line Leads, Supervisors, department heads, the Production Manager, and Admins start them. (Department heads are set in Admin → People.)"),
           el("div", { class: "card" },
             el("strong", {}, "⚙ Machines"),
             el("p", { class: "card-note" }, edits ? "People with this role can add and edit machine parts, specs, photos, and notes." : "People with this role can't edit machines. (Maintenance, Production Manager, and Admin can always view them.)"),

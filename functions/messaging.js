@@ -1,7 +1,12 @@
 // In-app messaging (Chris, 10-23-2026, Decision 102; launch list 5). No database code here, so it can be tested alone.
 //
-// Who starts: Line Lead and above (lead, supervisor, plant-manager, admin) — one-on-one, or to a team, a line, a role,
-// or everyone. Everyone replies to what they received; a reply to a group message goes only to its sender.
+// Who starts (Decision 106 — a list, not role rank): Line Leads, Supervisors, department heads (⭐ head of a department),
+// the Production Manager, Admins — one-on-one, or to a team, a line, a role, or everyone. They can type replies;
+// everyone else replies only with quick buttons ("Got it" / "Done" / "Need help – see me"). A reply to a group message
+// goes only to its sender. "Need help" alerts the sender right away (if they're on shift).
+// Clearing (Decision 106): a message leaves a person's screen once they tap a quick reply (and, if it's a task for them,
+// once the task is confirmed); unacknowledged, it leaves at the end of the shift it came in — the sender sees
+// "Not acknowledged" for that person. Cleared messages are in History (90 days).
 // Who receives: only people on their designated shift and not marked absent on Who's here today, decided when the
 // message is sent — anything else is never delivered (not held, not queued). People with no team are always on shift.
 // Covering: someone marked Here on a shift that isn't their team's is covering — they get team, line, and role
@@ -12,7 +17,9 @@
 //   messages/{auto}   rootId (own id for a new message), conv ("{rootId}__{participant}" for replies; "" for a root),
 //                     kind "new" | "reply", fromEmp, fromName, fromRole, to { type, id, label }, text, atMs,
 //                     recipients [emp] (who it was delivered to), total (how many it was for), notDelivered (count),
-//                     why ("off shift" | "absent" — one-on-one only), test
+//                     why ("off shift" | "absent" — one-on-one only), shiftEndMs (end of the shift it was sent in),
+//                     acks { emp: { kind: "got" | "done" | "help" | "reply", atMs } }, task { emps, dueMs } | null, quick
+//                     (on a quick reply: its kind), test
 //   Each conversation is between the starter and one participant: a one-on-one's person, or each group member.
 //   messagesSeen/{emp}   seen { conv: atMs } — what that person has read (own only)
 //   messageReviews/{auto}  HR access opened someone's messages: by, byName, emp, empName, reason, atMs
@@ -24,10 +31,35 @@ const MAX_TEXT = 2000;
 const MAINT_WORDS = /\b(down|leak|leaking|leaks|broken|broke|jam|jammed|jams|not working)\b/i;
 const M_NUMBER = /\bM-?\d{3}\b/i;
 
-const canStart = (roles = []) => roles.some((r) => START_ROLES.includes(r));
-// Admin → Roles can turn starting messages on or off per role (Decision 103): role.startMessages; unset = the default.
-const roleStarts = (role) => (typeof role.startMessages === "boolean" ? role.startMessages : START_ROLES.includes(role.id));
-const canStartWith = (roleDocs, myRoles = []) => (roleDocs || []).some((r) => r.active !== false && myRoles.includes(r.id) && roleStarts(r));
+// person: { roles, deptHead } — the people on the list start messages and type replies.
+const canStart = (person) => (person?.roles || []).some((r) => START_ROLES.includes(r)) || person?.deptHead === true;
+const QUICK = { got: "Got it", done: "Done", help: "Need help – see me" };
+const cleanQuick = (v) => (Object.prototype.hasOwnProperty.call(QUICK, v) ? { kind: v, text: QUICK[v] } : { error: "Pick Got it, Done, or Need help." });
+
+// A task on a new message: { emps (who it's for — only people it reached), dueMs } → { task } or { error }.
+function cleanMessageTask(raw, recipients, nowMs) {
+  if (!raw) return { task: null };
+  const emps = Array.isArray(raw.emps) ? [...new Set(raw.emps.map(String))] : [];
+  if (!emps.length) return { error: "Pick who does the task." };
+  if (emps.length > 50) return { error: "Up to 50 people on one task." };
+  if (emps.some((e) => !recipients.includes(e))) return { error: "A task can go only to people the message reaches now (on shift, not absent)." };
+  const dueMs = Number(raw.dueMs);
+  if (!Number.isFinite(dueMs) || dueMs < nowMs - 60000) return { error: "Pick a due time that hasn't passed." };
+  if (dueMs > nowMs + 31 * 86400000) return { error: "Pick a due time within a month." };
+  return { task: { emps, dueMs: Math.round(dueMs) } };
+}
+
+// Where a message stands for one person who got it. → "got" | "done" | "help" | "reply" | "not-acknowledged" | "waiting"
+function ackStatus(root, emp, nowMs) {
+  const a = root.acks?.[emp];
+  if (a) return a.kind;
+  return nowMs >= (root.shiftEndMs || Infinity) ? "not-acknowledged" : "waiting";
+}
+// Off this person's screen (into History)? taskConfirmed: their task on it is confirmed (or there is none).
+function clearedFor(root, emp, nowMs, taskConfirmed = true) {
+  if (nowMs >= (root.shiftEndMs || Infinity)) return true;
+  return !!root.acks?.[emp] && taskConfirmed;
+}
 const ROLE_LABELS = [["admin", "Admin"], ["plant-manager", "Production Manager"], ["supervisor", "Supervisor"], ["lead", "Line Lead"]];
 const startRole = (roles = []) => ROLE_LABELS.find(([r]) => roles.includes(r))?.[1] || "";
 
@@ -96,6 +128,6 @@ function cleanReason(v) {
 }
 
 module.exports = {
-  START_ROLES, TARGETS, MAX_TEXT, canStart, roleStarts, canStartWith, startRole, cleanText, cleanTo, standing, receives, audience, deliver, deliverOne,
+  START_ROLES, TARGETS, MAX_TEXT, QUICK, canStart, cleanQuick, cleanMessageTask, ackStatus, clearedFor, startRole, cleanText, cleanTo, standing, receives, audience, deliver, deliverOne,
   maintenanceHint, machineNumber, conv, cleanReason,
 };

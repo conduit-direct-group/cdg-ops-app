@@ -1672,3 +1672,17 @@ th.col-cost { text-align: right; }
 .msg-review { display: flex; flex-direction: column; gap: var(--s2); margin: var(--s2) 0; }
 .msg-review-row { display: flex; flex-direction: column; gap: 2px; padding: var(--s2) 0; border-bottom: 1px solid var(--line); }
 .msg-bar { margin-top: var(--s2); }
+
+/* Messages: tabs, quick replies, who got it, tasks (Decision 106) */
+.msg-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s2); margin: var(--s3) 0 0; max-width: 480px; }
+.msg-quick { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--s2); margin: var(--s3) 0; }
+.msg-quick .card-note { grid-column: 1 / -1; margin: 0; }
+.msg-quick .help-btn { border-color: var(--orange); }
+.msg-ack { margin: 0 0 var(--s2); color: var(--muted); font-size: var(--text-small); text-align: right; }
+.msg-people { display: flex; flex-direction: column; gap: var(--s1); margin: 0 0 var(--s3); }
+.msg-person { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--s1) var(--s3); padding: var(--s2) var(--s3); border-radius: var(--radius); background: var(--surface-1); border: 1px solid var(--line); }
+.msg-person.warn .person-meta { color: var(--white); font-weight: bold; }
+.msg-person.help { border-color: var(--orange); }
+.msg-person .task-row { flex-basis: 100%; }
+.msg-task { margin: var(--s2) 0; }
+.msg-taskbox { display: flex; flex-direction: column; gap: var(--s1); padding: var(--s2) var(--s3); border-left: 3px solid var(--orange); background: var(--surface-2); border-radius: var(--radius); }

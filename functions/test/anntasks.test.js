@@ -14,12 +14,35 @@ test("a lead assigns to people on their team; a supervisor also to teams they su
   assert.strictEqual(t.canAssign(["operator"]), false);
 });
 
-test("assigning needs people from the list and a due date that isn't past", () => {
-  const ctx = { today: "2026-10-23", crewIds: ["2", "4"] };
-  assert.ok(t.cleanAssign({ emps: [], dueDate: "2026-10-25" }, ctx).error);
-  assert.ok(t.cleanAssign({ emps: ["3"], dueDate: "2026-10-25" }, ctx).error);
-  assert.ok(t.cleanAssign({ emps: ["2"], dueDate: "2026-10-22" }, ctx).error);
-  assert.deepStrictEqual(t.cleanAssign({ emps: ["2", "2", "4"], dueDate: "2026-10-23", note: " Do it " }, ctx), { task: { emps: ["2", "4"], dueDate: "2026-10-23", note: "Do it" } });
+test("assigning needs people on the shift and a due time that isn't past", () => {
+  const now = Date.UTC(2026, 9, 26, 15);
+  const ctx = { nowMs: now, crewIds: ["2", "4"] };
+  assert.ok(t.cleanAssign({ emps: [], dueMs: now + 3600000 }, ctx).error);
+  assert.match(t.cleanAssign({ emps: ["3"], dueMs: now + 3600000 }, ctx).error, /on your shift/);
+  assert.match(t.cleanAssign({ emps: ["2"], dueMs: now - 3600000 }, ctx).error, /passed/);
+  assert.match(t.cleanAssign({ emps: ["2"], dueMs: now + 40 * 86400000 }, ctx).error, /month/);
+  assert.deepStrictEqual(t.cleanAssign({ emps: ["2", "2", "4"], dueMs: now + 3600000, note: " Do it " }, ctx), { task: { emps: ["2", "4"], dueMs: now + 3600000, note: "Do it" } });
+  assert.strictEqual(t.dueMsOf({ dueMs: 5 }), 5);
+  assert.ok(t.dueMsOf({ dueDate: "2026-10-26" }) > Date.UTC(2026, 9, 27, 4)); // older tasks: end of that day
+});
+
+test("confirming (Decision 106): the assigner; when they're off shift, a Line Lead or Supervisor on shift — never the doer", () => {
+  const task = { emp: "2", assignedBy: "1", assignedByName: "Lead One" };
+  const lead1 = { id: "1", roles: ["lead"] };
+  const sup = { id: "5", roles: ["supervisor"] };
+  const lead9 = { id: "9", roles: ["lead"] };
+  const pm = { id: "7", roles: ["plant-manager"] };
+  const doer = { id: "2", roles: ["lead"] };
+  assert.ok(!t.canConfirm(lead1, task, { assignerOnShift: true, personOnShift: true }).error);
+  assert.ok(!t.canConfirm(lead1, task, { assignerOnShift: false, personOnShift: false }).error); // the assigner always can
+  assert.match(t.canConfirm(sup, task, { assignerOnShift: true, personOnShift: true }).error, /Lead One confirms/);
+  assert.strictEqual(t.canConfirm(sup, task, { assignerOnShift: false, personOnShift: true }).role, "supervisor");
+  assert.strictEqual(t.canConfirm(lead9, task, { assignerOnShift: false, personOnShift: true }).role, "lead");
+  assert.ok(t.canConfirm(lead9, task, { assignerOnShift: false, personOnShift: false }).error); // not on shift
+  assert.ok(t.canConfirm(pm, task, { assignerOnShift: false, personOnShift: true }).error); // not a lead / supervisor
+  assert.match(t.canConfirm(doer, { ...task, assignedBy: "2" }, { assignerOnShift: true, personOnShift: true }).error, /did it/);
+  assert.match(t.cleanReturn(" ").error, /note/);
+  assert.deepStrictEqual(t.cleanReturn("  Missed the  north bay "), { note: "Missed the north bay" });
 });
 
 test("second sign-off: a lead or supervisor on that team, or the Production Manager — never the person who did it", () => {
