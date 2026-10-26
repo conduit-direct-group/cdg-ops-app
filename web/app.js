@@ -9,7 +9,8 @@
 // On a line tablet, 5 minutes with no taps signs the person out (and clears any half-typed
 // number or PIN), so the next person never acts as the last one.
 
-import { auth, callPinLogin, callChangePin, TEST_MODE } from "./firebase.js";
+import { auth, callPinLogin, callChangePin, TEST_MODE, db} from "./firebase.js";
+import { getDocs, collection } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 import { signInWithCustomToken, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
 import { el, friendlyError, spinner, emptyState, toast, watchConnection, deviceFold } from "./ui.js";
 import { openAdmin } from "./admin.js";
@@ -279,6 +280,8 @@ function renderHome() {
       map: () => openMap(),
       need: () => openNeed(),
       trucks: () => openTrucksScreen(),
+      fixes: () => openFixes(),
+      flagReel: () => openReelScreen(), // QC hold, with Flag a reel at the top and reel decisions below
       qc: () => openReelScreen(),
       machines: () => openMachineScreen(),
       report: () => openReport(),
@@ -354,7 +357,7 @@ function renderNav() {
     // something?, safety reports, Maintenance Request and each role's own tool (Trucks, QC hold, Machines) are quick
     // buttons on Home; announcements to read sit at the top of Home, the full list is in More.
     item("home", "🏠", "Home", () => go("home"), unsigned),
-    usesMachines(shownRoles()) ? item("checklists", "📋", "Checklists", () => openChecklistsHub()) : null,
+    item("checklists", "📋", "Checklists & documents", () => openChecklistsHub()), // everyone (Decision 115)
     item("more", "☰", "More", openMore),
   ].filter(Boolean));
 }
@@ -369,9 +372,12 @@ function openMore() {
   const onKey = (e) => { if (e.key === "Escape") close(); };
   const act = (fn) => () => { close(); fn(); };
   const row = (icon, label, fn, cls = "") => el("button", { class: `more-item ${cls}`, type: "button", onclick: act(fn) }, el("span", { "aria-hidden": "true" }, icon), el("span", {}, label));
+  const group = (title, list) => (list.filter(Boolean).length ? [el("p", { class: "more-group" }, title), ...list.filter(Boolean)] : []);
+  // More (Decision 115): only role tools that aren't daily and aren't on Home, History, and Account. Messages is a line on
+  // Home, Who to Call is in the top bar, Reference documents and SOPs are in Checklists & documents.
+  const safetyAll = roles.some((r) => ["training-safety", "plant-manager", "admin"].includes(r)) || (!viewing && m.hr);
   const items = [
-    // Messages: everyone (approved navigation table, Decision 108 item 6).
-    row("💬", (() => { const n = unreadMessages(m.emp); return n ? `Messages (${n} new)` : "Messages"; })(), () => openMessagesScreen()),
+    ...group("Your tools", [
     // Per role (Admin → Roles → More menu; starts as the approved table — nav.js). QC hold is Quality's Home button.
     navShows("crew", roles) ? row("👥", "Who's here today", () => openCrewScreen()) : null,
     navShows("handoff", roles) ? row("📝", "Shift handoff", () => openHandoffScreen()) : null,
@@ -382,20 +388,19 @@ function openMore() {
     navShows("trucksView", roles) ? row("🚚", "Trucks (look only)", () => openTrucksScreen()) : null,
     navShows("qcList", roles) && !roles.includes("quality") ? row("🏷", "QC hold — flagged reels", () => openReelScreen()) : null,
     navShows("downtime", roles) ? row("⏱", "Downtime & scrap shift report", () => openDowntimeScreen()) : null,
-    // Home's quick button starts a new report; this is the full list (open reports, My reports, by month).
-    row("🦺", "All safety reports", () => openIncidentScreen()),
-    row("📣", "All announcements (and past ones)", () => openAnn()),
+    // Everyone else sees their own reports' status from Home's Near miss / incident button (Decision 115).
+    safetyAll ? row("🦺", "All safety reports", () => openIncidentScreen()) : null,
     canWriteUps(roles, viewing ? false : m.hr) ? row("🧾", "Write-ups", () => openWriteupsScreen()) : null,
-    row("👤", "My profile — who I report to, org chart", () => openProfileScreen()),
-    row("📞", "Who to Call", () => openCallScreen()),
-    row("📄", "Reference documents", () => openDocsScreen()),
     (viewing ? editableForms(roles).length : !m.admin && editableForms(m.roles).length) ? row("📝", "Edit forms", () => openFormsScreen()) : null,
-    m.admin && !viewing ? row("⚙", "Admin", () => go("adminMenu")) : null,
-    pushNow === "off" ? row("🔔", "Turn on notifications", turnOnNotifications) : null,
-    !isInstalled() && (installPrompt || isIPhoneOrIPad())
-      ? row("📲", "Add CDG Ops to your home screen", installPrompt ? install : () => toast("In Safari, tap Share (the square with an arrow), then “Add to Home Screen.”")) : null,
-    row("↪", "Sign out", signOutNow, "danger"),
-  ].filter(Boolean);
+    m.admin && !viewing ? row("⚙", "Admin", () => go("adminMenu")) : null]),
+    ...group("History", [row("📣", "Past announcements", () => openAnn())]),
+    ...group("Account", [
+      row("👤", "My profile — who I report to, org chart", () => openProfileScreen()),
+      pushNow === "off" ? row("🔔", "Turn on notifications", turnOnNotifications) : null,
+      !isInstalled() && (installPrompt || isIPhoneOrIPad())
+        ? row("📲", "Add CDG Ops to your home screen", installPrompt ? install : () => toast("In Safari, tap Share (the square with an arrow), then “Add to Home Screen.”")) : null,
+      row("↪", "Sign out", signOutNow, "danger")]),
+  ];
   const backdrop = el("div", { class: "sheet-backdrop", onclick: (e) => { if (e.target === backdrop) close(); } },
     el("div", { class: "sheet more-sheet", role: "dialog", "aria-modal": "true", "aria-label": "More" },
       el("h2", {}, "More"),
@@ -433,6 +438,7 @@ function openChecklistsHub() {
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   setNav("checklists");
   const draw = () => {
+    const machines = usesMachines(shownRoles());
     const units = checklistUnits();
     const byLine = new Map();
     for (const u of units) {
@@ -443,17 +449,22 @@ function openChecklistsHub() {
     const loading = !data.checklistTemplates || !data.checklistUnits || !data.lines;
     screen.replaceChildren(...[
       el("button", { class: "link-btn", type: "button", onclick: () => go("home") }, "← Home"),
-      el("h1", {}, "📋 Checklists"),
-      el("div", { class: "hub-row" },
+      el("h1", {}, "📋 Checklists & documents"),
+      // Checklists for the roles that work with the machines; documents and SOPs (read-only) for everyone (Decision 115).
+      machines ? el("div", { class: "hub-row" },
         (data.formTemplates || []).some((t) => t.id === "line-check" && t.active !== false)
           ? el("button", { class: "btn big secondary", type: "button", onclick: () => openLineCheckScreen() }, "📈 Line Check Log") : null,
         stationForms().length ? el("button", { class: "btn big secondary", type: "button", onclick: () => openStationScreen() }, "📋 Station checklists") : null,
-        el("button", { class: "btn big secondary", type: "button", onclick: () => openReelScreen("flag", openChecklistsHub, "Checklists") }, "🏷 Flag a reel"),
         usesDowntime(shownRoles()) ? el("button", { class: "btn big secondary", type: "button", onclick: () => openDowntimeScreen(openChecklistsHub, "Checklists") }, "⏱ Downtime & scrap") : null,
-        shownRoles().some((r) => SILO_UPDATE_ROLES.includes(r)) ? el("button", { class: "btn big secondary", type: "button", onclick: () => openSiloScreen(openChecklistsHub, "Checklists") }, "🛢 Update silo levels") : null),
+        runsShopList(shownRoles()) ? el("button", { class: "btn big secondary", type: "button", onclick: () => openShopScreen() }, "🧹 Keep the Shop Clean") : null) : null,
+      el("div", { class: "hub-row" },
+        shownRoles().some((r) => SILO_UPDATE_ROLES.includes(r) || r === "shipping") ? el("button", { class: "btn big secondary", type: "button", onclick: () => openSiloScreen(openChecklistsHub, "Checklists") }, "🛢 Silo levels") : null,
+        el("button", { class: "btn big secondary", type: "button", onclick: () => openDocsScreen(openChecklistsHub, "Checklists & documents") }, "📄 Reference documents"),
+        el("button", { class: "btn big secondary", type: "button", onclick: () => openSopList() }, "📖 SOPs")),
       // One fold-away tab (Decision 108), closed until opened (remembered on this device). The header counts; anything
       // in its last hour or overdue turns it red, so nothing overdue hides inside.
-      loading ? [el("h2", {}, "Machine checklists"), spinner()]
+      !machines ? null
+        : loading ? [el("h2", {}, "Machine checklists"), spinner()]
         : !units.length ? [el("h2", {}, "Machine checklists"), emptyState("No machine checklists yet", "An admin sets them up in Admin → Checklists.")]
         : machineFold(units, [...byLine.entries()].map(([lineId, list]) =>
         el("section", { class: "card hub-line" },
@@ -606,6 +617,29 @@ function openCrewScreen(back = () => go("home"), backLabel = "Home") {
   closeModule = openCrew(screen, { onExit: back, backLabel, admin: isAdmin(), onSop: (key) => openSop(key, () => openCrewScreen(back, backLabel)) });
 }
 
+// Every SOP in the Shop Map documents, read-only (Checklists & documents, Decision 115). Tap one to open it.
+function openSopList() {
+  if (closeModule) closeModule();
+  setNav("checklists");
+  Object.assign(state, { step: "admin", message: "", messageKind: "" });
+  let sops = null;
+  let failed = false;
+  const draw = () => screen.replaceChildren(
+    el("button", { class: "link-btn", type: "button", onclick: openChecklistsHub }, "← Checklists & documents"),
+    el("h1", {}, "📖 SOPs"),
+    el("p", { class: "hint" }, "The standard operating procedures from the Shop Map. Tap one to read it."),
+    failed ? emptyState("Couldn't load the SOPs", "Check the connection and open this page again.")
+      : !sops ? spinner("Loading SOPs…")
+      : !sops.length ? emptyState("No SOPs yet", "They come with the Shop Map file.")
+      : el("div", { class: "person-list" }, sops.map(([key, s]) => el("button", { class: "person-row", type: "button", onclick: () => openSop(key, openSopList) },
+          el("span", { class: "person-name" }, s.docTitle || key), el("span", { class: "person-meta" }, s.docNo || "")))));
+  draw();
+  getDocs(collection(db, "sops")).then(
+    (snap) => { sops = snap.docs.map((d) => [d.id, d.data()]).sort((a, b) => String(a[1].docNo || a[0]).localeCompare(String(b[1].docNo || b[0]))); if (state.step === "admin") draw(); },
+    () => { failed = true; draw(); });
+  closeModule = null;
+}
+
 // One SOP from the Shop Map documents (a Crew Board station's SOP chip); closing it goes back.
 function openSop(key, back) {
   if (closeModule) closeModule();
@@ -648,7 +682,7 @@ function openMachineScreen(machineId = null, back = () => go("home"), backLabel 
 // Reference documents (from the Shop Map, or the Training page's link: ?docs=1).
 function openDocsScreen(back = () => go("home"), backLabel = "Home") {
   if (closeModule) closeModule();
-  setNav("more");
+  setNav("checklists"); // Reference documents live in Checklists & documents (Decision 115)
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openRefDocs(screen, { me: me(), onExit: back, backLabel });
 }

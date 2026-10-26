@@ -297,7 +297,7 @@ function needsItems(ctx, roles) {
   items.push(...crewItems(roles, go.crew, () => redraw?.()));
   items.push(...taskItems({ emp: ctx.emp, name: data.myself?.name || "", roles }, { announcement: go.announcement, message: go.messageRoot }, () => redraw?.()));
   items.push(...incidentItems(roles, { emp: ctx.emp }, go.incidents));
-  items.push(...handoffItems(me, go.handoff));
+  items.push(...handoffItems(me, go.handoff, () => redraw?.()));
   items.push(...shopItems(me, roles, go.shop));
   if (machines) items.push(...stationItems(roles, go.station));
   if (machines) items.push(...lineCheckItems(roles, go.lineCheck));
@@ -390,6 +390,9 @@ export function dashboard(ctx) {
     el("button", { class: "btn big", type: "button", onclick: ctx.go.need }, "🙋 Need something?"),
     el("button", { class: "btn big secondary", type: "button", onclick: () => ctx.go.incidents("report") }, "🦺 Near miss / incident"),
     machines ? el("button", { class: "btn big danger", type: "button", onclick: ctx.go.report }, "🚨 Maintenance Request") : null,
+    // Decision 115: Fix Library and Flag a reel for Operators, Line Leads, Supervisors (winders flag most reels).
+    roles.some((r) => ["operator", "lead", "supervisor"].includes(r)) ? el("button", { class: "btn big secondary", type: "button", onclick: ctx.go.fixes }, "🔧 Fix Library") : null,
+    roles.some((r) => ["operator", "lead", "supervisor"].includes(r)) ? el("button", { class: "btn big secondary", type: "button", onclick: ctx.go.flagReel }, "🏷 Flag a reel") : null,
     canCheckTrucks(roles) ? el("button", { class: "btn big secondary", type: "button", onclick: ctx.go.trucks }, "🚚 Trucks") : null,
     roles.includes("quality") ? el("button", { class: "btn big secondary", type: "button", onclick: ctx.go.qc }, "🏷 QC hold") : null,
     canViewMachines(roles) ? el("button", { class: "btn big secondary", type: "button", onclick: ctx.go.machines }, "⚙ Machines") : null,

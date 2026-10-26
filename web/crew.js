@@ -39,6 +39,13 @@ function refreshHome(onRedraw) {
 }
 function rememberHome(view) { Object.assign(home, { view, at: Date.now(), error: false }); }
 
+// The shift running now, when it's this Line Lead's / Supervisor's team: { team: { id, name }, date, endMs } or null.
+export function shiftForMe(onRedraw) {
+  refreshHome(onRedraw);
+  const v = home.view;
+  return v && !v.noShift && v.forMe && v.team ? { team: v.team, date: v.shift.date, endMs: v.shift.endMs } : null;
+}
+
 // When it's due: gray until the last hour before the due time, then red; overdue after.
 function dueState(v) {
   const due = v.shift.dueMs;

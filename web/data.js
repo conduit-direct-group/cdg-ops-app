@@ -183,9 +183,14 @@ export function startData(me) {
     // Received ones waiting for Verified (two-step sign-off).
     const toVerify = (name) => query(collection(db, name), where("needsVerify", "==", true));
     stopFns.push(watchMerged("handoffsToVerify", toVerify("handoffs"), toVerify("test_handoffs"), (a, b) => String(b.date).localeCompare(String(a.date))));
+    // This and last shift's handoffs, any status — the all-shift Home item (Decision 115).
+    const since = new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10);
+    const recent = (name) => query(collection(db, name), where("date", ">=", since));
+    stopFns.push(watchMerged("handoffsRecent", recent("handoffs"), recent("test_handoffs"), (a, b) => String(b.date).localeCompare(String(a.date))));
   } else {
     data.handoffsOpen = [];
     data.handoffsToVerify = [];
+    data.handoffsRecent = [];
   }
   // Keep the Shop Clean: recent shift lists (leads and managers see all; everyone else, the ones they have a task on).
   const sinceDay = new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10);

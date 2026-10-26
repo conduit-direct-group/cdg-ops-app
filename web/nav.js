@@ -18,13 +18,13 @@ export const ISSUE_VIEW_ROLES = ["maintenance", "admin", "plant-manager", "super
 // key, label, who may have it (permission), and who has it unless an Admin changes it (the approved table).
 export const NAV_ITEMS = [
   { key: "crew", label: "👥 Who's here today", allowed: usesCrewBoard, on: ["admin", "plant-manager", "supervisor", "lead"] },
-  { key: "handoff", label: "📝 Shift handoff", allowed: usesHandoffs, on: ["admin", "plant-manager", "supervisor", "lead"] },
+  { key: "handoff", label: "📝 Shift handoff", allowed: usesHandoffs, on: ["admin", "plant-manager"] }, // leads / supervisors: Home all shift (115)
   { key: "shop", label: "🧹 Keep the Shop Clean", allowed: runsShopList, on: ["admin", "plant-manager", "supervisor", "lead"] },
-  { key: "fixes", label: "🔧 Fix Library", allowed: usesMachines, on: ["admin", "plant-manager", "supervisor", "lead", "operator", "maintenance", "training-safety"] },
+  { key: "fixes", label: "🔧 Fix Library", allowed: usesMachines, on: ["admin", "plant-manager", "maintenance", "training-safety"] }, // operators / leads / supervisors: Home button
   { key: "issues", label: "🚨 Open issues", allowed: (r) => has(r, ISSUE_VIEW_ROLES), on: ["admin", "plant-manager", "supervisor", "maintenance"] },
   { key: "training", label: "🎓 Training", allowed: (r) => has(r, ["training-safety", "admin"]), on: ["admin", "training-safety"] },
   { key: "trucksView", label: "🚚 Trucks (look only)", allowed: (r) => canViewTrucks(r) && !canCheckTrucks(r), on: ["admin", "plant-manager", "sales"] },
-  { key: "qcList", label: "🏷 QC hold — flagged reels", allowed: (r) => (r || []).includes("quality") || usesMachines(r), on: ["admin", "plant-manager", "supervisor", "lead", "training-safety"] },
+  { key: "qcList", label: "🏷 QC hold — flagged reels", allowed: (r) => (r || []).includes("quality") || usesMachines(r), on: ["admin", "plant-manager", "training-safety"] }, // leads / supervisors: Home's Flag a reel opens it
   { key: "downtime", label: "⏱ Downtime & scrap shift report", allowed: usesDowntime, on: ["admin", "plant-manager", "supervisor", "lead"] },
 ];
 const byKey = new Map(NAV_ITEMS.map((i) => [i.key, i]));

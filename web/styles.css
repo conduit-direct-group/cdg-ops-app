@@ -1023,8 +1023,8 @@ main[data-width="full"] { max-width: none; padding: 0; }
 .needs-you { margin: var(--s3) 0; }
 .needs-title { display: block; font-size: var(--text-small); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .needs-you .alert-banner { margin-top: var(--s1); }
-.quick-row { display: grid; grid-template-columns: 1fr; gap: var(--s2); margin: var(--s3) 0; }
-.quick-row .btn { margin: 0; }
+.quick-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s2); margin: var(--s3) 0; } /* 2 columns on phones too — no long scroll (Decision 115) */
+.quick-row .btn { margin: 0; min-width: 0; padding-left: var(--s2); padding-right: var(--s2); white-space: normal; line-height: 1.2; }
 .plant-bar { display: flex; flex-wrap: wrap; gap: var(--s2); margin: var(--s3) 0; }
 .line-chip { display: inline-flex; align-items: center; gap: var(--s1); min-height: 44px; padding: 0 var(--s3); border-radius: var(--radius); background: var(--surface-1); border: var(--border-width) solid var(--line); font-size: var(--text-small); }
 .line-chip.down { background: var(--red-tint); border-color: var(--red); font-weight: bold; }
@@ -1307,6 +1307,13 @@ body.has-nav .toast { bottom: calc(84px + env(safe-area-inset-bottom)); }
 /* More menu: big rows, only what the role has. */
 .more-sheet { max-height: calc(100dvh - var(--s5)); overflow-y: auto; }
 .more-list { display: flex; flex-direction: column; gap: var(--s2); margin-bottom: var(--s2); }
+.more-group { margin: var(--s2) 0 0; font-size: var(--text-small); font-weight: bold; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.more-group:first-child { margin-top: 0; }
+/* Home: the always-on Messages line when nothing is new (Decision 115) */
+.msg-line { display: flex; align-items: center; gap: var(--s3); width: 100%; min-height: var(--tap); padding: var(--s2) var(--s3); border-radius: var(--radius); border: var(--border-width) solid var(--line); background: var(--surface-1); color: var(--muted); font: inherit; text-align: left; cursor: pointer; }
+.msg-line span:nth-child(2) { flex: 1; }
+.msg-line-go { color: var(--muted); }
+@media (hover: hover) { .msg-line:hover { border-color: var(--orange); } }
 .more-item { display: flex; align-items: center; gap: var(--s3); min-height: var(--tap); padding: var(--s2) var(--s3); border-radius: var(--radius); border: var(--border-width) solid var(--line); background: var(--surface-2); color: var(--white); font: inherit; font-weight: bold; text-align: left; cursor: pointer; }
 .more-item:active { background: var(--surface-3); }
 .more-item.danger { border-color: var(--red); }

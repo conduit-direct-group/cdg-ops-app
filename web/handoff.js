@@ -8,6 +8,7 @@
 
 import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, picker, collapsible } from "./ui.js";
 import { dueByShiftEnd } from "./shift.js";
+import { shiftForMe } from "./crew.js";
 import { data, onDataChange, lineName } from "./data.js";
 import {
   db, TEST_MODE, callHandoffAutoFill, callStartHandoff, callSaveHandoffDraft, callSendHandoff, callDiscardHandoff,
@@ -46,10 +47,23 @@ const verifiedText = (v) => `${v.name}${v.roleName ? ` (${v.roleName}${v.backup 
 
 // Home items (Decision 66): a handoff to sign received, and your own unsent one — due by the end of the shift
 // (gray), red in its last hour.
-export function handoffItems(me, onOpen) {
+export function handoffItems(me, onOpen, onRedraw) {
   if (!usesHandoffs(me.roles) || !data.handoffsOpen) return [];
   const out = [];
   const due = dueByShiftEnd();
+  // All shift (Decision 115): Line Leads and Supervisors of the team on now see their team's handoff the whole shift —
+  // gray to start, green once sent; and the one their team received, green once signed. Shift handoff isn't in More.
+  const now = (me.roles || []).some((r) => ["lead", "supervisor"].includes(r)) ? shiftForMe(onRedraw) : null;
+  if (now && data.handoffsRecent) {
+    const mine = data.handoffsRecent.find((h) => h.team === now.team.id && h.date === now.date && h.status !== "discarded");
+    if (!mine) out.push({ key: "handoff-shift", icon: "📝", title: `Shift handoff — Team ${now.team.name}: write and send it`, ...due, onOpen: () => onOpen(null) });
+    else if (mine.status !== "draft") out.push({ key: "handoff-shift", icon: "📝", title: `Shift handoff sent ✓ — to Team ${teamName(mine.toTeam)}`, detail: mine.status === "received" ? `received by ${mine.receivedBy?.name || "the next team"}` : "waiting for the next team to sign received", state: "done", onOpen: () => onOpen(mine.id) });
+    else if (mine.createdBy !== me.emp) out.push({ key: "handoff-shift", icon: "📝", title: `Shift handoff — Team ${now.team.name}: started, not sent`, ...due, onOpen: () => onOpen(mine.id) });
+    // The one this team received, signed during this shift (about the last 13 hours before it ends).
+    const atMs = (t) => (t?.toMillis ? t.toMillis() : t instanceof Date ? t.getTime() : t?.seconds ? t.seconds * 1000 : 0);
+    const gotRecent = data.handoffsRecent.find((h) => h.toTeam === now.team.id && h.status === "received" && atMs(h.receivedBy?.at) > now.endMs - 13 * 3600000);
+    if (gotRecent && !toReceive(me).length) out.push({ key: "handoff-got", icon: "📝", title: `Shift handoff from Team ${teamName(gotRecent.team)} — received ✓`, detail: `signed by ${gotRecent.receivedBy?.name || ""}`, state: "done", onOpen: () => onOpen(gotRecent.id) });
+  }
   const waiting = toReceive(me);
   if (waiting.length) {
     out.push({ key: "handoff-in", icon: "📝", ...due, onOpen: () => onOpen(waiting.length === 1 ? waiting[0].id : null),

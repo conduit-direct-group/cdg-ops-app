@@ -195,8 +195,10 @@ export function openIncidents(container, { me, start = "home", startId = null, s
     const hurt = ["injury", "first-aid"].includes(f.type);
     const fileInput = el("input", { type: "file", accept: "image/*", hidden: true, onchange: (e) => { const x = e.target.files[0]; e.target.value = ""; if (x) addPhoto(x); } });
     return [
-      back("Safety reports", () => { ui.form = null; show("home"); }),
+      back(follower() ? "Safety reports" : "My reports", () => { ui.form = null; show("home"); }),
       el("h1", {}, "🦺 Report a safety issue"),
+      // Everyone who isn't Training & Safety, the Production Manager, or an Admin sees their own reports here (Decision 115).
+      follower() ? null : el("button", { class: "link-btn", type: "button", onclick: () => { ui.form = null; show("home"); } }, "📋 Your reports and their status →"),
       f.type === "injury" ? el("section", { class: "inc-911", role: "alert" },
         el("strong", {}, "Emergency? Call 911 first."),
         el("a", { class: "btn big danger", href: "tel:911" }, "🚑 Call 911"),

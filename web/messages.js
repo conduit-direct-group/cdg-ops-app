@@ -101,7 +101,11 @@ export const unreadMessages = (emp) => (data.messages ? conversations(emp).items
 export function messageBar(emp, onOpen, row) {
   if (!data.messages || !emp) return null;
   const unread = conversations(emp).items.filter((c) => c.unread);
-  if (!unread.length) return null;
+  // Always on Home (Decision 115) — Messages isn't in More any more.
+  if (!unread.length) {
+    return el("section", { class: "ann-bar msg-bar", "aria-label": "Messages" },
+      el("button", { class: "msg-line", type: "button", onclick: onOpen }, el("span", { "aria-hidden": "true" }, "💬"), el("span", {}, "Messages — no new messages"), el("span", { class: "msg-line-go", "aria-hidden": "true" }, "›")));
+  }
   const n = unread.reduce((s, c) => s + c.unread, 0);
   const names = [...new Set(unread.map((c) => (c.kind === "group" ? c.threads.filter((t) => t.unread).map((t) => t.otherName) : [c.otherName])).flat())];
   return el("section", { class: "ann-bar msg-bar", "aria-label": "New messages", "aria-live": "polite" },
