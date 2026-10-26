@@ -178,6 +178,15 @@ export function collapsible(key, summary, ...children) {
   );
 }
 
+// A length of time for people (Decision 117): "45 min", "4 h", "4 h 15 min" — never "255 min".
+export function fmtMinutes(minutes) {
+  const m = Math.max(0, Math.round(Number(minutes) || 0));
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60);
+  const r = m % 60;
+  return r ? `${h} h ${r} min` : `${h} h`;
+}
+
 // A fold-away section that remembers open / closed on this device (localStorage; a private window just starts at
 // the default). alert: the header turns red (⚠ in the words too) so nothing urgent hides inside a closed fold.
 export function deviceFold(key, summary, { open = false, alert = false } = {}, ...children) {

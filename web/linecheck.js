@@ -5,7 +5,7 @@
 // the Line Lead. A timer shows when the next check is due (red when overdue). Page 2 is plant-wide: one tap per item
 // stamps the time and name, with the expected count per shift. Operator signs at end of shift; Supervisor reviews.
 
-import { el, friendlyError, spinner, emptyState, banner, toast, collapsible } from "./ui.js";
+import { el, friendlyError, spinner, emptyState, banner, toast, collapsible, fmtMinutes } from "./ui.js";
 import { data, onDataChange } from "./data.js";
 import { myShiftLines } from "./crew.js";
 import {
@@ -77,7 +77,7 @@ function due(log, now, every) {
   const diff = dueAt - Date.now();
   return { dueAt, overdue: diff < 0, minutes: Math.max(0, Math.round(Math.abs(diff) / 60000)) };
 }
-const dueText = (d) => (d.overdue ? `overdue by ${d.minutes} min` : d.minutes <= 1 ? "due now" : `next due in ${d.minutes} min`);
+const dueText = (d) => (d.overdue ? `overdue by ${fmtMinutes(d.minutes)}` : d.minutes <= 1 ? "due now" : `next due in ${fmtMinutes(d.minutes)}`);
 
 // ---- Home items (Decision 66) -----------------------------------------------------------------------------------
 // Operators: the lines they're on this shift (Crew Board — no home lines, Decision 104), else the line this tablet
@@ -97,7 +97,7 @@ export function lineCheckItems(roles, onOpen) {
     const late = list.filter((x) => x.d.overdue);
     const next = [...list].sort((a, b) => a.d.dueAt - b.d.dueAt)[0];
     return late.length
-      ? { key: "linecheck", icon: "📈", title: list.length === 1 ? `${title} — overdue` : `${title} overdue: ${late.map((x) => x.l.name).join(", ")}`, detail: `${late[0].d.minutes} min late`, state: "late", onOpen: () => onOpen(late[0].l.id) }
+      ? { key: "linecheck", icon: "📈", title: list.length === 1 ? `${title} — overdue` : `${title} overdue: ${late.map((x) => x.l.name).join(", ")}`, detail: `${fmtMinutes(late[0].d.minutes)} late`, state: "late", onOpen: () => onOpen(late[0].l.id) }
       : { key: "linecheck", icon: "📈", title, detail: `next due ${fmtTime(next.d.dueAt)}`, state: "due", onOpen: () => onOpen(list.length === 1 ? next.l.id : null) };
   };
   if (lead) {
@@ -204,7 +204,7 @@ export function openLineCheck(container, { me, startLine = null, startLogId = nu
       banner(ui),
       signed ? null : el("section", { class: d.overdue ? "timer-card late" : "timer-card", role: "status" },
         el("span", { class: "timer-label" }, d.overdue ? "⚠ Check overdue" : "Next check"),
-        el("span", { class: "timer-big" }, d.overdue ? `${d.minutes} min late` : d.minutes <= 1 ? "Now" : `in ${d.minutes} min`),
+        el("span", { class: "timer-big" }, d.overdue ? `${fmtMinutes(d.minutes)} late` : d.minutes <= 1 ? "Now" : `in ${fmtMinutes(d.minutes)}`),
         el("span", { class: "timer-sub" }, `Due ${fmtTime(d.dueAt)} · every ${log.everyMinutes} minutes`)),
       signed ? null : el("button", { class: d.overdue ? "btn big danger" : "btn big", type: "button", onclick: () => show("round", { values: {}, notes: {} }) }, "＋ Record a check"),
       el("h2", {}, `Checks this shift (${rounds.length})`),

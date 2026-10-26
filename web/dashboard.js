@@ -6,7 +6,7 @@
 //   4. At a glance — summary cards about other people's work (only ones that don't repeat a Needs you item).
 // The navigation bar (Home · Map · Checklists · Announcements · More) is in app.js. Admins can "View as" any role.
 
-import { el, picker, choose } from "./ui.js";
+import { el, picker, choose, fmtMinutes } from "./ui.js";
 import { data, lineName } from "./data.js";
 import { overdueUnits, unitLabel, checklistUnits, pendingFor } from "./checklists.js";
 import { dueByShiftEnd } from "./shift.js";
@@ -53,9 +53,7 @@ const DAY = 86400000;
 const toMs = (t) => (typeof t === "number" ? t : t?.toMillis ? t.toMillis() : t?.seconds ? t.seconds * 1000 : 0);
 function howLong(ms) {
   const m = Math.max(0, Math.round((Date.now() - ms) / 60000));
-  if (m < 60) return `${m} min`;
-  const h = Math.round(m / 60);
-  return h < 48 ? `${h} h` : `${Math.round(h / 24)} days`;
+  return m < 48 * 60 ? fmtMinutes(m) : `${Math.round(m / 1440)} days`; // "4 h 15 min" (Decision 117)
 }
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 

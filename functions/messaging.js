@@ -120,29 +120,41 @@ function cleanTo(raw) {
   return { to: { type, id } };
 }
 
-// What a sender may send to (Decision 108). person: { roles, deptHead, department }.
-// → { kinds: [part types], all: bool, departments: "any" | [own department] , start: default "to" or null }
+// What a sender may send to (Decisions 108, 117). person: { roles, deptHead, department, team, linesToday }.
+// → { kinds: [part types], all: bool, departments / teams / lines: "any" | [ids], start: default "to" or null }
+// Line Leads (Decision 117): their own team, the line(s) they're on today (Crew Board), and individual people — no
+// everyone, no roles, no departments. Supervisors, the Production Manager, department heads, and Admins as before.
+const widen = (cur, add) => (cur === "any" || add === "any" ? "any" : [...new Set([...cur, ...add])]);
 function sendOptions(person) {
   const roles = person?.roles || [];
   const kinds = new Set();
   let all = false;
   let departments = [];
+  let teams = [];
+  let lines = [];
   const admin = roles.includes("admin");
   const head = person?.deptHead === true && !!person?.department;
-  if (admin) { ["person", "team", "line", "role", "department"].forEach((k) => kinds.add(k)); all = true; departments = "any"; }
-  if (roles.some((r) => ["lead", "supervisor", "plant-manager"].includes(r))) { ["person", "team", "line", "role"].forEach((k) => kinds.add(k)); all = true; }
-  if (head) { ["person", "team", "department"].forEach((k) => kinds.add(k)); if (departments !== "any") departments = [person.department]; }
+  if (admin) { ["person", "team", "line", "role", "department"].forEach((k) => kinds.add(k)); all = true; departments = "any"; teams = "any"; lines = "any"; }
+  if (roles.some((r) => ["supervisor", "plant-manager"].includes(r))) { ["person", "team", "line", "role"].forEach((k) => kinds.add(k)); all = true; teams = "any"; lines = "any"; }
+  if (roles.includes("lead")) {
+    ["person", "team", "line"].forEach((k) => kinds.add(k));
+    teams = widen(teams, person?.team ? [person.team] : []);
+    lines = widen(lines, person?.linesToday || []);
+  }
+  if (head) { ["person", "team", "department"].forEach((k) => kinds.add(k)); if (departments !== "any") departments = [person.department]; teams = "any"; }
   if (!kinds.has("department")) departments = [];
   const start = admin ? { type: "all" } : head ? { type: "set", parts: [{ type: "department", id: person.department }] } : null;
-  return { kinds: [...kinds], all, departments, start };
+  return { kinds: [...kinds], all, departments, teams, lines, start };
 }
 // Is this "to" allowed for the sender? → error text or "".
 function checkTo(to, opts) {
   const parts = to.type === "set" ? to.parts : to.type === "all" ? [] : [to];
-  if (to.type === "all" && !opts.all) return "Send to your department, teams, or people — not everyone.";
+  if (to.type === "all" && !opts.all) return opts.departments.length ? "Send to your department, teams, or people — not everyone." : "Send to your team, your line today, or people — not everyone.";
   for (const p of parts) {
     if (!opts.kinds.includes(p.type)) return p.type === "department" ? "Only Admins and department heads send to a department." : `You can't send to a ${p.type} — pick ${opts.kinds.join(", ")}.`;
     if (p.type === "department" && opts.departments !== "any" && !opts.departments.includes(p.id)) return "Department heads send to their own department.";
+    if (p.type === "team" && opts.teams !== undefined && opts.teams !== "any" && !opts.teams.includes(p.id)) return "Line Leads message their own team.";
+    if (p.type === "line" && opts.lines !== undefined && opts.lines !== "any" && !opts.lines.includes(p.id)) return "Line Leads message the line they're on today (Crew Board).";
   }
   return "";
 }

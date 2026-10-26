@@ -115,10 +115,21 @@ test("messaging (Decision 108): who sends to what, and where a new message start
   assert.match(m.checkTo({ type: "all", id: "all" }, head), /not everyone/);
   assert.match(m.checkTo({ type: "department", id: "office" }, head), /own department/);
   assert.match(m.checkTo({ type: "line", id: "l1" }, head), /can't send/);
-  const lead = m.sendOptions({ roles: ["lead"] });
+  // Line Leads (Decision 117): own team, the line they are on today, and people — no everyone, roles, or departments.
+  const lead = m.sendOptions({ roles: ["lead"], team: "a", linesToday: ["l1"] });
   assert.strictEqual(lead.start, null);
-  assert.strictEqual(m.checkTo({ type: "all", id: "all" }, lead), "");
+  assert.match(m.checkTo({ type: "all", id: "all" }, lead), /not everyone/);
+  assert.match(m.checkTo({ type: "role", id: "operator" }, lead), /can.t send/);
   assert.match(m.checkTo({ type: "department", id: "quality" }, lead), /Only Admins and department heads/);
+  assert.strictEqual(m.checkTo({ type: "team", id: "a" }, lead), "");
+  assert.match(m.checkTo({ type: "team", id: "b" }, lead), /own team/);
+  assert.strictEqual(m.checkTo({ type: "line", id: "l1" }, lead), "");
+  assert.match(m.checkTo({ type: "line", id: "l2" }, lead), /line they.re on today/);
+  assert.strictEqual(m.checkTo({ type: "person", id: "9004" }, lead), "");
+  // A Line Lead who is also a Supervisor keeps the Supervisor choices.
+  const leadSup = m.sendOptions({ roles: ["lead", "supervisor"], team: "a", linesToday: [] });
+  assert.strictEqual(m.checkTo({ type: "team", id: "b" }, leadSup), "");
+  assert.strictEqual(m.checkTo({ type: "all", id: "all" }, leadSup), "");
   // A supervisor who heads a department: the supervisor's choices plus their own department, which is where it starts.
   const both = m.sendOptions({ roles: ["supervisor"], deptHead: true, department: "logistics" });
   assert.strictEqual(m.checkTo({ type: "line", id: "l1" }, both), "");

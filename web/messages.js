@@ -426,7 +426,9 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
       el("form", { class: "card msg-new", onsubmit: (e) => { e.preventDefault(); send(); } },
         el("span", { class: "field-label strong" }, "To"),
         mixTo,
-        f.mix ? null : el("div", { class: "choices msg-to" }, [["person", "👤 One person"], ["team", "🅰 A team"], ["line", "🏭 A line"], ["role", "🏷 A role"], ["all", "📢 Everyone"]].map(([t, label]) =>
+        // Only the choices this sender has (Line Leads: one person, their team, their line today — Decision 117).
+        f.mix ? null : el("div", { class: "choices msg-to" }, [["person", "👤 One person"], ["team", "🅰 A team"], ["line", "🏭 A line"], ["role", "🏷 A role"], ["all", "📢 Everyone"]]
+          .filter(([t]) => (t === "all" ? s.options?.all !== false : !s.options?.kinds || s.options.kinds.includes(t))).map(([t, label]) =>
           el("button", { class: f.type === t ? "choice on" : "choice", type: "button", "aria-pressed": String(f.type === t), onclick: () => { Object.assign(f, { type: t, id: "" }); refreshPreview(); } }, label))),
         !f.mix && f.type !== "all" ? picker({ title: "Who?", value: f.id, placeholder: "Pick…", options: lists[f.type], onChange: (v) => { f.id = v; refreshPreview(); } }) : null,
         reach,

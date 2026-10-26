@@ -4,7 +4,7 @@
 // in the scrap list on their own (never entered twice). Rules and workbook columns: functions/downtime.js.
 // The SharePoint workbook isn't connected yet — Export to Excel gives the rows for each tab.
 
-import { el, friendlyError, spinner, emptyState, banner, toast, picker, choose, collapsible } from "./ui.js";
+import { el, friendlyError, spinner, emptyState, banner, toast, picker, choose, collapsible, fmtMinutes } from "./ui.js";
 import { myShiftLines } from "./crew.js";
 import { data } from "./data.js";
 import { TEST_MODE, callShiftReport, callSaveShiftReport, callSaveShiftEntry, callExportShiftReports, callSignoffPeople, callMarkShiftNone, callShiftReportVerifiers } from "./firebase.js";
@@ -44,7 +44,7 @@ function signTag(r, now = Date.now()) {
 // read from the server in the background (every 2 minutes at most) and the Home redraws when it arrives.
 const home = { lineId: null, at: 0, busy: false, report: null, events: 0, feet: 0, error: false };
 
-function homeLine() {
+function todaysLine() {
   const lines = (data.lines || []).filter((l) => l.active !== false);
   const today = myShiftLines()?.now?.[0] || myShiftLines()?.today?.[0] || null;
   const order = isLineTablet() ? [stored(LINE_KEY), today] : [today, stored(LINE_KEY)];
@@ -71,7 +71,7 @@ async function refreshHome(lineId, onRedraw) {
 
 export function downtimeItems(roles, myself, onOpen, onRedraw) {
   if (!roles.some((r) => HOME_ROLES.includes(r))) return [];
-  const lineId = homeLine();
+  const lineId = todaysLine();
   const base = { key: "downtime", icon: "⏱", onOpen };
   if (!lineId) { const due = dueByShiftEnd(); return [{ ...base, title: "Downtime & scrap shift report", detail: `pick your line to start · ${due.detail}`, state: due.state }]; }
   if (home.lineId !== lineId || Date.now() - home.at > HOME_REFRESH_MS || (home.report?.endMs && Date.now() > home.report.endMs)) refreshHome(lineId, onRedraw);
@@ -156,7 +156,7 @@ export function openDowntime(container, { me, onExit, backLabel = "Home", onCrew
   }
 
   async function removeEntry(kind, e) {
-    const what = kind === "changeover" ? `${e.minutes} min · ${e.type} changeover` : kind === "downtime" ? `${e.minutes} min · ${e.reason}` : `${plainNum(e.feet)} ft · ${e.reason}`;
+    const what = kind === "changeover" ? `${fmtMinutes(e.minutes)} · ${e.type} changeover` : kind === "downtime" ? `${fmtMinutes(e.minutes)} · ${e.reason}` : `${plainNum(e.feet)} ft · ${e.reason}`;
     const ok = await choose({ title: `Remove ${what}?`, options: [{ value: "yes", label: "Yes, remove it" }] });
     if (ok) await act(() => callSaveShiftEntry({ reportId: report().id, kind, id: e.id, remove: true }), () => removeEntry(kind, e), "Removed");
   }
@@ -296,9 +296,9 @@ export function openDowntime(container, { me, onExit, backLabel = "Home", onCrew
     const f = ui.form?.kind === "changeover" ? ui.form : null;
     const total = list.reduce((a, c) => a + (c.minutes || 0), 0);
     return el("section", { class: "card" },
-      el("strong", {}, `🔁 Changeovers${list.length ? ` · ${list.length} · ${total} min` : ""}`),
+      el("strong", {}, `🔁 Changeovers${list.length ? ` · ${list.length} · ${fmtMinutes(total)}` : ""}`),
       list.length ? el("div", { class: "dt-list" }, list.map((c) => f?.id === c.id ? changeoverForm(f) : el("div", { class: "dt-entry" },
-        el("strong", {}, `${c.minutes} min · ${c.type}`),
+        el("strong", {}, `${fmtMinutes(c.minutes)} · ${c.type}`),
         el("span", { class: "dt-note" }, [c.productSize, c.atMs ? fmtTime(c.atMs) : ""].filter(Boolean).join(" · ")),
         locked() || f || c.legacy ? null : el("span", { class: "dt-actions" },
           el("button", { class: "link-btn", type: "button", onclick: () => { ui.form = { kind: "changeover", id: c.id, minutes: String(c.minutes), type: c.type }; render(); } }, "Edit"),
@@ -341,9 +341,9 @@ export function openDowntime(container, { me, onExit, backLabel = "Home", onCrew
     const f = ui.form?.kind === "downtime" ? ui.form : null;
     const total = events.reduce((a, e) => a + e.minutes, 0);
     return el("section", { class: "card" },
-      el("strong", {}, `⏱ Downtime${events.length ? ` · ${total} min` : ""}`),
+      el("strong", {}, `⏱ Downtime${events.length ? ` · ${fmtMinutes(total)}` : ""}`),
       events.length ? el("div", { class: "dt-list" }, events.map((e) => f?.id === e.id ? downtimeForm(f) : el("div", { class: "dt-entry" },
-        el("strong", {}, `${e.minutes} min · ${e.reason}`),
+        el("strong", {}, `${fmtMinutes(e.minutes)} · ${e.reason}`),
         el("span", { class: "dt-note" }, [e.fix, e.called ? `Called: ${e.calledWho}` : "", e.issueTitle ? `Maintenance: ${e.issueTitle}` : ""].filter(Boolean).join(" · ")),
         el("span", { class: "dt-tags" }, el("span", { class: "tag" }, `Contacted: ${e.contacted}`), el("span", { class: "tag" }, `Maintenance log: ${e.maintLog}`)),
         locked() || f ? null : el("span", { class: "dt-actions" },

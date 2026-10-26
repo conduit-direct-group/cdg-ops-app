@@ -2,7 +2,7 @@
 // Odoo maintenance request, the board shows every open breakdown in Odoo (synced every 5 minutes),
 // and Mark fixed (Maintenance, Admin) moves the Odoo request to Repaired.
 
-import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, breakable, picker, collapsible } from "./ui.js";
+import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, breakable, picker, collapsible, fmtMinutes } from "./ui.js";
 import { data, onDataChange, lineName } from "./data.js";
 import { storage, callReportProblem, callMarkIssueFixed, callMarkLineBackUp, callAdminSyncOdoo } from "./firebase.js";
 import { ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-storage.js";
@@ -19,10 +19,8 @@ export function ago(date) {
   if (!date) return "";
   const mins = Math.max(0, Math.round((Date.now() - date.getTime()) / 60000));
   if (mins < 1) return "just now";
-  if (mins < 60) return `${mins} min ago`;
-  const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs} hr ago`;
-  const days = Math.round(hrs / 24);
+  if (mins < 24 * 60) return `${fmtMinutes(mins)} ago`; // "4 h 15 min ago" (Decision 117)
+  const days = Math.round(mins / 1440);
   return `${days} ${days === 1 ? "day" : "days"} ago`;
 }
 

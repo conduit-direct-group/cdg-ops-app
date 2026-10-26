@@ -180,7 +180,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
   // ---- Add / edit form ----------------------------------------------------
 
   // A new person starts with the next free employee number filled in (it can be changed).
-  // `keep` = same roles, team, and home line as the last one (Save & add another).
+  // `keep` = same roles and team as the last one (Save & add another).
   function startAdd(keep = null) {
     if (!keep) ui.justAdded = [];
     ui.draft = { number: ui.nextNumber, name: "", roles: keep?.roles || ["operator"], team: keep?.team || "", department: keep?.department || "", head: false, reportsTo: "", supervisesTeams: [], canPost: false };

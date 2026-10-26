@@ -289,7 +289,6 @@ exports.adminListEmployees = onCall(async (req) => {
       loginEnabled: secrets.has(d.id),
       team: e.team || null,
       shift: e.shift || null,
-      homeLineId: e.homeLineId || null,
       trainingName: e.trainingName || null,
       active: e.active !== false,
       mustChangePin: s.mustChangePin === true,
@@ -308,7 +307,6 @@ exports.adminCreateEmployee = onCall(async (req) => {
   const employee = {
     name: requireName(req.data?.name), roles: await requireRoles(req.data?.roles), active: true,
     team: await optionalRef(teams, req.data?.team, "team"), shift: await optionalRef(shifts, req.data?.shift, "shift"),
-    homeLineId: null, // no home lines (Decision 104) — people are put on lines each shift on the Crew Board
   };
   const tempPin = pin.randomTempPin();
   const hashed = await pin.hashPin(tempPin);
@@ -429,7 +427,7 @@ exports.adminImportEmployees = onCall(async (req) => {
     for (const p of people) {
       tx.create(employees.doc(p.employeeNumber), {
         name: p.name, position: p.position, roles: [], suggestedRoles: p.suggestedRoles, rolesConfirmed: false,
-        team: null, shift: null, homeLineId: null, active: true, importedFrom: "gusto",
+        team: null, shift: null, active: true, importedFrom: "gusto",
         createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(),
       });
     }
@@ -2437,7 +2435,7 @@ exports.signoffPeople = onCall(async (req) => {
   return { people: list.filter((p) => p.id !== me.employeeNumber).map((p) => ({ emp: p.id, name: p.name })) };
 });
 
-// After people change (new hire, roles, team, home line): kept-for-new-hires announcements pick up anyone who
+// After people change (new hire, roles, team): kept-for-new-hires announcements pick up anyone who
 // now matches, and supervisors' tracking follows their crew. Never fails the change that called it.
 async function refreshAnnouncementLists() {
   try {
@@ -5698,10 +5696,13 @@ async function requireMessageStarter(me) {
   if (!(await canStartMessages(me))) throw new HttpsError("permission-denied", "Only Line Leads, Supervisors, department heads, the Production Manager, and Admins start messages. You can answer with Got it, Done, or Need help.");
 }
 
-// The sender as messaging.js needs them: { roles, deptHead, department }.
-async function messageSender(me) {
-  const snap = await employees.doc(me.employeeNumber).get();
-  return { roles: me.roles, deptHead: snap.get("deptHead") === true, department: snap.get("department") || null };
+// The sender as messaging.js needs them: { roles, deptHead, department, team, linesToday (Crew Board, Decision 117) }.
+async function messageSender(me, test, snap = null) {
+  const [mine, onLines] = await Promise.all([snap || employees.doc(me.employeeNumber).get(), shiftLineAssignments(test)]);
+  return {
+    roles: me.roles, deptHead: mine.get("deptHead") === true, department: mine.get("department") || null,
+    team: mine.get("team") || null, linesToday: onLines.today?.[me.employeeNumber] || [],
+  };
 }
 
 // What the target is called ("Team A", "Line 2", "Supervisors", "Quality department", "Everyone", a person's name;
@@ -5727,7 +5728,7 @@ exports.messageStart = onCall(async (req) => {
   const test = isTest(req);
   const [people, teamSnaps, lineSnaps, roleSnaps, mine] = await Promise.all([messagePeople(test), teams.get(), lines.get(), roles.get(), employees.doc(me.employeeNumber).get()]);
   const teamName = new Map(teamSnaps.docs.map((d) => [d.id, d.get("name") || d.id]));
-  const sender = { roles: me.roles, deptHead: mine.get("deptHead") === true, department: mine.get("department") || null };
+  const sender = await messageSender(me, test, mine);
   const start = messagingLib.canStart(sender);
   const opts = messagingLib.sendOptions(sender); // Decision 108: what this sender may pick, and the default "to"
   const allDepts = start && opts.kinds.includes("department") ? await departmentList() : [];
@@ -5735,9 +5736,10 @@ exports.messageStart = onCall(async (req) => {
     test, canStart: start, hr: me.hr, noticeSeen: !!mine.get("messagingNoticeAt"), options: opts,
     departments: opts.departments === "any" ? allDepts : allDepts.filter((x) => (opts.departments || []).includes(x.id)),
     people: (start || me.hr) ? people.filter((p) => p.id !== me.employeeNumber).map((p) => ({ emp: p.id, name: p.name, team: p.team ? teamName.get(p.team) || "" : "" })).sort((a, b) => a.name.localeCompare(b.name)) : [],
-    teams: start ? teamSnaps.docs.filter((d) => d.get("active") !== false).map((d) => ({ id: d.id, name: `Team ${d.get("name") || d.id}` })) : [],
-    lines: start ? lineSnaps.docs.filter((d) => d.get("active") !== false).map((d) => ({ id: d.id, name: d.get("name") || d.id })) : [],
-    roles: start ? roleSnaps.docs.filter((d) => d.get("active") !== false).map((d) => ({ id: d.id, name: d.get("name") || d.id })) : [],
+    // Only the teams and lines this sender may pick (Line Leads: their own team and today's line — Decision 117).
+    teams: start ? teamSnaps.docs.filter((d) => d.get("active") !== false && (opts.teams === "any" || opts.teams.includes(d.id))).map((d) => ({ id: d.id, name: `Team ${d.get("name") || d.id}` })) : [],
+    lines: start ? lineSnaps.docs.filter((d) => d.get("active") !== false && (opts.lines === "any" || opts.lines.includes(d.id))).map((d) => ({ id: d.id, name: d.get("name") || d.id })) : [],
+    roles: start && opts.kinds.includes("role") ? roleSnaps.docs.filter((d) => d.get("active") !== false).map((d) => ({ id: d.id, name: d.get("name") || d.id })) : [],
     noTeam: me.roles.includes("admin") ? people.filter((p) => !p.team).map((p) => p.name).sort() : [],
   };
 });
@@ -5749,7 +5751,7 @@ exports.messagePreview = onCall(async (req) => {
   const test = isTest(req);
   const { to, error } = messagingLib.cleanTo(req.data?.to);
   if (error) throw new HttpsError("invalid-argument", error);
-  const notAllowed = messagingLib.checkTo(to, messagingLib.sendOptions(await messageSender(me)));
+  const notAllowed = messagingLib.checkTo(to, messagingLib.sendOptions(await messageSender(me, test)));
   if (notAllowed) throw new HttpsError("permission-denied", notAllowed);
   const [people, ctx] = await Promise.all([messagePeople(test), messageShiftContext(test)]);
   const d = messagingLib.deliver(people, to, me.employeeNumber, ctx);
@@ -5773,7 +5775,7 @@ exports.messageSend = onCall(async (req) => {
   if (error) throw new HttpsError("invalid-argument", error);
   const t = messagingLib.cleanText(req.data?.text);
   if (t.error) throw new HttpsError("invalid-argument", t.error);
-  const notAllowed = messagingLib.checkTo(to, messagingLib.sendOptions(await messageSender(me)));
+  const notAllowed = messagingLib.checkTo(to, messagingLib.sendOptions(await messageSender(me, test)));
   if (notAllowed) throw new HttpsError("permission-denied", notAllowed);
   const [people, ctx] = await Promise.all([messagePeople(test), messageShiftContext(test)]);
   const label = await messageTargetLabel(to, people);
