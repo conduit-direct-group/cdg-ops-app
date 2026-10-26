@@ -126,7 +126,9 @@ export function noticeNewMessages(emp, onMessages) {
 }
 
 // ---- the screen --------------------------------------------------------------------------------------------------
-export function openMessages(container, { me, onExit, backLabel = "Home", onMaintenance = null, startRoot = null, onAnnouncement = null }) {
+export function openMessages(container, { me, onExit, backLabel = "Home", onMaintenance = null, startRoot = null, onAnnouncement = null, viewAs = null }) {
+  // Admin "View as": show what that role sees — only the starting roles get New message and typing (the server checks real roles).
+  const canStart = () => !!ui.setup?.canStart && (!viewAs || START_ROLES.includes(viewAs));
   const ui = {
     view: "list", key: null, setup: null, loadError: "", busy: false, message: "", messageKind: "", retry: null,
     draft: "", form: null, preview: null, hr: null, tab: "now",
@@ -231,11 +233,11 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
       notices(),
       banner(ui),
       ui.loadError ? banner({ message: ui.loadError, messageKind: "error", retry: load }) : null,
-      s?.canStart ? el("button", { class: "btn", type: "button", onclick: () => { ui.form = newForm(s); ui.preview = null; go("new"); if (ui.form.mix) refreshPreview(); } }, "✎ New message") : null,
+      canStart() ? el("button", { class: "btn", type: "button", onclick: () => { ui.form = newForm(s); ui.preview = null; go("new"); if (ui.form.mix) refreshPreview(); } }, "✎ New message") : null,
       tabs,
       !data.messages ? spinner("Loading messages…")
         : ui.tab === "now"
-          ? now.length ? el("div", { class: "msg-list" }, now.map(row)) : emptyState("Nothing new", s?.canStart ? "Tap “New message” to send one. Answered messages move to History." : "Messages from your leads show here. Answered ones move to History.")
+          ? now.length ? el("div", { class: "msg-list" }, now.map(row)) : emptyState("Nothing new", canStart() ? "Tap “New message” to send one. Answered messages move to History." : "Messages from your leads show here. Answered ones move to History.")
           : [el("p", { class: "card-note" }, "Your messages from the last 90 days that you answered or that ended with the shift, and announcements you've finished."),
              past.length ? el("div", { class: "msg-list" }, past.map(row)) : el("p", { class: "card-note" }, "No past messages."),
              anns.length ? [el("h2", { class: "home-h2" }, "📣 Announcements you've finished"), el("div", { class: "msg-list" }, anns.map((a) => el("button", { class: "msg-item", type: "button", onclick: () => onAnnouncement?.(a.id) },
@@ -260,7 +262,7 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
     const rootMsg = root || c.groupRoot;
     const canReply = iStarted ? (rootMsg?.recipients || []).includes(c.participant) : (rootMsg?.recipients || []).includes(me.emp);
     const msgs = c.groupRoot ? [c.groupRoot, ...c.messages] : c.messages;
-    const canType = !!ui.setup?.canStart;
+    const canType = canStart();
     const myAck = !iStarted && rootMsg?.acks?.[me.emp];
     const tasks = rootMsg ? tasksOn(rootMsg.id).filter((t) => (iStarted ? t.emp === c.participant : t.emp === me.emp)) : [];
     return [

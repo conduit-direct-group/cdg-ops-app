@@ -833,7 +833,7 @@ function openMessagesScreen(startRoot = null) {
   setNav("more");
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   const close = openMessages(screen, {
-    me: me(), onExit: () => go("home"), backLabel: "Home", startRoot, onAnnouncement: (id) => openAnn(id),
+    me: me(), onExit: () => go("home"), backLabel: "Home", startRoot, onAnnouncement: (id) => openAnn(id), viewAs: me().admin ? state.viewAs : null,
     onMaintenance: usesMachines(me().roles) ? (machineId, text) => openReport(null, () => openMessagesScreen(), machineId, text) : null,
   });
   onMessagesScreen = true;
