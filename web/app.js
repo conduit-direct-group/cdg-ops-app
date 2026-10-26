@@ -485,6 +485,7 @@ function openNeed() {
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openNeedSomething(screen, {
     me: me(), onExit: () => go("home"), onMaintenance: usesMachines(me().roles) ? () => openReport(null, openNeed) : null,
+    onSafety: () => openIncidentScreen("report", null, "safety-concern"),
     onSent: (message) => { go("home"); toast(message); },
   });
 }
@@ -530,12 +531,12 @@ function openLineCheckScreen(lineId = null, logId = null) {
 }
 
 // Safety reports — near misses and incidents (Home quick button, More, notifications ?incident=<id>, actions ?actions=1).
-function openIncidentScreen(view = "home", id = null) {
+function openIncidentScreen(view = "home", id = null, type = null) {
   if (closeModule) closeModule();
   setNav(view === "report" ? "home" : "more");
   Object.assign(state, { step: "admin", message: "", messageKind: "" });
   closeModule = openIncidents(screen, {
-    me: me(), start: view, startId: id, onExit: () => go("home"),
+    me: me(), start: view, startId: id, startType: type, onExit: () => go("home"),
     // A near miss shared as lessons learned: the announcement form opens filled in.
     onAnnounce: (prefill, onPosted) => {
       if (closeModule) closeModule();

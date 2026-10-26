@@ -19,7 +19,9 @@ const STATUS = {
 
 const toDate = (t) => (t?.toDate ? t.toDate() : t instanceof Date ? t : null);
 const when = (t) => toDate(t)?.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) || "";
-const activeTypes = () => (data.requestTypes || []).filter((t) => t.active !== false).sort((a, b) => (a.order ?? 99) - (b.order ?? 99) || a.name.localeCompare(b.name));
+// The old "Safety concern" request type is retired (Chris, 10-26-2026): safety concerns are a safety report now (one
+// place for safety). Its past requests stay in history.
+const activeTypes = () => (data.requestTypes || []).filter((t) => t.active !== false && t.id !== "safety").sort((a, b) => (a.order ?? 99) - (b.order ?? 99) || a.name.localeCompare(b.name));
 
 export function statusTag(status) {
   const s = STATUS[status] || STATUS.open;
@@ -61,7 +63,7 @@ export function myOpenRequests() {
 // Need something? — pick a type, then one short form on the same screen.
 // ===========================================================================
 
-export function openNeedSomething(container, { me, onExit, onMaintenance, onSent }) {
+export function openNeedSomething(container, { me, onExit, onMaintenance, onSafety, onSent }) {
   const d = { typeId: null, description: "", lineId: "", place: "", photos: [] };
   const ui = { busy: false, upload: "", message: "", messageKind: "", retry: null };
 
@@ -113,6 +115,14 @@ export function openNeedSomething(container, { me, onExit, onMaintenance, onSent
               { class: "mr-redirect", type: "button", onclick: onMaintenance },
               el("strong", {}, "Machine down or broken?"),
               el("span", {}, "Use 🚨 Maintenance Request →")
+            )
+          : null,
+        onSafety
+          ? el(
+              "button",
+              { class: "mr-redirect", type: "button", onclick: onSafety },
+              el("strong", {}, "⚠️ Safety concern?"),
+              el("span", {}, "Report it as a 🦺 Safety concern — you can send it anonymously →")
             )
           : null,
         !data.requestTypes ? spinner() : !types.length ? emptyState("No request types yet", "An admin sets them up in Admin → Request types & routing.") : null,

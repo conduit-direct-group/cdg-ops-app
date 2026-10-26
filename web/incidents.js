@@ -99,8 +99,9 @@ export function incidentCard(id, onOpen) {
 
 // ---- the screen ------------------------------------------------------------------------------------------------
 
-export function openIncidents(container, { me, start = "home", startId = null, onExit, backLabel = "Home", onAnnounce = null }) {
-  const ui = { view: startId ? "one" : start, id: startId, form: null, busy: false, upload: "", message: "", messageKind: "", retry: null, mine: null, people: null, one: null, stations: null };
+// startType: open the report form with this type picked (Need something? → Safety concern opens it as "safety-concern").
+export function openIncidents(container, { me, start = "home", startId = null, startType = null, onExit, backLabel = "Home", onAnnounce = null }) {
+  const ui = { view: startId ? "one" : start, id: startId, form: null, startType, busy: false, upload: "", message: "", messageKind: "", retry: null, mine: null, people: null, one: null, stations: null };
   const follower = () => canFollowIncidents(me.roles);
   const say = (message, retry = null) => { Object.assign(ui, { message, messageKind: "error", retry, busy: false, upload: "" }); render(); };
   const show = (view, extra = {}) => { Object.assign(ui, { view, message: "", retry: null, ...extra }); render(); window.scrollTo(0, 0); };
@@ -187,7 +188,7 @@ export function openIncidents(container, { me, start = "home", startId = null, o
   }
 
   function reportForm() {
-    const f = ui.form || (ui.form = newForm());
+    const f = ui.form || (ui.form = { ...newForm(), type: ui.startType || "" });
     loadStations();
     const lines = (data.lines || []).filter((l) => l.active !== false);
     const label = (t) => el("span", { class: "field-label strong" }, t);
