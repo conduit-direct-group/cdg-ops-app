@@ -30,8 +30,9 @@ const ids = (v) => (Array.isArray(v) ? [...new Set(v.map(String).filter(Boolean)
 function rolePosts(role) {
   return typeof role.canPostAnnouncements === "boolean" ? role.canPostAnnouncements : DEFAULT_POSTER_ROLES.includes(role.id);
 }
-// Decision 106: only department heads and Admins post announcements. person: { roles, deptHead }.
-const canPostNow = (person) => (person?.roles || []).includes("admin") || person?.deptHead === true;
+// Decision 106: department heads, Admins, and people an Admin ticks "Can post announcements" for (Admin → People).
+// person: { roles, deptHead, canPost }.
+const canPostNow = (person) => (person?.roles || []).includes("admin") || person?.deptHead === true || person?.canPost === true;
 // (Older rule, kept for screens not yet updated: the per-role switch in Admin → Roles.)
 function canPost(roleDocs, myRoles) {
   return (roleDocs || []).some((r) => r.active !== false && (myRoles || []).includes(r.id) && rolePosts(r));

@@ -2088,15 +2088,15 @@ const announcementPush = (a, test, kind) => ({
   urgent: a.priority === "safety",
 });
 
-// Posters (department heads and Admins — Decision 106) and people who see everything: the people list for an audience.
+// Posters (department heads, Admins, and people ticked "Can post" — Decision 106) and people who see everything: the people list for an audience.
 async function canPostAnnouncements(me) {
   const snap = await employees.doc(me.employeeNumber).get();
-  return annLib.canPostNow({ roles: me.roles, deptHead: snap.get("deptHead") === true });
+  return annLib.canPostNow({ roles: me.roles, deptHead: snap.get("deptHead") === true, canPost: snap.get("canPost") === true });
 }
 exports.announcementPeople = onCall(async (req) => {
   const me = await requireMember(req);
   if (!(await canPostAnnouncements(me)) && !hasRole(me.roles, annLib.SEE_ALL_ROLES)) {
-    throw new HttpsError("permission-denied", "Only department heads and Admins post announcements.");
+    throw new HttpsError("permission-denied", "Only department heads, Admins, and people an Admin allows post announcements.");
   }
   const people = withShiftLines((await peopleList()).filter((p) => p.active), await shiftLineAssignments(isTest(req)));
   people.sort((x, y) => x.name.localeCompare(y.name));
@@ -2125,7 +2125,7 @@ exports.postAnnouncement = onCall(async (req) => {
   const now = FieldValue.serverTimestamp();
 
   if (!editId) {
-    if (!(await canPostAnnouncements(me))) throw new HttpsError("permission-denied", "Only department heads and Admins post announcements.");
+    if (!(await canPostAnnouncements(me))) throw new HttpsError("permission-denied", "Only department heads, Admins, and people an Admin allows post announcements.");
     const ref = annCol(test).doc();
     const doc = {
       ...announcement, version: 1, audienceEmps, trackers, ended: false,
@@ -4603,7 +4603,7 @@ async function orgData() {
     id: d.id, name: d.get("name") || `Employee ${d.id}`, roles: d.get("roles") || [], team: d.get("team") || null,
     active: d.get("active") !== false, position: d.get("position") || "",
     department: d.get("department") || null, deptHead: d.get("deptHead") === true, reportsTo: d.get("reportsTo") || null,
-    supervisesTeams: d.get("supervisesTeams") || [],
+    supervisesTeams: d.get("supervisesTeams") || [], canPost: d.get("canPost") === true,
   }));
   const reports = deptLib.reportsToAll(people, { headsReportTo });
   // A title: the position, else the role names (Admin only when it's the only role).
@@ -4635,7 +4635,7 @@ exports.adminOrg = onCall(async (req) => {
     noHead: deptLib.departmentsWithoutHead(o.people, o.departments),
     people: o.people.map((x) => ({
       emp: x.id, department: x.department, suggested: deptLib.suggestDepartment(x.roles, o.departments), deptHead: x.deptHead,
-      isHead: !!x.department && o.headIds.get(x.department) === x.id, override: x.reportsTo, supervisesTeams: x.supervisesTeams,
+      isHead: !!x.department && o.headIds.get(x.department) === x.id, override: x.reportsTo, supervisesTeams: x.supervisesTeams, canPost: x.canPost,
       reportsTo: o.reports.get(x.id)?.reportsTo || null, source: o.reports.get(x.id)?.source || "missing",
     })),
   };
@@ -4659,8 +4659,8 @@ exports.adminSaveOrg = onCall(async (req) => {
       throw new HttpsError("already-exists", `${current.name} is the ${deptName} head. Replace ${current.name}?`, { currentHead: { emp: current.id, name: current.name } });
     }
     if (current) tx.update(employees.doc(current.id), { deptHead: false });
-    tx.update(employees.doc(emp), { department: org.department, deptHead: org.head, reportsTo: org.reportsTo || FieldValue.delete(), supervisesTeams: org.supervisesTeams });
-    auditRecord(tx, "updated", "department", emp, adminNumber, { department: org.department, head: org.head, reportsTo: org.reportsTo, supervisesTeams: org.supervisesTeams, replaced: current?.id || null });
+    tx.update(employees.doc(emp), { department: org.department, deptHead: org.head, reportsTo: org.reportsTo || FieldValue.delete(), supervisesTeams: org.supervisesTeams, canPost: org.canPost });
+    auditRecord(tx, "updated", "department", emp, adminNumber, { department: org.department, head: org.head, reportsTo: org.reportsTo, supervisesTeams: org.supervisesTeams, canPost: org.canPost, replaced: current?.id || null });
     return { ok: true, replaced: current ? current.name : null };
   });
   // Teams a Supervisor covers can change who a "those roles on Team B" announcement reaches (keep for new hires).

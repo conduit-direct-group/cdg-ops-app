@@ -38,9 +38,9 @@ const iSign = (a, roles = data.myself?.roles || []) => !isRelay(a) || roles.some
 const signLabel = (a) => (isRelay(a) ? "Read & relayed to crew" : "Read & understood");
 
 export const rolePosts = (role) => (typeof role.canPostAnnouncements === "boolean" ? role.canPostAnnouncements : DEFAULT_POSTER_ROLES.includes(role.id));
-// Decision 106: only department heads and Admins post announcements (the server checks too).
+// Decision 106: department heads, Admins, and people ticked "Can post announcements" in Admin → People (the server checks too).
 export function canPost(myRoles) {
-  return (myRoles || []).includes("admin") || data.myself?.deptHead === true;
+  return (myRoles || []).includes("admin") || data.myself?.deptHead === true || data.myself?.canPost === true;
 }
 
 // Plant days ("YYYY-MM-DD", Cedar Rapids time).

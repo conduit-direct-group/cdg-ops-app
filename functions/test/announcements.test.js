@@ -131,3 +131,11 @@ test("roles on chosen teams only: e.g. the Supervisors of Team B — their own t
   assert.deepStrictEqual(a.matchAudience({ roles: ["supervisor"] }, staff), ["1", "2", "3"]);
   assert.deepStrictEqual(a.matchAudience({ roles: ["supervisor"], roleTeams: ["team-b"], people: ["4"] }, staff), ["2", "3", "4"]);
 });
+
+test("who posts (Decision 106): Admins, department heads, and people ticked Can post", () => {
+  assert.ok(a.canPostNow({ roles: ["admin"] }));
+  assert.ok(a.canPostNow({ roles: ["office"], deptHead: true }));
+  assert.ok(a.canPostNow({ roles: ["supervisor"], canPost: true }));
+  assert.ok(!a.canPostNow({ roles: ["supervisor"] }));
+  assert.ok(!a.canPostNow({ roles: ["office"], canPost: "yes" }));
+});

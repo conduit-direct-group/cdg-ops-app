@@ -24,7 +24,9 @@ test("departments list: names required, no repeats, ids kept", () => {
 
 test("a person's department fields are checked", () => {
   const people = [P("1001", "Chris", ["admin"]), P("1002", "Ann", ["operator"])];
-  assert.deepStrictEqual(d.cleanOrg({ department: "quality", head: true, reportsTo: "1001" }, { departments: depts, people, emp: "1002" }).org, { department: "quality", head: true, reportsTo: "1001", supervisesTeams: [] });
+  assert.deepStrictEqual(d.cleanOrg({ department: "quality", head: true, reportsTo: "1001" }, { departments: depts, people, emp: "1002" }).org, { department: "quality", head: true, reportsTo: "1001", supervisesTeams: [], canPost: false });
+  assert.strictEqual(d.cleanOrg({ canPost: true }, { departments: depts, people, emp: "1002" }).org.canPost, true);
+  assert.strictEqual(d.cleanOrg({ canPost: "yes" }, { departments: depts, people, emp: "1002" }).org.canPost, false);
   assert.match(d.cleanOrg({ department: "nope" }, { departments: depts, people, emp: "1002" }).error, /department/);
   assert.match(d.cleanOrg({ head: true }, { departments: depts, people, emp: "1002" }).error, /department first/);
   assert.match(d.cleanOrg({ department: "quality", reportsTo: "1002" }, { departments: depts, people, emp: "1002" }).error, /themselves/);

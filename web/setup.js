@@ -603,7 +603,7 @@ export function openRoles(container, { onExit }) {
       hint: "A person's roles decide what shows on their home screen and what they can do.",
       items: () => data.roles, save: callAdminSaveRole, rename: true,
       meta: (r) => [roleEditsMachines(r) ? "⚙ Can edit machines" : null, rolePostsTrucks(r) ? "🚚 Can post trucks" : null].filter(Boolean).join(" · ") || null,
-      // Who posts announcements and starts messages is a fixed list now (Decision 106: department heads and Admins post;
+      // Who posts announcements and starts messages is a fixed list now (Decision 106: department heads, Admins, and people ticked in Admin → People post;
       // Line Leads, Supervisors, department heads, Production Manager, Admins start messages) — no per-role switch.
       members: (r, { kit, show }) => {
         // Which forms people with this role may edit in Forms (Decision 60). Admins edit every form.
@@ -627,7 +627,7 @@ export function openRoles(container, { onExit }) {
           if (ok) show("item", edits ? `${r.name}: editing machines turned off` : `${r.name} can now edit machines`, "ok");
         };
         return [
-          el("p", { class: "card-note" }, "📣 Announcements: department heads and Admins post them. 💬 Messages: Line Leads, Supervisors, department heads, the Production Manager, and Admins start them. (Department heads are set in Admin → People.)"),
+          el("p", { class: "card-note" }, "📣 Announcements: department heads, Admins, and anyone ticked “Can post announcements” in Admin → People post them. 💬 Messages: Line Leads, Supervisors, department heads, the Production Manager, and Admins start them. (Department heads are set in Admin → People too.)"),
           el("div", { class: "card" },
             el("strong", {}, "⚙ Machines"),
             el("p", { class: "card-note" }, edits ? "People with this role can add and edit machine parts, specs, photos, and notes." : "People with this role can't edit machines. (Maintenance, Production Manager, and Admin can always view them.)"),
