@@ -5,7 +5,9 @@ const i = require("../incidents");
 const ctx = { lineIds: ["line-1"], stationIds: ["l1-extruder"], nowIso: "2026-10-21T12:00" };
 const base = { type: "near-miss", occurredAt: "2026-10-21T09:30", place: { lineId: "line-1" }, what: "Forklift came around the corner fast" };
 
-test("a report needs type, time, place, and what happened; only near misses can be anonymous", () => {
+test("a report needs type, time, place, and what happened; only near misses and safety concerns can be anonymous", () => {
+  assert.strictEqual(i.cleanReport({ ...base, type: "safety-concern", anonymous: true }, ctx).report.anonymous, true);
+  assert.strictEqual(i.cleanReport({ ...base, type: "first-aid", anonymous: true, hurt: { name: "Sam Sample" } }, ctx).report.anonymous, false);
   const ok = i.cleanReport({ ...base, anonymous: true, witnesses: " Sam ", photos: ["Ab3dE5gH7jK9mN1pQ3sT.jpg"] }, ctx);
   assert.strictEqual(ok.report.anonymous, true);
   assert.strictEqual(ok.report.witnesses, "Sam");
@@ -56,7 +58,9 @@ test("follow-up: actions need owner and due date; OSHA days are whole numbers; s
 
 test("injury / first aid signatures: printed name and a drawn signature (PNG), witnesses up to 6", () => {
   const png = "data:image/png;base64," + "A".repeat(400);
-  assert.deepStrictEqual(i.cleanSignature({ name: " Morgan Diaz ", png }).sig, { name: "Morgan Diaz", png });
+  assert.deepStrictEqual(i.cleanSignature({ name: " Morgan Diaz ", png }).sig, { name: "Morgan Diaz", png, emp: null });
+  assert.strictEqual(i.cleanSignature({ name: "Sam Sample", png, emp: "1042" }).sig.emp, "1042"); // picked from the list (Decision 108)
+  assert.strictEqual(i.cleanSignature({ name: "Sam Sample", png, emp: "../x" }).sig.emp, null);
   assert.match(i.cleanSignature({ name: "", png }, "Supervisor").error, /Supervisor: print/);
   assert.match(i.cleanSignature({ name: "X", png: "data:image/jpeg;base64,AAAA" }).error, /sign in the box/);
   assert.match(i.cleanSignature({ name: "X", png: "data:image/png;base64," + "A".repeat(300001) }).error, /too large/);

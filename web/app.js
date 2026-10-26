@@ -11,7 +11,7 @@
 
 import { auth, callPinLogin, callChangePin, TEST_MODE } from "./firebase.js";
 import { signInWithCustomToken, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
-import { el, friendlyError, spinner, emptyState, toast, watchConnection } from "./ui.js";
+import { el, friendlyError, spinner, emptyState, toast, watchConnection, deviceFold } from "./ui.js";
 import { openAdmin } from "./admin.js";
 import { openLines, openRoles, openTeams, openMachineTypes } from "./setup.js";
 import { openFixLibrary } from "./fixlib.js";
@@ -310,9 +310,9 @@ function renderHome() {
     !isLineTablet() && usesCrewBoard(m.roles)
       ? stationPanel({ onOpen: () => openCrewScreen(), onSop: (key) => openSop(key, () => go("home")), onRedraw: () => { if (state.step === "home") render(); } })
       : null,
-    el("div", { class: p.cards ? "home-grid" : "home-grid no-side-cards" },
+    el("div", { class: p.cards || p.silos ? "home-grid" : "home-grid no-side-cards" },
       p.needs,
-      el("div", { class: "home-side" }, p.quick, p.cards)),
+      el("div", { class: "home-side" }, p.quick, p.silos, p.cards)),
   ];
 }
 
@@ -409,6 +409,16 @@ async function turnOnNotifications() {
   }
 }
 
+// "Machine checklists – 16 · 0 due soon · 0 overdue" — red when anything is in its last hour or overdue.
+function machineFold(units, sections) {
+  const sts = units.map((u) => unitStatus(u));
+  const late = sts.filter((s) => s.overdue).length;
+  const soon = sts.filter((s) => s.dueSoon).length;
+  const alert = late + soon > 0;
+  return deviceFold("hub-machine-checklists", `${alert ? "⚠ " : ""}Machine checklists – ${units.length} · ${soon} due soon · ${late} overdue`, { alert },
+    el("div", { class: "hub-lines" }, sections));
+}
+
 // Checklists: the machine checklists (14-day), the station checklists, and the Line Check Log, in one place.
 function openChecklistsHub() {
   if (closeModule) closeModule();
@@ -433,9 +443,11 @@ function openChecklistsHub() {
         el("button", { class: "btn big secondary", type: "button", onclick: () => openReelScreen("flag", openChecklistsHub, "Checklists") }, "🏷 Flag a reel"),
         usesDowntime(shownRoles()) ? el("button", { class: "btn big secondary", type: "button", onclick: () => openDowntimeScreen(openChecklistsHub, "Checklists") }, "⏱ Downtime & scrap") : null,
         shownRoles().some((r) => SILO_UPDATE_ROLES.includes(r)) ? el("button", { class: "btn big secondary", type: "button", onclick: () => openSiloScreen(openChecklistsHub, "Checklists") }, "🛢 Update silo levels") : null),
-      el("h2", {}, "Machine checklists"),
-      loading ? spinner() : !units.length ? emptyState("No machine checklists yet", "An admin sets them up in Admin → Checklists.") : null,
-      el("div", { class: "hub-lines" }, [...byLine.entries()].map(([lineId, list]) =>
+      // One fold-away tab (Decision 108), closed until opened (remembered on this device). The header counts; anything
+      // in its last hour or overdue turns it red, so nothing overdue hides inside.
+      loading ? [el("h2", {}, "Machine checklists"), spinner()]
+        : !units.length ? [el("h2", {}, "Machine checklists"), emptyState("No machine checklists yet", "An admin sets them up in Admin → Checklists.")]
+        : machineFold(units, [...byLine.entries()].map(([lineId, list]) =>
         el("section", { class: "card hub-line" },
           el("strong", {}, lineId === "plant" ? "Plant-wide" : lineName(lineId)),
           el("div", { class: "person-list" }, list.map((u) => {

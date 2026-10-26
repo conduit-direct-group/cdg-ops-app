@@ -19,6 +19,7 @@
 
 const TYPES = {
   "near-miss": { label: "Near miss", icon: "⚠" },
+  "safety-concern": { label: "Safety concern", icon: "🦺" }, // something unsafe nobody has been hurt by yet (Decision 108)
   "first-aid": { label: "First aid", icon: "🩹" },
   injury: { label: "Injury", icon: "🚑" },
   property: { label: "Property damage", icon: "🏚" },
@@ -28,6 +29,9 @@ const STATUSES = {
   reported: "🆕 Reported", investigating: "🔍 Investigating", actions: "🛠 Actions open", closed: "✓ Closed",
 };
 const FOLLOW_ROLES = ["training-safety", "plant-manager", "admin"];
+// Can be sent anonymously (Decision 108) — then no name or employee number is stored anywhere: not in the report, the
+// activity log, or a file name. Injury and first aid never can be.
+const ANON_TYPES = ["near-miss", "safety-concern"];
 const NOTIFY_ROLES = ["training-safety", "plant-manager", "supervisor"];
 const TREATMENTS = ["first-aid-only", "medical-treatment", "emergency-room", "hospitalized-overnight"];
 const OUTCOMES = ["death", "days-away", "restricted", "other-recordable", "not-recordable"];
@@ -57,7 +61,7 @@ function cleanReport(raw, { lineIds = [], stationIds = [], nowIso = "9999" } = {
   const photos = Array.isArray(raw?.photos) ? raw.photos.slice(0, 6).map(String) : [];
   if (photos.some((u) => !isUploadId(u))) return { error: "A photo didn't upload. Add it again." };
   const witnesses = line(raw?.witnesses, 300);
-  const anonymous = type === "near-miss" && raw?.anonymous === true; // only near misses can be anonymous
+  const anonymous = ANON_TYPES.includes(type) && raw?.anonymous === true; // near misses and safety concerns only
   // Injury / first aid: who was hurt and where on the body (the rest is filled in at follow-up).
   const hurt = ["injury", "first-aid"].includes(type) ? { name: line(raw?.hurt?.name, 80), bodyPart: line(raw?.hurt?.bodyPart, 80) } : null;
   if (hurt && !hurt.name) return { error: "Who was hurt?" };
@@ -74,7 +78,9 @@ function cleanSignature(raw, who = "The signer") {
   const png = typeof raw?.png === "string" ? raw.png : "";
   if (!/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(png) || png.length < 200) return { error: `${who}: sign in the box.` };
   if (png.length > 300000) return { error: `${who}: the signature is too large — clear it and sign again.` };
-  return { sig: { name, png } };
+  // emp: picked from the people list (an employee); left out for someone who isn't (a visitor, a contractor).
+  const emp = typeof raw?.emp === "string" && /^[A-Za-z0-9]{1,12}$/.test(raw.emp) ? raw.emp : null;
+  return { sig: { name, png, emp } };
 }
 
 // Signatures sent with a report: { supervisor?, witnesses[] } — any can be added later too.
@@ -149,4 +155,5 @@ function plantNowIso(ms = Date.now()) {
   return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
 }
 
-module.exports = { INJURY_FIELDS, RETAIN_YEARS, keepUntilMs, isUploadId, SIG_TYPES, MAX_WITNESSES, cleanSignature, cleanSignatures, TYPES, STATUSES, FOLLOW_ROLES, NOTIFY_ROLES, TREATMENTS, OUTCOMES, canFollow, cleanReport, cleanWhys, cleanAction, cleanOsha, nextStatus, plantNowIso };
+module.exports = {
+  ANON_TYPES, INJURY_FIELDS, RETAIN_YEARS, keepUntilMs, isUploadId, SIG_TYPES, MAX_WITNESSES, cleanSignature, cleanSignatures, TYPES, STATUSES, FOLLOW_ROLES, NOTIFY_ROLES, TREATMENTS, OUTCOMES, canFollow, cleanReport, cleanWhys, cleanAction, cleanOsha, nextStatus, plantNowIso };

@@ -91,7 +91,9 @@ export function unitStatus(u, now = Date.now()) {
     }
   }
   const total = (u.template.items || []).length;
-  return { overdue: never > 0 || late > 0, pending: pendingFor(u).length, never, late, total, daysLeft: Number.isFinite(soonestDue) ? Math.ceil((soonestDue - now) / DAY_MS) : null, lastAt, lastBy };
+  // dueSoon: an item comes due within the hour (the "last hour" of the status rule).
+  const dueSoon = !(never > 0 || late > 0) && Number.isFinite(soonestDue) && soonestDue - now <= 3600000;
+  return { overdue: never > 0 || late > 0, dueSoon, pending: pendingFor(u).length, never, late, total, daysLeft: Number.isFinite(soonestDue) ? Math.ceil((soonestDue - now) / DAY_MS) : null, lastAt, lastBy };
 }
 
 export function overdueUnits() {

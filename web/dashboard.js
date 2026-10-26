@@ -19,7 +19,7 @@ import { shopItems } from "./shoptasks.js";
 import { stationItems } from "./stations.js";
 import { lineCheckItems } from "./linecheck.js";
 import { db, TEST_MODE, callAdminListEmployees, callAnnouncementSummary } from "./firebase.js";
-import { siloItems, siloCard } from "./silos.js";
+import { siloItems, siloFold } from "./silos.js";
 import { downtimeItems } from "./downtime.js";
 import { crewItems, crewCard, myShiftLines } from "./crew.js";
 import { reelItems, reelCard } from "./reels.js";
@@ -399,9 +399,12 @@ export function dashboard(ctx) {
         }))
     : null;
 
-  const ids = cardsFor(roles);
+  // Silo levels fold away on Home (Decision 108) for the roles that had the silo card; the rest stay "At a glance".
+  const all = cardsFor(roles);
+  const silos = all.includes("silos") ? siloFold(ctx.go.silos) : null;
+  const ids = all.filter((id) => id !== "silos");
   const cards = ids.length
-    ? el("section", { class: "glance", "aria-label": "At a glance" }, el("h2", { class: "home-h2" }, "At a glance"), el("div", { class: "dash-cards" }, ids.map((id) => (id === "silos" ? siloCard(ctx.go.silos) : card(cardData(id, ctx), id)))))
+    ? el("section", { class: "glance", "aria-label": "At a glance" }, el("h2", { class: "home-h2" }, "At a glance"), el("div", { class: "dash-cards" }, ids.map((id) => card(cardData(id, ctx), id))))
     : null;
 
   // Announcements still to read sit right under the name (Chris, 10-23-2026), live as they come in.
@@ -410,7 +413,7 @@ export function dashboard(ctx) {
   // New messages, right under the announcements (Decision 102).
   const msgBar = ctx.go.messages ? messageBar(ctx.emp, ctx.go.messages, needRow) : null;
 
-  return { status, viewAs, annBar, msgBar, needs, quick, cards };
+  return { status, viewAs, annBar, msgBar, needs, quick, cards, silos };
 }
 
 // Lines down for the Open issues button — from the same summary as the plant status bar.

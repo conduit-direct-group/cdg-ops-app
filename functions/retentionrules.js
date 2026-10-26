@@ -13,7 +13,7 @@ const CATEGORIES = [
   { key: "reels", label: "Flagged reels / QC hold", covers: "Flagged reels and their decisions — quality traceability", days: 2 * YEAR },
   { key: "downtime", label: "Downtime & Scrap reports", covers: "Shift reports with their changeovers, downtime, and scrap (they also go to the spreadsheet)", days: 2 * YEAR },
   { key: "handoffs", label: "Shift handoffs", covers: "Shift handoff notes, sent and received", days: YEAR },
-  { key: "annSigs", label: "Announcement sign-offs", covers: "Who signed Read & understood — proof people were told", days: null },
+  { key: "annSigs", label: "Announcement sign-offs", covers: "Who signed Read & understood — proof people were told", days: null, locked: true }, // never delete (Decision 108)
   { key: "injury", label: "Injury and first-aid reports", covers: "Injury and first-aid reports with their private details, signatures, photos, and actions — counted from closing", days: null, hr: true, minDays: 5 * YEAR },
   { key: "incidents", label: "Near misses, property damage, spills", covers: "Near miss, property damage, and spill reports with their photos and actions — counted from closing", days: null },
   { key: "writeups", label: "Write-ups", covers: "Employee write-ups", days: null, hr: true },
@@ -34,18 +34,19 @@ function periodLabel(days) {
 
 // Saved periods + the defaults for anything not saved.
 function periods(saved = {}) {
-  return Object.fromEntries(CATEGORIES.map((c) => [c.key, Object.prototype.hasOwnProperty.call(saved, c.key) ? saved[c.key] : c.days]));
+  return Object.fromEntries(CATEGORIES.map((c) => [c.key, !c.locked && Object.prototype.hasOwnProperty.call(saved, c.key) ? saved[c.key] : c.days]));
 }
 
 // me: { roles, hr }. Admins change periods; write-ups and injury reports also need HR access.
 function canChange(cat, me) {
-  return !!cat && (me?.roles || []).includes("admin") && (!cat.hr || me.hr === true);
+  return !!cat && !cat.locked && (me?.roles || []).includes("admin") && (!cat.hr || me.hr === true);
 }
 
 // A new period for one group → { days } or { error }.
 function cleanPeriod(key, value) {
   const cat = byKey(key);
   if (!cat) return { error: "Pick a group of records." };
+  if (cat.locked) return { error: `${cat.label} are never deleted — that can't be changed.` };
   const days = value === null || value === "never" ? null : Number(value);
   if (days !== null && !CHOICES.includes(days)) return { error: "Pick one of the listed periods." };
   if (cat.minDays && days !== null && days < cat.minDays) return { error: `${cat.label} are kept at least ${periodLabel(cat.minDays)}.` };

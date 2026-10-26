@@ -20,6 +20,7 @@ const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { FieldValue } = require("firebase-admin/firestore");
 const pin = require("./pin");
 const T = require("./training");
+const signoffsLib = require("./signoffs");
 
 module.exports = function trainingApi({ db, auditLog, requireMember, requireAdmin, isTest, col }) {
   const refCol = db.collection("trainingRef");
@@ -173,7 +174,15 @@ module.exports = function trainingApi({ db, auditLog, requireMember, requireAdmi
 
   // { token, op, … } — every change a trainer makes. See the switch below for each op.
   const trainingSave = onCall({ memory: "512MiB" }, async (req) => {
-    const { test, trainer } = await requireTrainer(req);
+    const { me, test, trainer } = await requireTrainer(req);
+    // The sign-off rule (Decision 108): the trainer's employee # (their profile's roster name → Admin → People
+    // "Training record"), who was signed in on the tablet, and the module as it was signed.
+    const empOfRosterName = async (rosterName) => {
+      if (!rosterName) return null;
+      const q = await db.collection("employees").where("trainingName", "==", rosterName).limit(1).get();
+      return q.empty ? null : q.docs[0].id;
+    };
+    const logs = [];
     const d = req.data || {};
     const op = String(d.op || "");
     const now = Date.now();
@@ -225,6 +234,7 @@ module.exports = function trainingApi({ db, auditLog, requireMember, requireAdmi
         }
         const sigId = T.sigId(d.sig);
         const csigId = co ? T.sigId(d.csig) : selfCo ? sigId : null;
+        const trainerEmp = await empOfRosterName(trainer.employee);
         const fn = async (p, { data, r, name, more }) => {
           requireModule(data, d.code);
           const cur = T.levelOf(p.records, d.code);
@@ -235,8 +245,11 @@ module.exports = function trainingApi({ db, auditLog, requireMember, requireAdmi
             overdue: T.refreshersOverdue(position(r, p), (data.refreshers || {})[name], p.refresh, today),
           });
           if (!g.ok) throw new HttpsError("failed-precondition", g.msg);
-          const entry = { trainer: trainer.name, trainerId: trainer.id, date: T.fmtDate(now), ts: now, sigId,
+          const mod = (data.modules || []).find((m) => m.code === d.code);
+          const moduleVersion = signoffsLib.contentVersion(mod);
+          const entry = { trainer: trainer.name, trainerId: trainer.id, trainerEmp, signedInEmp: me.employeeNumber, moduleVersion, date: T.fmtDate(now), ts: now, sigId,
             ...(level === 4 ? { coordinator: selfCo ? trainer.name : co.name, coordinatorId: selfCo ? trainer.id : co.id, csigId } : {}) };
+          logs.push({ kind: "training-level", refId: `${name}:${d.code}:${level}`, version: moduleVersion, emp: trainerEmp || `trainer:${trainer.id}`, name: trainer.name, method: "pin+drawn", signedOn: me.employeeNumber, trainee: name, code: d.code, level });
           p.records = { ...p.records, [d.code]: T.signedRecords(p.records[d.code], level, entry) };
         };
         fn.reads = () => (trainer.employee ? [personRef(trainer.employee, test)] : []);
@@ -250,12 +263,17 @@ module.exports = function trainingApi({ db, auditLog, requireMember, requireAdmi
       // Remove the top signed level: { name, code, level } — the coordinator, or the trainer who signed it.
       case "revoke": {
         const level = Number(d.level);
+        const revokedByEmp = await empOfRosterName(trainer.employee);
         await onPerson(async (p, { data }) => {
           requireModule(data, d.code);
           const list = p.records[d.code] || [];
           if (level !== list.length || level < 1) throw new HttpsError("failed-precondition", "Only the top signed level can be removed.");
           if (!isCoordinator(trainer) && list[level - 1].trainerId !== trainer.id) throw new HttpsError("permission-denied", "Only the coordinator or the trainer who signed it can remove it.");
+          // Kept, not deleted (Decision 108): the removed level moves to p.revoked with who removed it and when.
+          const removed = { ...list[level - 1], level, revokedBy: trainer.name, revokedById: trainer.id, revokedByEmp, revokedSignedInEmp: me.employeeNumber, revokedTs: now };
+          p.revoked = { ...(p.revoked || {}), [d.code]: [...((p.revoked || {})[d.code] || []), removed] };
           p.records = { ...p.records, [d.code]: list.slice(0, level - 1) };
+          logs.push({ kind: "training-level-removed", refId: `${d.name}:${d.code}:${level}`, version: list[level - 1].moduleVersion || signoffsLib.contentVersion(list[level - 1]), emp: revokedByEmp || `trainer:${trainer.id}`, name: trainer.name, method: "pin", signedOn: me.employeeNumber, trainee: d.name, code: d.code, level });
         });
         job = T.workbookJob({ op, name: d.name, code: d.code, level });
         break;
@@ -441,6 +459,13 @@ module.exports = function trainingApi({ db, auditLog, requireMember, requireAdmi
       }
       default:
         throw new HttpsError("invalid-argument", "Unknown change.");
+    }
+
+    // The sign-off log (Decision 108): name, employee #, time, and the module version signed.
+    for (const e of new Map(logs.map((x) => [`${x.kind}|${x.refId}`, x])).values()) { // once each, even if the transaction re-ran
+      const gap = signoffsLib.missing(e);
+      if (gap) throw new HttpsError("internal", gap);
+      await C("signoffs", test).add({ ...e, at: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}) });
     }
 
     // The workbook gets the same change: through Microsoft sign-in (queue), or the coordinator's updates file.
