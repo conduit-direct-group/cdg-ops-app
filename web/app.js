@@ -260,8 +260,8 @@ function renderHome() {
   // Role names from the Roles list ("Line Lead"), not internal ids ("lead").
   const roleNames = new Map((data.roles || []).map((r) => [r.id, r.name]));
   const roles = (data.myself?.roles || state.claims.roles || []).map((r) => roleNames.get(r) || r).join(", ");
-  // Home (Decision 66): name + line status · Needs you · quick buttons · at a glance. Everything else is in the
-  // navigation bar (Home · Map · Checklists · Announcements · More).
+  // Home (Decision 66, bar from Decision 112): name + line status · Needs you · quick buttons · at a glance. The bar is
+  // Home · Checklists · More.
   const p = dashboard({
     emp: m.emp, roles: m.roles, admin: m.admin, viewAs: m.admin ? state.viewAs : null,
     setViewAs: (v) => { state.viewAs = v; render(); renderNav(); },
@@ -275,6 +275,9 @@ function renderHome() {
       people: () => openModule(openAdmin),
       map: () => openMap(),
       need: () => openNeed(),
+      trucks: () => openTrucksScreen(),
+      qc: () => openReelScreen(),
+      machines: () => openMachineScreen(),
       report: () => openReport(),
       announcement: (id) => openAnn(id),
       announcements: () => openAnn(),
@@ -341,13 +344,11 @@ function renderNav() {
       badge ? el("span", { class: "nav-badge", "aria-label": `${badge} to sign` }, String(badge)) : null);
   nav.replaceChildren(...[
     el("span", { class: "nav-brand" }, "CDG Ops"),
-    item("home", "🏠", "Home", () => go("home")),
-    item("map", "🗺", "Map", () => openMap()),
+    // The bar (Decision 112, replaces 66): Home · Checklists (roles that work with the machines) · More. Shop Map, Need
+    // something?, safety reports, Maintenance Request and each role's own tool (Trucks, QC hold, Machines) are quick
+    // buttons on Home; announcements to read sit at the top of Home, the full list is in More.
+    item("home", "🏠", "Home", () => go("home"), unsigned),
     usesMachines(shownRoles()) ? item("checklists", "📋", "Checklists", () => openChecklistsHub()) : null,
-    canViewMachines(shownRoles()) ? item("machines", "⚙", "Machines", () => openMachineScreen()) : null,
-    canCheckTrucks(shownRoles()) ? item("trucks", "🚚", "Trucks", () => openTrucksScreen()) : null,
-    shownRoles().includes("quality") ? item("qc", "🏷", "QC hold", () => openReelScreen()) : null,
-    item("ann", "📣", "Announce\u00adments" /* soft hyphen: wraps as Announce-ments on phones */, () => openAnn(), unsigned),
     item("more", "☰", "More", openMore),
   ].filter(Boolean));
 }
@@ -356,6 +357,8 @@ function renderNav() {
 function openMore() {
   const roles = shownRoles();
   const m = me();
+  // View as (Decision 112): More shows what that role sees — no HR access, no Admin, no form editing beyond the role's.
+  const viewing = m.admin && !!state.viewAs;
   const close = () => { document.removeEventListener("keydown", onKey); backdrop.remove(); };
   const onKey = (e) => { if (e.key === "Escape") close(); };
   const act = (fn) => () => { close(); fn(); };
@@ -367,16 +370,18 @@ function openMore() {
     usesMachines(roles) ? row("🔧", "Fix Library", () => openFixes()) : null,
     roles.some((r) => ["maintenance", "admin", "plant-manager"].includes(r)) ? row("🚨", "Open issues", () => openIssues()) : null,
     roles.some((r) => ["training-safety", "admin"].includes(r)) ? row("🎓", "Training", () => { location.href = "training.html"; }) : null,
-    canViewTrucks(roles) && !canCheckTrucks(roles) ? row("🚚", "Trucks", () => openTrucksScreen()) : null,
+    canViewTrucks(roles) && !canCheckTrucks(roles) ? row("🚚", "Trucks (look only)", () => openTrucksScreen()) : null,
     usesQc(roles) && !roles.includes("quality") ? row("🏷", "QC hold — flagged reels", () => openReelScreen()) : null,
     usesDowntime(roles) ? row("⏱", "Downtime & scrap shift report", () => openDowntimeScreen()) : null,
-    row("🦺", "Safety reports — near miss / incident", () => openIncidentScreen()),
-    canWriteUps(roles, m.hr) ? row("🧾", "Write-ups", () => openWriteupsScreen()) : null,
+    // Home's quick button starts a new report; this is the full list (open reports, My reports, by month).
+    row("🦺", "All safety reports", () => openIncidentScreen()),
+    row("📣", "All announcements (and past ones)", () => openAnn()),
+    canWriteUps(roles, viewing ? false : m.hr) ? row("🧾", "Write-ups", () => openWriteupsScreen()) : null,
     row("👤", "My profile — who I report to, org chart", () => openProfileScreen()),
     row("📞", "Who to Call", () => openCallScreen()),
     row("📄", "Reference documents", () => openDocsScreen()),
-    !m.admin && editableForms(m.roles).length ? row("📝", "Edit forms", () => openFormsScreen()) : null,
-    m.admin ? row("⚙", "Admin", () => go("adminMenu")) : null,
+    (viewing ? editableForms(roles).length : !m.admin && editableForms(m.roles).length) ? row("📝", "Edit forms", () => openFormsScreen()) : null,
+    m.admin && !viewing ? row("⚙", "Admin", () => go("adminMenu")) : null,
     pushNow === "off" ? row("🔔", "Turn on notifications", turnOnNotifications) : null,
     !isInstalled() && (installPrompt || isIPhoneOrIPad())
       ? row("📲", "Add CDG Ops to your home screen", installPrompt ? install : () => toast("In Safari, tap Share (the square with an arrow), then “Add to Home Screen.”")) : null,

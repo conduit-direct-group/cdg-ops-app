@@ -18,6 +18,8 @@ import { stationItems } from "./stations.js";
 import { lineCheckItems } from "./linecheck.js";
 import { db, TEST_MODE, callAdminListEmployees, callAnnouncementSummary } from "./firebase.js";
 import { siloItems, siloFold } from "./silos.js";
+import { canCheckTrucks } from "./trucks.js";
+import { canViewMachines } from "./machines.js";
 import { downtimeItems } from "./downtime.js";
 import { crewItems, crewCard, myShiftLines } from "./crew.js";
 import { reelItems, reelCard } from "./reels.js";
@@ -381,11 +383,18 @@ export function dashboard(ctx) {
     el("h2", { class: "home-h2" }, "Needs you"),
     items.length ? el("div", { class: "need-list" }, items.map(needRow)) : el("p", { class: "need-empty" }, "✓ Nothing needs you right now."));
 
-  const quick = el("div", { class: machines ? "quick-row" : "quick-row two" },
+  // Quick buttons (each only for the roles that have it). Role tools that used to be on the bar (Decision 112): Trucks
+  // for Logistics & Distribution, QC hold for Quality, Machines for Maintenance, the Production Manager and Admins.
+  const buttons = [
     el("button", { class: "btn big secondary", type: "button", onclick: ctx.go.map }, "🗺 Shop Map"),
     el("button", { class: "btn big", type: "button", onclick: ctx.go.need }, "🙋 Need something?"),
     el("button", { class: "btn big secondary", type: "button", onclick: () => ctx.go.incidents("report") }, "🦺 Near miss / incident"),
-    machines ? el("button", { class: "btn big danger", type: "button", onclick: ctx.go.report }, "🚨 Maintenance Request") : null);
+    machines ? el("button", { class: "btn big danger", type: "button", onclick: ctx.go.report }, "🚨 Maintenance Request") : null,
+    canCheckTrucks(roles) ? el("button", { class: "btn big secondary", type: "button", onclick: ctx.go.trucks }, "🚚 Trucks") : null,
+    roles.includes("quality") ? el("button", { class: "btn big secondary", type: "button", onclick: ctx.go.qc }, "🏷 QC hold") : null,
+    canViewMachines(roles) ? el("button", { class: "btn big secondary", type: "button", onclick: ctx.go.machines }, "⚙ Machines") : null,
+  ].filter(Boolean);
+  const quick = el("div", { class: buttons.length === 3 ? "quick-row two" : "quick-row" }, buttons);
 
   // Admin: View as any role (lists still show your own account's data).
   const viewAs = ctx.admin
