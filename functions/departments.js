@@ -67,7 +67,8 @@ function cleanOrg(raw, { departments = [], people = [], emp, teamIds = null } = 
   const supervisesTeams = Array.isArray(raw?.supervisesTeams) ? [...new Set(raw.supervisesTeams.map(String))] : [];
   if (supervisesTeams.length > 10) return { error: "Pick up to 10 teams." };
   if (teamIds && supervisesTeams.some((t) => !teamIds.includes(t))) return { error: "Pick teams from the list." };
-  return { org: { department, head, reportsTo, supervisesTeams } };
+  const canPost = raw?.canPost === true; // may post announcements (Decision 106)
+  return { org: { department, head, reportsTo, supervisesTeams, canPost } };
 }
 
 // The head of a department: the person ticked as head (active), or for Production with none ticked, the

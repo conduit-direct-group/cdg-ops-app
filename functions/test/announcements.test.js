@@ -10,9 +10,11 @@ const people = [
   { id: "3001", roles: ["supervisor"], team: "team-a", lineIds: [] },
   { id: "3002", roles: ["supervisor"], team: null, lineIds: ["line-2"] },
   { id: "3003", roles: ["supervisor"], team: null, lineIds: [] },
-  { id: "4001", roles: ["office"], team: null, lineIds: [] },
+  { id: "4001", roles: ["office"], team: null, lineIds: [], department: "office" },
+  { id: "4002", roles: ["quality"], team: null, lineIds: [], department: "quality" },
+  { id: "4003", roles: ["quality"], team: "team-b", lineIds: [], department: "quality" },
 ];
-const known = { roles: ["admin", "operator", "supervisor", "office"], teams: ["team-a", "team-b"], lines: ["line-1", "line-2"] };
+const known = { roles: ["admin", "operator", "supervisor", "office", "quality"], teams: ["team-a", "team-b"], lines: ["line-1", "line-2"], departments: ["office", "quality"] };
 const ours = (url) => (url.startsWith("https://firebasestorage.googleapis.com/v0/b/cdg/o/uploads") ? "uploads/x" : null);
 const good = { title: "New glove rule", body: "Cut gloves at the winder from Monday.", priority: "safety", ackBy: "2026-10-25", audience: { everyone: true } };
 
@@ -37,16 +39,33 @@ test("an announcement needs a title, message, priority, acknowledge-by date, and
   assert.match(a.cleanAnnouncement({ ...good, file: { url: "https://evil.example/x.pdf", kind: "pdf" } }, known, ours).error, /attachment/);
   const { announcement } = a.cleanAnnouncement({ ...good, title: "  New   glove rule ", audience: { everyone: true, roles: ["admin"] }, file: { url: "https://firebasestorage.googleapis.com/v0/b/cdg/o/uploads%2F1001%2Fa.pdf", kind: "pdf", name: "Rule.pdf" }, keepForNewHires: true }, known, ours);
   assert.strictEqual(announcement.title, "New glove rule");
-  assert.deepStrictEqual(announcement.audience, { everyone: true, roles: [], roleTeams: [], teams: [], lines: [], people: [] });
+  assert.deepStrictEqual(announcement.audience, { everyone: true, roles: [], roleTeams: [], teams: [], departments: [], lines: [], people: [] });
+  assert.match(a.cleanAnnouncement({ ...good, audience: { departments: ["moon"] } }, known, ours).error, /departments from the list/);
   assert.strictEqual(announcement.file.kind, "pdf");
   assert.strictEqual(announcement.keepForNewHires, true);
   assert.strictEqual(announcement.endDate, null);
 });
 
-test("audience: everyone, or any mix of roles, teams, lines, people — never someone turned off", () => {
-  assert.deepStrictEqual(a.matchAudience({ everyone: true }, people), ["1001", "2001", "2002", "3001", "3002", "3003", "4001"]);
-  assert.deepStrictEqual(a.matchAudience({ roles: ["office"], teams: ["team-a"] }, people), ["2001", "3001", "4001"]);
-  assert.deepStrictEqual(a.matchAudience({ lines: ["line-2"], people: ["1001", "2003"] }, people), ["1001", "2002", "3002"]);
+test("audience: everyone, or any mix of roles, teams, departments, lines, people — never someone turned off", () => {
+  // No team (Decision 109): everyone, their department, or by name — never through roles, teams, or lines.
+  assert.deepStrictEqual(a.matchAudience({ everyone: true }, people), ["1001", "2001", "2002", "3001", "3002", "3003", "4001", "4002", "4003"]);
+  assert.deepStrictEqual(a.matchAudience({ roles: ["office"], teams: ["team-a"] }, people), ["2001", "3001"]);
+  assert.deepStrictEqual(a.matchAudience({ lines: ["line-2"], people: ["1001", "2003"] }, people), ["1001", "2002"]);
+  assert.deepStrictEqual(a.matchAudience({ departments: ["quality"] }, people), ["4002", "4003"]);
+  assert.deepStrictEqual(a.matchAudience({ departments: ["quality"], teams: ["team-a"], people: ["4001"] }, people), ["2001", "3001", "4001", "4002", "4003"]);
+});
+
+test("who picks what (Decision 108): Admins any audience, everyone first; department heads their department, teams, people", () => {
+  const admin = a.postOptions({ roles: ["admin"], deptHead: true, department: "office" });
+  assert.deepStrictEqual(admin.start, { everyone: true });
+  assert.strictEqual(a.checkAudience({ roles: ["operator"] }, admin), "");
+  const head = a.postOptions({ roles: ["quality"], deptHead: true, department: "quality" });
+  assert.deepStrictEqual(head.start, { everyone: false, departments: ["quality"] });
+  assert.strictEqual(a.checkAudience({ departments: ["quality"], teams: ["team-a"], people: ["2001"] }, head), "");
+  assert.match(a.checkAudience({ everyone: true }, head), /own department/);
+  assert.match(a.checkAudience({ roles: ["operator"] }, head), /own department/);
+  assert.match(a.checkAudience({ departments: ["office"] }, head), /own department/);
+  assert.strictEqual(a.postOptions({ roles: ["supervisor"], canPost: true }).any, true); // ticked in Admin → People (107)
 });
 
 test("a supervisor's crew is their team, else nobody (no home lines)", () => {
@@ -68,8 +87,8 @@ test("trackers: the poster plus supervisors with crew in the audience; scope by 
 
 test("keep for new hires: new matches are added, nobody is dropped; otherwise the list stays", () => {
   const kept = { keepForNewHires: true, audience: { roles: ["operator"] }, audienceEmps: ["2002", "4001"] };
-  assert.deepStrictEqual(a.refreshedAudience(kept, [...people, { id: "5001", roles: ["operator"] }]), ["2001", "2002", "4001", "5001"]);
-  assert.deepStrictEqual(a.refreshedAudience({ ...kept, keepForNewHires: false }, [...people, { id: "5001", roles: ["operator"] }]), ["2002", "4001"]);
+  assert.deepStrictEqual(a.refreshedAudience(kept, [...people, { id: "5001", roles: ["operator"], team: "team-a" }]), ["2001", "2002", "4001", "5001"]);
+  assert.deepStrictEqual(a.refreshedAudience({ ...kept, keepForNewHires: false }, [...people, { id: "5001", roles: ["operator"], team: "team-a" }]), ["2002", "4001"]);
 });
 
 test("editing the words, attachment, or priority means everyone signs again; dates and audience don't", () => {
@@ -130,4 +149,12 @@ test("roles on chosen teams only: e.g. the Supervisors of Team B — their own t
   assert.deepStrictEqual(a.matchAudience({ roles: ["supervisor"], roleTeams: ["team-b"] }, staff), ["2", "3"]);
   assert.deepStrictEqual(a.matchAudience({ roles: ["supervisor"] }, staff), ["1", "2", "3"]);
   assert.deepStrictEqual(a.matchAudience({ roles: ["supervisor"], roleTeams: ["team-b"], people: ["4"] }, staff), ["2", "3", "4"]);
+});
+
+test("who posts (Decision 106): Admins, department heads, and people ticked Can post", () => {
+  assert.ok(a.canPostNow({ roles: ["admin"] }));
+  assert.ok(a.canPostNow({ roles: ["office"], deptHead: true }));
+  assert.ok(a.canPostNow({ roles: ["supervisor"], canPost: true }));
+  assert.ok(!a.canPostNow({ roles: ["supervisor"] }));
+  assert.ok(!a.canPostNow({ roles: ["office"], canPost: "yes" }));
 });

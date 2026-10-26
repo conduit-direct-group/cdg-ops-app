@@ -5,7 +5,6 @@
 
 import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, picker } from "./ui.js";
 import { data, onDataChange, lineName } from "./data.js";
-import { rolePosts } from "./announcements.js";
 import { NAV_ITEMS, roleShows } from "./nav.js";
 import { roleEditsMachines } from "./machines.js";
 import { rolePostsTrucks } from "./trucks.js";
@@ -604,14 +603,10 @@ export function openRoles(container, { onExit }) {
       title: "Roles", noun: "role", a: "a role", plural: "roles", nameLabel: "Role name (e.g. Quality)",
       hint: "A person's roles decide what shows on their home screen and what they can do.",
       items: () => data.roles, save: callAdminSaveRole, rename: true,
-      meta: (r) => [rolePosts(r) ? "📣 Can post announcements" : null, roleEditsMachines(r) ? "⚙ Can edit machines" : null, rolePostsTrucks(r) ? "🚚 Can post trucks" : null].filter(Boolean).join(" · ") || null,
-      // Who may post announcements (Decision 58). Starts on for Admin, Production Manager, Supervisor, Training & Safety, Office.
+      meta: (r) => [roleEditsMachines(r) ? "⚙ Can edit machines" : null, rolePostsTrucks(r) ? "🚚 Can post trucks" : null].filter(Boolean).join(" · ") || null,
+      // Who posts announcements and starts messages is a fixed list now (Decision 106: department heads, Admins, and people ticked in Admin → People post;
+      // Line Leads, Supervisors, department heads, Production Manager, Admins start messages) — no per-role switch.
       members: (r, { kit, show }) => {
-        const on = rolePosts(r);
-        const flip = async () => {
-          const ok = await kit.act(() => callAdminSaveRole({ id: r.id, name: r.name, canPostAnnouncements: !on }), flip);
-          if (ok) show("item", on ? `${r.name}: posting announcements turned off` : `${r.name} can now post announcements`, "ok");
-        };
         // Which forms people with this role may edit in Forms (Decision 60). Admins edit every form.
         const editing = r.editForms || [];
         const toggleForm = async (formId) => {
@@ -649,11 +644,8 @@ export function openRoles(container, { onExit }) {
                    return el("button", { class: on ? "chip on" : "chip", type: "button", "aria-pressed": String(on), disabled: kit.busy, onclick: () => flipNav(i.key) }, `${on ? "✓ " : ""}${i.label}`);
                  }))]
               : el("p", { class: "card-note" }, "Nothing extra for this role — More has the items everyone gets.")),
-          el("div", { class: "card" },
-            el("strong", {}, "📣 Announcements"),
-            el("p", { class: "card-note" }, on ? "People with this role can post announcements." : "People with this role can't post announcements."),
-            el("button", { class: on ? "btn secondary" : "btn", type: "button", disabled: kit.busy, onclick: flip }, on ? "Turn off posting" : "✔ Allow posting")),
 
+          el("p", { class: "card-note" }, "📣 Announcements: department heads, Admins, and anyone ticked “Can post announcements” in Admin → People post them. 💬 Messages: Line Leads, Supervisors, department heads, the Production Manager, and Admins start them. (Department heads are set in Admin → People too.)"),
           el("div", { class: "card" },
             el("strong", {}, "⚙ Machines"),
             el("p", { class: "card-note" }, edits ? "People with this role can add and edit machine parts, specs, photos, and notes." : "People with this role can't edit machines. (Maintenance, Production Manager, and Admin can always view them.)"),

@@ -149,6 +149,17 @@ test("open issues board: Maintenance, Production Manager, Admin, and Supervisors
 
 // ---- announcement tasks ---------------------------------------------------------------------------------------------
 
+test("tasks (Decision 106): whoever assigned a task reads it, even for someone on another team — no one else gains access", async () => {
+  await env.withSecurityRulesDisabled(async (ctx) => {
+    await setDoc(doc(ctx.firestore(), "annTasks", "m1"), { emp: "9005", status: "done", annTitle: "Sweep bay 2", team: "b", source: "message", assignedBy: "9011" });
+    await setDoc(doc(ctx.firestore(), "employees", "9011"), { name: "Lead A", roles: ["lead"], active: true, team: "a" });
+  });
+  await assertSucceeds(getDoc(doc(db(9011), "annTasks", "m1"))); // the assigner (a Team A lead), task on Team B
+  await assertSucceeds(getDocs(query(collection(db(9011), "annTasks"), where("assignedBy", "==", "9011"))));
+  await assertFails(getDoc(doc(db(9001), "annTasks", "m1"))); // an operator not on it
+  await assertFails(setDoc(doc(db(9011), "annTasks", "m2"), { emp: "9001", assignedBy: "9011" })); // nobody writes from a phone
+});
+
 test("announcement tasks: the person sees their own; supervisors, Production Manager, Admins see all; a Line Lead only their own team's; nobody writes", async () => {
   await env.withSecurityRulesDisabled(async (ctx) => {
     await setDoc(doc(ctx.firestore(), "annTasks", "t1"), { emp: "9001", status: "open", annTitle: "Wipe the panels", team: "a" });
@@ -279,6 +290,29 @@ test("write-ups and the Crew Board station setup are server-only — not even HR
     for (const emp of [9001, 9003, 9006, 9009]) await assertFails(getDoc(doc(db(emp), c, id)));
   }
   await assertFails(setDoc(doc(db(9009), "writeups", "w2"), { emp: "9003", writerEmp: "9009" }));
+});
+
+test("messages: only the ones delivered to you or sent by you — not even an Admin or HR access browses others'", async () => {
+  await seed(async (d) => {
+    for (const c of ["messages", "test_messages"]) {
+      await setDoc(doc(d, c, "m1"), { fromEmp: "9006", recipients: ["9001"], text: "made-up" });
+      await setDoc(doc(d, c, "m2"), { fromEmp: "9006", recipients: [], text: "not delivered" });
+    }
+    await setDoc(doc(d, "messagesSeen", "9001"), { emp: "9001", seen: {} });
+    await setDoc(doc(d, "messageReviews", "r1"), { by: "9009", emp: "9001", reason: "made-up" });
+  });
+  for (const c of ["messages", "test_messages"]) {
+    await assertSucceeds(getDoc(doc(db(9001), c, "m1"))); // delivered to them
+    await assertSucceeds(getDoc(doc(db(9006), c, "m1"))); // the sender
+    for (const emp of [9002, 9004, 9009, 9003]) await assertFails(getDoc(doc(db(emp), c, "m1")));
+    await assertFails(getDoc(doc(db(9001), c, "m2"))); // never delivered = never readable
+    await assertSucceeds(getDocs(query(collection(db(9001), c), where("recipients", "array-contains", "9001"))));
+    await assertFails(getDocs(query(collection(db(9004), c), where("recipients", "array-contains", "9001"))));
+  }
+  await assertSucceeds(getDoc(doc(db(9001), "messagesSeen", "9001")));
+  await assertFails(getDoc(doc(db(9006), "messagesSeen", "9001")));
+  for (const emp of [9004, 9009]) await assertFails(getDoc(doc(db(emp), "messageReviews", "r1")));
+  await assertFails(setDoc(doc(db(9006), "messages", "m3"), { fromEmp: "9006", recipients: ["9001"], text: "x" }));
 });
 
 test("phones can't write anything — every change goes through the server", async () => {

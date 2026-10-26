@@ -183,7 +183,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
   // `keep` = same roles, team, and home line as the last one (Save & add another).
   function startAdd(keep = null) {
     if (!keep) ui.justAdded = [];
-    ui.draft = { number: ui.nextNumber, name: "", roles: keep?.roles || ["operator"], team: keep?.team || "", department: keep?.department || "", head: false, reportsTo: "", supervisesTeams: [] };
+    ui.draft = { number: ui.nextNumber, name: "", roles: keep?.roles || ["operator"], team: keep?.team || "", department: keep?.department || "", head: false, reportsTo: "", supervisesTeams: [], canPost: false };
     show("add");
   }
 
@@ -193,6 +193,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
       number: p.employeeNumber, name: p.name, position: p.position || "", roles: p.rolesConfirmed ? [...p.roles] : [...p.suggestedRoles],
       team: p.team || "", trainingName: p.trainingName || "",
       department: orgOf(p).department || "", head: orgOf(p).deptHead === true, reportsTo: orgOf(p).override || "", supervisesTeams: [...(orgOf(p).supervisesTeams || [])],
+      canPost: orgOf(p).canPost === true,
     };
     show("edit");
   }
@@ -253,16 +254,16 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
       ui.selected = r.employeeNumber;
       show("tempPin");
     }
-    // Department, head, reports to — only when something changed. One head per department: if someone else is the
+    // Department, head, reports to, can post — only when something changed. One head per department: if someone else is the
     // head, ask "Replace [current head]?" first.
     async function saveOrg(emp, replace = false) {
       if (!ui.org) return true;
       const o = ui.org.byEmp.get(emp) || {};
       const sameTeams = [...(o.supervisesTeams || [])].sort().join() === [...(d.supervisesTeams || [])].sort().join();
-      if ((o.department || "") === (d.department || "") && (o.deptHead === true) === d.head && (o.override || "") === (d.reportsTo || "") && sameTeams) return true;
+      if ((o.department || "") === (d.department || "") && (o.deptHead === true) === d.head && (o.override || "") === (d.reportsTo || "") && sameTeams && (o.canPost === true) === (d.canPost === true)) return true;
       try {
         const supervisesTeams = d.roles.includes("supervisor") ? d.supervisesTeams || [] : [];
-        const { data: r } = await callAdminSaveOrg({ emp, department: d.department || null, head: d.head && !!d.department, reportsTo: d.reportsTo || null, supervisesTeams, replace });
+        const { data: r } = await callAdminSaveOrg({ emp, department: d.department || null, head: d.head && !!d.department, reportsTo: d.reportsTo || null, supervisesTeams, canPost: d.canPost === true, replace });
         await load();
         ui.replacedNote = r.replaced ? ` — ${r.replaced} is no longer the ${deptName(ui.org, d.department)} head` : "";
         return true;
@@ -326,6 +327,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
                   el("button", { class: "link-btn", type: "button", onclick: () => { d.department = suggested; render(); } }, "Use it"))
               : null,
             el("label", { class: "check-row" }, el("input", { type: "checkbox", checked: d.head, disabled: !d.department, onchange: (e) => { d.head = e.target.checked; } }), el("span", {}, d.department ? "⭐ Department head (one per department)" : "⭐ Department head — pick a department first")),
+            el("label", { class: "check-row" }, el("input", { type: "checkbox", checked: d.canPost, onchange: (e) => { d.canPost = e.target.checked; } }), el("span", {}, "📣 Can post announcements (department heads and Admins always can)")),
             d.roles.includes("supervisor")
               ? [el("p", { class: "field-label" }, "Teams they supervise (one or more shifts)"),
                  el("div", { class: "chips" }, (data.teams || []).filter((t) => t.active !== false || (d.supervisesTeams || []).includes(t.id)).map((t) => {
@@ -432,6 +434,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
       p.position ? el("p", { class: "hint" }, p.position) : null,
       ui.org ? el("div", { class: "card org-card" },
         el("p", {}, el("strong", {}, "Department: "), orgOf(p).department ? `${deptName(ui.org, orgOf(p).department)}${orgOf(p).isHead ? " · ⭐ Head" : ""}` : "none yet"),
+        orgOf(p).canPost ? el("p", {}, "📣 Can post announcements") : null,
         orgOf(p).supervisesTeams?.length ? el("p", {}, el("strong", {}, "Supervises: "), orgOf(p).supervisesTeams.map((t) => `Team ${teamName(t)}`).join(", ")) : null,
         el("p", {}, el("strong", {}, "Reports to: "), orgOf(p).reportsTo ? `${personName(orgOf(p).reportsTo)}${orgOf(p).source === "override" ? " (set by an admin)" : " (automatic)"}` : orgOf(p).source === "top" ? "no one (top of the chart)" : "⚠ missing")) : null,
       !p.rolesConfirmed ? el("p", { class: "message" }, "Role not confirmed yet — tap Edit, tick the right role(s), and Save.") : null,

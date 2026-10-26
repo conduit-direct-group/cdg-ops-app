@@ -48,6 +48,7 @@ const annTasksLib = require("./anntasks");
 const crewSeatsLib = require("./crewseats");
 const writeupsLib = require("./writeups");
 const retentionLib = require("./retentionrules");
+const messagingLib = require("./messaging");
 const signoffsLib = require("./signoffs");
 const crypto = require("node:crypto");
 const { getMessaging } = require("firebase-admin/messaging");
@@ -976,6 +977,7 @@ exports.voteFix = onCall(async (req) => {
     return { helpfulYes: yes, helpfulNo: no };
   });
 });
+
 
 // Admins, one-time (safe to run again): copy the old Line Fix Library into the new app (Decisions 25, 28).
 // Reads the old library (read-only — it is never changed), creates fix categories, copies photos/videos
@@ -2083,7 +2085,14 @@ async function peopleList() {
     id: d.id, name: d.get("name") || `Employee ${d.id}`, roles: d.get("roles") || [], team: d.get("team") || null,
     active: d.get("active") !== false, loginEnabled: login.has(d.id),
     supervisesTeams: d.get("supervisesTeams") || [], position: d.get("position") || "", trainingName: d.get("trainingName") || null,
+    department: d.get("department") || null,
   }));
+}
+
+// Active departments [{ id, name }] (Admin → Departments), for audiences.
+async function departmentList() {
+  const snap = await db.collection("meta").doc("departments").get();
+  return (snap.get("departments") || deptLib.startingDepartments()).filter((x) => x.active !== false).map((x) => ({ id: x.id, name: x.name }));
 }
 
 // ---------------------------------------------------------------------------
@@ -2121,16 +2130,27 @@ const announcementPush = (a, test, kind) => ({
   urgent: a.priority === "safety",
 });
 
-// Posters (roles allowed in Admin → Roles) and people who see everything: the people list for picking an audience.
+// Posters (department heads, Admins, and people ticked "Can post" — Decision 106) and people who see everything: the people list for an audience.
+async function posterOf(me) {
+  const snap = await employees.doc(me.employeeNumber).get();
+  return { roles: me.roles, deptHead: snap.get("deptHead") === true, department: snap.get("department") || null, canPost: snap.get("canPost") === true };
+}
+async function canPostAnnouncements(me) {
+  return annLib.canPostNow(await posterOf(me));
+}
 exports.announcementPeople = onCall(async (req) => {
   const me = await requireMember(req);
-  const roleDocs = (await roles.get()).docs.map((d) => ({ id: d.id, ...d.data() }));
-  if (!annLib.canPost(roleDocs, me.roles) && !hasRole(me.roles, annLib.SEE_ALL_ROLES)) {
-    throw new HttpsError("permission-denied", "Your role can't post announcements. An admin can turn it on in Admin → Roles.");
+  if (!(await canPostAnnouncements(me)) && !hasRole(me.roles, annLib.SEE_ALL_ROLES)) {
+    throw new HttpsError("permission-denied", "Only department heads, Admins, and people an Admin allows post announcements.");
   }
-  const people = withShiftLines((await peopleList()).filter((p) => p.active), await shiftLineAssignments(isTest(req)));
+  const [list, onLines, departments, poster] = await Promise.all([peopleList(), shiftLineAssignments(isTest(req)), departmentList(), posterOf(me)]);
+  const people = withShiftLines(list.filter((p) => p.active), onLines);
   people.sort((x, y) => x.name.localeCompare(y.name));
-  return { people: people.map(({ id, name, roles: r, team, supervisesTeams, lineIds, loginEnabled }) => ({ id, name, roles: r, team, supervisesTeams, lineIds, loginEnabled })) };
+  // Decision 108: what this poster may pick, and the audience a new announcement starts with.
+  return {
+    people: people.map(({ id, name, roles: r, team, department, supervisesTeams, lineIds, loginEnabled }) => ({ id, name, roles: r, team, department, supervisesTeams, lineIds, loginEnabled })),
+    departments, options: annLib.postOptions(poster),
+  };
 });
 
 // Post { title, body, priority, ackBy, endDate?, file?, audience, keepForNewHires } or edit (same plus { id }).
@@ -2138,13 +2158,15 @@ exports.announcementPeople = onCall(async (req) => {
 exports.postAnnouncement = onCall(async (req) => {
   const me = await requireMember(req);
   const test = isTest(req);
-  const [roleSnaps, teamSnaps, lineSnaps, everyone, onLines] = await Promise.all([roles.get(), teams.get(), lines.get(), peopleList(), shiftLineAssignments(test)]);
+  const [roleSnaps, teamSnaps, lineSnaps, everyone, onLines, departments, poster] = await Promise.all([roles.get(), teams.get(), lines.get(), peopleList(), shiftLineAssignments(test), departmentList(), posterOf(me)]);
   const people = withShiftLines(everyone, onLines); // a line audience = who is on that line this shift (Decision 104)
   const live = (snaps) => snaps.docs.filter((d) => d.get("active") !== false).map((d) => d.id);
   const roleDocs = roleSnaps.docs.map((d) => ({ id: d.id, ...d.data() }));
-  const known = { roles: live(roleSnaps), teams: live(teamSnaps), lines: live(lineSnaps) };
+  const known = { roles: live(roleSnaps), teams: live(teamSnaps), lines: live(lineSnaps), departments: departments.map((x) => x.id) };
   const { announcement, error } = annLib.cleanAnnouncement(req.data, known, (u) => (fixesLib.storagePath(u, BUCKET) || "").startsWith("uploads/"), plantToday());
   if (error) throw new HttpsError("invalid-argument", error);
+  const notAllowed = annLib.checkAudience(announcement.audience, annLib.postOptions(poster)); // Decision 108
+  if (notAllowed) throw new HttpsError("permission-denied", notAllowed);
   const audienceEmps = annLib.matchAudience(announcement.audience, people);
   if (!audienceEmps.length) throw new HttpsError("invalid-argument", "Nobody matches that audience right now. Pick others.");
   if (!annLib.signersOf({ ...announcement, audienceEmps }, people).length) {
@@ -2155,7 +2177,7 @@ exports.postAnnouncement = onCall(async (req) => {
   const now = FieldValue.serverTimestamp();
 
   if (!editId) {
-    if (!annLib.canPost(roleDocs, me.roles)) throw new HttpsError("permission-denied", "Your role can't post announcements. An admin can turn it on in Admin → Roles.");
+    if (!(await canPostAnnouncements(me))) throw new HttpsError("permission-denied", "Only department heads, Admins, and people an Admin allows post announcements.");
     const ref = annCol(test).doc();
     const doc = {
       ...announcement, version: 1, audienceEmps, trackers, ended: false,
@@ -4678,7 +4700,7 @@ async function orgData() {
     id: d.id, name: d.get("name") || `Employee ${d.id}`, roles: d.get("roles") || [], team: d.get("team") || null,
     active: d.get("active") !== false, position: d.get("position") || "",
     department: d.get("department") || null, deptHead: d.get("deptHead") === true, reportsTo: d.get("reportsTo") || null,
-    supervisesTeams: d.get("supervisesTeams") || [],
+    supervisesTeams: d.get("supervisesTeams") || [], canPost: d.get("canPost") === true,
   }));
   const reports = deptLib.reportsToAll(people, { headsReportTo });
   // A title: the position, else the role names (Admin only when it's the only role).
@@ -4710,7 +4732,7 @@ exports.adminOrg = onCall(async (req) => {
     noHead: deptLib.departmentsWithoutHead(o.people, o.departments),
     people: o.people.map((x) => ({
       emp: x.id, department: x.department, suggested: deptLib.suggestDepartment(x.roles, o.departments), deptHead: x.deptHead,
-      isHead: !!x.department && o.headIds.get(x.department) === x.id, override: x.reportsTo, supervisesTeams: x.supervisesTeams,
+      isHead: !!x.department && o.headIds.get(x.department) === x.id, override: x.reportsTo, supervisesTeams: x.supervisesTeams, canPost: x.canPost,
       reportsTo: o.reports.get(x.id)?.reportsTo || null, source: o.reports.get(x.id)?.source || "missing",
     })),
   };
@@ -4734,8 +4756,8 @@ exports.adminSaveOrg = onCall(async (req) => {
       throw new HttpsError("already-exists", `${current.name} is the ${deptName} head. Replace ${current.name}?`, { currentHead: { emp: current.id, name: current.name } });
     }
     if (current) tx.update(employees.doc(current.id), { deptHead: false });
-    tx.update(employees.doc(emp), { department: org.department, deptHead: org.head, reportsTo: org.reportsTo || FieldValue.delete(), supervisesTeams: org.supervisesTeams });
-    auditRecord(tx, "updated", "department", emp, adminNumber, { department: org.department, head: org.head, reportsTo: org.reportsTo, supervisesTeams: org.supervisesTeams, replaced: current?.id || null });
+    tx.update(employees.doc(emp), { department: org.department, deptHead: org.head, reportsTo: org.reportsTo || FieldValue.delete(), supervisesTeams: org.supervisesTeams, canPost: org.canPost });
+    auditRecord(tx, "updated", "department", emp, adminNumber, { department: org.department, head: org.head, reportsTo: org.reportsTo, supervisesTeams: org.supervisesTeams, canPost: org.canPost, replaced: current?.id || null });
     return { ok: true, replaced: current ? current.name : null };
   });
   // Teams a Supervisor covers can change who a "those roles on Team B" announcement reaches (keep for new hires).
@@ -4927,34 +4949,38 @@ async function openAnnTask(tx, test, id) {
   return { ref, task: snap.data() };
 }
 
-// The people I can assign this announcement to: { annId } → { people: [{ emp, name, team }] }.
+// People on the shift running now (on their team's shift, or covering, and not absent) — who tasks go to (Decision 106).
+async function shiftCrew(test) {
+  const [people, ctx, s] = await Promise.all([messagePeople(test), messageShiftContext(test), crewShift(test)]);
+  const onShift = (p) => ["on", "covering"].includes(messagingLib.standing(p, ctx));
+  return { people, ctx, onShift, crew: people.filter(onShift), shiftEndMs: s?.now?.endMs || null };
+}
+
+// The people I can assign this announcement to: { annId } → { people: [{ emp, name, team }], shiftEndMs }.
 exports.annTaskPeople = onCall(async (req) => {
   const me = await requireMember(req);
   if (!annTasksLib.canAssign(me.roles)) throw new HttpsError("permission-denied", "Line Leads and Supervisors assign announcement tasks.");
-  const people = await peopleList();
-  const myself = people.find((p) => p.id === me.employeeNumber) || { id: me.employeeNumber, roles: me.roles };
+  const { crew, shiftEndMs } = await shiftCrew(isTest(req));
   const teamName = new Map((await teams.get()).docs.map((d) => [d.id, d.get("name") || d.id]));
-  // myTeam / covers: so the screen can say why the list is empty (no team set yet, or no one else on it).
   return {
-    myTeam: myself.team ? teamName.get(myself.team) || myself.team : null,
-    covers: (myself.supervisesTeams || []).map((t) => teamName.get(t) || t),
-    people: annTasksLib.crewFor(myself, people).map((p) => ({ emp: p.id, name: p.name, team: p.team ? teamName.get(p.team) || p.team : "", loginEnabled: p.loginEnabled })),
+    shiftEndMs,
+    people: crew.filter((p) => p.id !== me.employeeNumber).sort((a, b) => a.name.localeCompare(b.name))
+      .map((p) => ({ emp: p.id, name: p.name, team: p.team ? teamName.get(p.team) || p.team : "", loginEnabled: p.loginEnabled })),
   };
 });
 
-// Assign: { annId, emps: [employee #], dueDate: "YYYY-MM-DD", note? }. Someone with an open task on it already is skipped.
+// Assign: { annId, emps: [employee #], dueMs, note? } — people on my shift. Someone with an open task on it is skipped.
 exports.assignAnnouncementTask = onCall(async (req) => {
   const me = await requireMember(req);
   if (!annTasksLib.canAssign(me.roles)) throw new HttpsError("permission-denied", "Line Leads and Supervisors assign announcement tasks.");
   const test = isTest(req);
   const { snap } = await findAnnouncement(test, String(req.data?.annId || ""));
   const a = snap.data();
+  if (!a.isTask) throw new HttpsError("failed-precondition", "This announcement isn't marked as a task.");
   if (!(a.audienceEmps || []).includes(me.employeeNumber)) throw new HttpsError("permission-denied", "This announcement wasn't sent to you.");
   if (annLib.isEnded(a, plantToday())) throw new HttpsError("failed-precondition", "This announcement has ended.");
-  const people = await peopleList();
-  const myself = people.find((p) => p.id === me.employeeNumber) || { id: me.employeeNumber, roles: me.roles };
-  const crew = annTasksLib.crewFor(myself, people);
-  const { task, error } = annTasksLib.cleanAssign(req.data, { today: plantToday(), crewIds: crew.map((p) => p.id) });
+  const { people, crew } = await shiftCrew(test);
+  const { task, error } = annTasksLib.cleanAssign(req.data, { nowMs: Date.now(), crewIds: crew.filter((p) => p.id !== me.employeeNumber).map((p) => p.id) });
   if (error) throw new HttpsError("invalid-argument", error);
   const existing = await annTaskCol(test).where("annId", "==", snap.id).get();
   const busy = new Set(existing.docs.filter((d) => ["open", "done"].includes(d.get("status"))).map((d) => d.get("emp")));
@@ -4964,16 +4990,16 @@ exports.assignAnnouncementTask = onCall(async (req) => {
   for (const emp of fresh) {
     const p = byId.get(emp);
     batch.create(annTaskCol(test).doc(), {
-      annId: snap.id, annVersion: a.version || 1, annTitle: a.title, priority: a.priority, emp, name: p.name, team: p.team || null,
-      dueDate: task.dueDate, note: task.note, assignedBy: me.employeeNumber, assignedByName: me.name, status: "open", done: null, verified: null,
-      createdAt: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}),
+      source: "announcement", annId: snap.id, annVersion: a.version || 1, annTitle: a.title, priority: a.priority, emp, name: p.name, team: p.team || null,
+      dueMs: task.dueMs, dueDate: plantDayOf(task.dueMs), note: task.note, assignedBy: me.employeeNumber, assignedByName: me.name, status: "open", done: null, verified: null,
+      returns: [], createdAt: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}),
     });
   }
   if (fresh.length) {
-    batch.create(auditLog.doc(), { type: "assigned", kind: "announcement task", recordId: snap.id, by: me.employeeNumber, at: FieldValue.serverTimestamp(), emps: fresh, dueDate: task.dueDate, test });
+    batch.create(auditLog.doc(), { type: "assigned", kind: "announcement task", recordId: snap.id, by: me.employeeNumber, at: FieldValue.serverTimestamp(), emps: fresh, dueMs: task.dueMs, test });
     await batch.commit();
     await pushTo(test ? [me.employeeNumber] : fresh, {
-      title: `${test ? "[TEST] " : ""}📋 Task from ${me.name}`, body: `${a.title} — due ${task.dueDate}. Sign it done in the app.`, url: `/?ann=${snap.id}`,
+      title: `${test ? "[TEST] " : ""}📋 Task from ${me.name}`, body: `${a.title} — due ${fmtClock(task.dueMs)}. Tap Done in the app when it's finished.`, url: `/?ann=${snap.id}`,
     });
   }
   return { assigned: fresh.length, skipped: task.emps.length - fresh.length, test };
@@ -5003,21 +5029,31 @@ exports.markAnnTaskDone = onCall(signable(async (req) => {
   return { ok: true, name: signer.name, title: out, test };
 }));
 
-// The second sign-off, once it's done: { id, signer: { emp, pin }, device }. A Line Lead or Supervisor on that team (or
-// whoever assigned it), or the Production Manager — never the person who did it.
+// Who may confirm right now (Decision 106): the assigner; when the assigner is off shift, a Line Lead or Supervisor on
+// the current shift. → (person, task) => { role, roleName } | { error }
+async function confirmCheck(test) {
+  const { people, onShift } = await shiftCrew(test);
+  const byId = new Map(people.map((p) => [p.id, p]));
+  const on = (emp) => { const p = byId.get(emp); return !!p && (onShift(p) || !p.team); };
+  return (person, task) => annTasksLib.canConfirm(person, task, { assignerOnShift: on(task.assignedBy), personOnShift: on(person.id) });
+}
+
+// Confirm, once it's done: { id, signer: { emp, pin }, device }. The assigner — or, when they're off shift, a Line Lead or
+// Supervisor on this shift. Never the person who did it.
 exports.signAnnTask = onCall(signable(async (req) => {
   const me = await requireMember(req);
   const test = isTest(req);
   const signer = await requireSignature(req.data);
   const device = annLib.cleanDevice(req.data?.device);
+  const check = await confirmCheck(test);
   const w = await db.runTransaction(async (tx) => {
     const { ref, task } = await openAnnTask(tx, test, req.data?.id);
-    if (task.status === "open") throw new HttpsError("failed-precondition", `${task.name} hasn't signed it done yet.`);
-    if (task.status === "verified") throw new HttpsError("failed-precondition", `Already signed off by ${task.verified?.name}.`);
-    const who = annTasksLib.secondSigner({ id: signer.employeeNumber, roles: signer.roles, team: signer.employee.team || null, supervisesTeams: signer.employee.supervisesTeams || [] }, task);
+    if (task.status === "open") throw new HttpsError("failed-precondition", `${task.name} hasn't tapped Done yet.`);
+    if (task.status === "verified") throw new HttpsError("failed-precondition", `Already confirmed by ${task.verified?.name}.`);
+    const who = check({ id: signer.employeeNumber, roles: signer.roles }, task);
     if (who.error) throw new HttpsError("permission-denied", who.error);
     const version = await annVersionNow(tx, test, task);
-    tx.update(ref, { status: "verified", verified: { emp: signer.employeeNumber, name: signer.name, at: new Date(), device, role: who.role, roleName: who.roleName, annVersion: version } });
+    tx.update(ref, { status: "verified", closedAtMs: Date.now(), verified: { emp: signer.employeeNumber, name: signer.name, at: new Date(), device, role: who.role, roleName: who.roleName, annVersion: version } });
     logSignoff(tx, test, { kind: "announcement-task-verify", refId: ref.id, version, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber, role: who.role });
     return who;
   });
@@ -5034,7 +5070,7 @@ exports.removeAnnTask = onCall(async (req) => {
     const { ref, task } = await openAnnTask(tx, test, req.data?.id);
     if (!annTasksLib.canRemove(myself, task)) throw new HttpsError("permission-denied", "The person who assigned it, a lead or supervisor on that team, or the Production Manager can take it back.");
     if (task.status !== "open") throw new HttpsError("failed-precondition", "It's already signed done — it can't be taken back.");
-    tx.update(ref, { status: "removed", removedBy: me.employeeNumber, removedByName: me.name, removedAt: new Date() });
+    tx.update(ref, { status: "removed", closedAtMs: Date.now(), removedBy: me.employeeNumber, removedByName: me.name, removedAt: new Date() });
     auditRecord(tx, "removed", "announcement task", ref.id, me.employeeNumber, { test });
   });
   return { ok: true };
@@ -5048,9 +5084,61 @@ exports.annTaskSigners = onCall(async (req) => {
   if (!snap.exists) throw new HttpsError("not-found", "That task no longer exists.");
   const task = snap.data();
   const people = (await peopleList()).filter((p) => p.active && p.loginEnabled && p.id !== me.employeeNumber);
-  const list = req.data?.step === "verify" ? people.filter((p) => !annTasksLib.secondSigner(p, task).error) : people.filter((p) => p.id === task.emp);
+  const check = req.data?.step === "verify" ? await confirmCheck(test) : null;
+  const list = check ? people.filter((p) => !check(p, task).error) : people.filter((p) => p.id === task.emp);
   return { people: list.map((p) => ({ emp: p.id, name: p.name })) };
 });
+
+// Send it back (Decision 106): { id, note } — whoever may confirm it; it goes back to the person as not done.
+exports.returnAnnTask = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const { note, error } = annTasksLib.cleanReturn(req.data?.note);
+  if (error) throw new HttpsError("invalid-argument", error);
+  const check = await confirmCheck(test);
+  const task = await db.runTransaction(async (tx) => {
+    const { ref, task: t } = await openAnnTask(tx, test, req.data?.id);
+    if (t.status !== "done") throw new HttpsError("failed-precondition", t.status === "open" ? "It isn't marked done yet." : "It's already confirmed.");
+    const who = check({ id: me.employeeNumber, roles: me.roles }, t);
+    if (who.error) throw new HttpsError("permission-denied", who.error);
+    // The Done that was sent back stays with the return (Decision 108: a sign-off is never wiped).
+    tx.update(ref, { status: "open", done: null, returns: [...(t.returns || []), { by: me.employeeNumber, byName: me.name, note, atMs: Date.now(), prevDone: t.done || null }] });
+    auditRecord(tx, "sent back", "task", ref.id, me.employeeNumber, { note, test });
+    return t;
+  });
+  await pushTo(test ? [me.employeeNumber] : [task.emp], { title: `${test ? "[TEST] " : ""}↩ Task sent back by ${me.name}`, body: `${task.annTitle}: ${note}`, url: task.annId ? `/?ann=${task.annId}` : "/?messages=1" });
+  return { ok: true };
+});
+
+// Tasks I can confirm right now (Home): { tasks: [{ id, annTitle, name, emp, annId, rootId, dueMs, assignedByName }] }.
+exports.tasksToConfirm = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const snaps = await annTaskCol(test).where("status", "==", "done").get();
+  if (snaps.empty) return { tasks: [] };
+  const check = await confirmCheck(test);
+  const tasks = snaps.docs.map((d) => ({ id: d.id, ...d.data() })).filter((t) => !check({ id: me.employeeNumber, roles: me.roles }, t).error)
+    .map((t) => ({ id: t.id, annTitle: t.annTitle, name: t.name, emp: t.emp, annId: t.annId || null, rootId: t.rootId || null, dueMs: annTasksLib.dueMsOf(t), assignedByName: t.assignedByName }));
+  return { tasks };
+});
+
+// Every 15 minutes: an open task past its due time stays with the person (red) and its assigner is told once.
+exports.taskOverdueAlerts = onSchedule({ schedule: "every 15 minutes", timeZone: "America/Chicago", retryCount: 0 }, async () => {
+  const now = Date.now();
+  for (const test of [false, true]) {
+    const snaps = await annTaskCol(test).where("status", "==", "open").get();
+    for (const d of snaps.docs) {
+      const t = d.data();
+      if (t.overdueAlertedAtMs || annTasksLib.dueMsOf(t) > now) continue;
+      await d.ref.update({ overdueAlertedAtMs: now });
+      await pushTo([t.assignedBy], { title: `${test ? "[TEST] " : ""}⚠ Task not done: ${t.name}`, body: `${t.annTitle} was due ${fmtClock(annTasksLib.dueMsOf(t))}. It stays with ${t.name} until it's done.`, url: t.annId ? `/?ann=${t.annId}` : "/?messages=1" });
+    }
+  }
+});
+
+// Plant-time helpers for tasks.
+const plantDayOf = (ms) => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago" }).format(new Date(ms));
+const fmtClock = (ms) => new Date(ms).toLocaleString("en-US", { timeZone: "America/Chicago", weekday: "short", hour: "numeric", minute: "2-digit" });
 
 // ---------------------------------------------------------------------------
 // Crew Board step 2 — stations (Decision 69; levels and SOPs from the Shift Station Assignment sheet, Chris 10-23-2026).
@@ -5478,6 +5566,12 @@ async function runRetention(nowMs = Date.now()) {
   if (p.annSigs != null) await step("annSigs", async () => {
     add("annSigs", await retentionSweep("announcementSigs", "at", at(p.annSigs), O.announcementSigs, {}));
   });
+  if (p.tasks != null) await step("tasks", async () => {
+    add("tasks", await retentionSweep("annTasks", "closedAtMs", retentionLib.cutoffMs(nowMs, p.tasks), O.annTasks, {}));
+  });
+  if (p.messages != null) await step("messages", async () => {
+    add("messages", await retentionSweep("messages", "atMs", retentionLib.cutoffMs(nowMs, p.messages), O.messages, {}));
+  });
   if (p.writeups != null) await step("writeups", async () => {
     add("writeups", await retentionSweep("writeups", "date", day(p.writeups), O.writeups, {}));
   });
@@ -5543,4 +5637,284 @@ exports.adminSaveRetention = onCall(async (req) => {
   await retentionDoc.set({ periods: { [cat.key]: days }, updatedBy: me.employeeNumber, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
   await auditLog.add({ type: "updated", kind: "record retention", recordId: cat.key, by: me.employeeNumber, at: FieldValue.serverTimestamp(), from: before, to: days });
   return { ok: true, days };
+});
+
+// ---------------------------------------------------------------------------
+// In-app messaging (Decision 102; rules in messaging.js). Delivery is decided here when a message is sent — the shift
+// on now (rotation, or the team picked on Who's here today) and that shift's Here / Out marks. Phones read only the
+// messages delivered to them or sent by them (firestore.rules); every write goes through these functions.
+// ---------------------------------------------------------------------------
+
+const messagesSeen = (test) => col("messagesSeen", test);
+
+// Day hours for people with no team (Decision 109): meta/messaging.dayHours, set in Admin → Message hours.
+const messagingDoc = db.collection("meta").doc("messaging");
+async function messageDayHours() {
+  const raw = (await messagingDoc.get()).get("dayHours");
+  return raw ? messagingLib.cleanDayHours(raw).hours || messagingLib.DEFAULT_DAY_HOURS : messagingLib.DEFAULT_DAY_HOURS;
+}
+// Plant time now: { dow (0 = Sunday), minutes since midnight }.
+function plantClockNow() {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+    .formatToParts(new Date()).map((x) => [x.type, x.value]));
+  return { dow: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(parts.weekday), minutes: Number(parts.hour) * 60 + Number(parts.minute) };
+}
+
+// The shift on now, for the delivery check: { teamOnShift, marks, lineNow, shiftEndMs, dayHours, dayNow }.
+async function messageShiftContext(test) {
+  const [s, onLines, dayHours] = await Promise.all([crewShift(test), shiftLineAssignments(test), messageDayHours()]);
+  return { teamOnShift: s?.teamId || null, marks: s?.saved?.marks || {}, lineNow: onLines.now, shiftEndMs: s?.now?.endMs || null, dayHours, dayNow: plantClockNow() };
+}
+
+// Admins: the day hours for people with no team (Admin → Message hours). → { hours, text, isDefault }
+exports.adminMessageHours = onCall(async (req) => {
+  await requireAdmin(req);
+  const raw = (await messagingDoc.get()).get("dayHours");
+  const hours = await messageDayHours();
+  return { hours, text: messagingLib.dayHoursText(hours), isDefault: !raw };
+});
+// Admins: { days: [0–6], start: "HH:MM", end: "HH:MM" } (plant time).
+exports.adminSaveMessageHours = onCall(async (req) => {
+  const adminNumber = await requireAdmin(req);
+  const { hours, error } = messagingLib.cleanDayHours(req.data);
+  if (error) throw new HttpsError("invalid-argument", error);
+  const before = await messageDayHours();
+  await messagingDoc.set({ dayHours: hours, updatedBy: adminNumber, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+  await auditLog.add({ type: "updated", kind: "message hours", recordId: "dayHours", by: adminNumber, at: FieldValue.serverTimestamp(), from: before, to: hours });
+  return { ok: true, hours, text: messagingLib.dayHoursText(hours) };
+});
+
+// Active people (practice accounts only on the test site), shaped for messaging.js.
+async function messagePeople(test) {
+  return (await peopleList()).filter((p) => p.active && (test || !deptLib.isPracticeAccount(p.name)));
+}
+
+// Who starts messages (Decision 106): Line Leads, Supervisors, department heads, the Production Manager, Admins.
+async function canStartMessages(me) {
+  const snap = await employees.doc(me.employeeNumber).get();
+  return messagingLib.canStart({ roles: me.roles, deptHead: snap.get("deptHead") === true });
+}
+async function requireMessageStarter(me) {
+  if (!(await canStartMessages(me))) throw new HttpsError("permission-denied", "Only Line Leads, Supervisors, department heads, the Production Manager, and Admins start messages. You can answer with Got it, Done, or Need help.");
+}
+
+// The sender as messaging.js needs them: { roles, deptHead, department }.
+async function messageSender(me) {
+  const snap = await employees.doc(me.employeeNumber).get();
+  return { roles: me.roles, deptHead: snap.get("deptHead") === true, department: snap.get("department") || null };
+}
+
+// What the target is called ("Team A", "Line 2", "Supervisors", "Quality department", "Everyone", a person's name;
+// a mix joins its parts: "Quality department + Team B + Sam Sample").
+async function messageTargetLabel(to, people) {
+  if (to.type === "all") return "Everyone";
+  if (to.type === "set") {
+    const names = await Promise.all(to.parts.map((p) => messageTargetLabel(p, people)));
+    if (names.some((n) => !n)) return null;
+    return names.length > 4 ? `${names.slice(0, 3).join(" + ")} + ${names.length - 3} more` : names.join(" + ");
+  }
+  if (to.type === "department") { const d = (await departmentList()).find((x) => x.id === to.id); return d ? `${d.name} department` : null; }
+  if (to.type === "person") return people.find((p) => p.id === to.id)?.name || `#${to.id}`;
+  if (to.type === "team") { const t = await teams.doc(to.id).get(); return t.exists ? `Team ${t.get("name") || to.id}` : null; }
+  if (to.type === "line") { const l = await lines.doc(to.id).get(); return l.exists ? l.get("name") || to.id : null; }
+  const r = await roles.doc(to.id).get();
+  return r.exists ? `Everyone who is ${r.get("name") || to.id}` : null;
+}
+
+// Screen setup: { canStart, hr, people, teams, lines, roles, noticeSeen, noTeam (Admins: who has no team yet) }
+exports.messageStart = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const [people, teamSnaps, lineSnaps, roleSnaps, mine] = await Promise.all([messagePeople(test), teams.get(), lines.get(), roles.get(), employees.doc(me.employeeNumber).get()]);
+  const teamName = new Map(teamSnaps.docs.map((d) => [d.id, d.get("name") || d.id]));
+  const sender = { roles: me.roles, deptHead: mine.get("deptHead") === true, department: mine.get("department") || null };
+  const start = messagingLib.canStart(sender);
+  const opts = messagingLib.sendOptions(sender); // Decision 108: what this sender may pick, and the default "to"
+  const allDepts = start && opts.kinds.includes("department") ? await departmentList() : [];
+  return {
+    test, canStart: start, hr: me.hr, noticeSeen: !!mine.get("messagingNoticeAt"), options: opts,
+    departments: opts.departments === "any" ? allDepts : allDepts.filter((x) => (opts.departments || []).includes(x.id)),
+    people: (start || me.hr) ? people.filter((p) => p.id !== me.employeeNumber).map((p) => ({ emp: p.id, name: p.name, team: p.team ? teamName.get(p.team) || "" : "" })).sort((a, b) => a.name.localeCompare(b.name)) : [],
+    teams: start ? teamSnaps.docs.filter((d) => d.get("active") !== false).map((d) => ({ id: d.id, name: `Team ${d.get("name") || d.id}` })) : [],
+    lines: start ? lineSnaps.docs.filter((d) => d.get("active") !== false).map((d) => ({ id: d.id, name: d.get("name") || d.id })) : [],
+    roles: start ? roleSnaps.docs.filter((d) => d.get("active") !== false).map((d) => ({ id: d.id, name: d.get("name") || d.id })) : [],
+    noTeam: me.roles.includes("admin") ? people.filter((p) => !p.team).map((p) => p.name).sort() : [],
+  };
+});
+
+// Before sending: who it would reach now. { to } → { total, reach, why, name }
+exports.messagePreview = onCall(async (req) => {
+  const me = await requireMember(req);
+  await requireMessageStarter(me);
+  const test = isTest(req);
+  const { to, error } = messagingLib.cleanTo(req.data?.to);
+  if (error) throw new HttpsError("invalid-argument", error);
+  const notAllowed = messagingLib.checkTo(to, messagingLib.sendOptions(await messageSender(me)));
+  if (notAllowed) throw new HttpsError("permission-denied", notAllowed);
+  const [people, ctx] = await Promise.all([messagePeople(test), messageShiftContext(test)]);
+  const d = messagingLib.deliver(people, to, me.employeeNumber, ctx);
+  const label = (await messageTargetLabel(to, people)) || "";
+  const nameOf = new Map(people.map((p) => [p.id, p.name]));
+  return {
+    // name: who it's for, e.g. "Quality department" — the screen shows "Quality department – 4 people" (Decision 108).
+    // dayHours: when people with no team receive ("Mon–Fri, 5 AM–5 PM") — for the "off hours" warning (Decision 109).
+    total: d.total, reach: d.recipients.length, why: d.why, name: label, noOneOnLine: to.type === "line" && !d.total, dayHours: messagingLib.dayHoursText(ctx.dayHours), offHours: d.offHours,
+    // For "This is a task" (Decision 106): who it reaches now, and when this shift ends (the default due time).
+    reachList: d.recipients.map((e) => ({ emp: e, name: nameOf.get(e) || `#${e}` })), shiftEndMs: ctx.shiftEndMs || null,
+  };
+});
+
+// Line Lead and above: { to, text } → { id, delivered, total, why }
+exports.messageSend = onCall(async (req) => {
+  const me = await requireMember(req);
+  await requireMessageStarter(me);
+  const test = isTest(req);
+  const { to, error } = messagingLib.cleanTo(req.data?.to);
+  if (error) throw new HttpsError("invalid-argument", error);
+  const t = messagingLib.cleanText(req.data?.text);
+  if (t.error) throw new HttpsError("invalid-argument", t.error);
+  const notAllowed = messagingLib.checkTo(to, messagingLib.sendOptions(await messageSender(me)));
+  if (notAllowed) throw new HttpsError("permission-denied", notAllowed);
+  const [people, ctx] = await Promise.all([messagePeople(test), messageShiftContext(test)]);
+  const label = await messageTargetLabel(to, people);
+  if (!label || (to.type === "person" && !people.some((p) => p.id === to.id && p.id !== me.employeeNumber))) throw new HttpsError("invalid-argument", "Pick who it's for from the list.");
+  const d = messagingLib.deliver(people, to, me.employeeNumber, ctx);
+  if (to.type === "line" && !d.total) throw new HttpsError("failed-precondition", `No one is assigned to ${label} yet this shift.`);
+  if (!d.total) throw new HttpsError("failed-precondition", "No one is in that group yet.");
+  const nowMs = Date.now();
+  const tk = messagingLib.cleanMessageTask(req.data?.task || null, d.recipients, nowMs);
+  if (tk.error) throw new HttpsError("invalid-argument", tk.error);
+  const ref = col("messages", test).doc();
+  const batch = db.batch();
+  batch.set(ref, {
+    rootId: ref.id, conv: "", kind: "new", fromEmp: me.employeeNumber, fromName: me.name, fromRole: messagingLib.startRole(me.roles),
+    to: { ...to, label }, text: t.text, atMs: nowMs, at: FieldValue.serverTimestamp(), shiftEndMs: ctx.shiftEndMs || nowMs + 12 * 3600000,
+    recipients: d.recipients, total: d.total, notDelivered: d.notDelivered, why: d.why, acks: {}, task: tk.task, ...(test ? { test: true } : {}),
+  });
+  // A task on a message (Decision 106): one task per person, in the same task list as announcement tasks.
+  const byId = new Map(people.map((p) => [p.id, p]));
+  for (const emp of tk.task?.emps || []) {
+    batch.create(annTaskCol(test).doc(), {
+      // annVersion: a fingerprint of the message, so the Done and Confirm sign-offs are tied to exactly what was sent (Decision 108).
+      source: "message", rootId: ref.id, annId: null, annVersion: signoffsLib.contentVersion({ text: t.text, atMs: nowMs }), annTitle: t.text.slice(0, 80), emp, name: byId.get(emp)?.name || `#${emp}`, team: byId.get(emp)?.team || null,
+      dueMs: tk.task.dueMs, dueDate: plantDayOf(tk.task.dueMs), note: "", assignedBy: me.employeeNumber, assignedByName: me.name, status: "open", done: null, verified: null,
+      returns: [], createdAt: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}),
+    });
+  }
+  await batch.commit();
+  if (d.recipients.length) {
+    const tasked = new Set(tk.task?.emps || []);
+    const plain = d.recipients.filter((e) => !tasked.has(e));
+    if (plain.length) await pushTo(test ? [me.employeeNumber] : plain, { title: `${test ? "[TEST] " : ""}💬 ${me.name}`, body: t.text.slice(0, 140), url: "/?messages=1" });
+    if (tasked.size) await pushTo(test ? [me.employeeNumber] : [...tasked], { title: `${test ? "[TEST] " : ""}📋 Task from ${me.name}`, body: `${t.text.slice(0, 120)} — due ${fmtClock(tk.task.dueMs)}`, url: "/?messages=1" });
+  }
+  return { id: ref.id, delivered: d.recipients.length, total: d.total, why: d.why, tasks: tk.task?.emps.length || 0 };
+});
+
+// Reply in a conversation: { rootId, participant (the starter names who), text } → { id, delivered, why }.
+// The starter replies to one participant; anyone who received the message replies to its starter only.
+// Quick replies (Decision 106): { rootId, quick: "got" | "done" | "help" } — anyone who got the message; marks it
+// acknowledged for them. Typed replies ({ text }) only for the people who start messages.
+exports.messageReply = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const quick = req.data?.quick ? messagingLib.cleanQuick(req.data.quick) : null;
+  if (quick?.error) throw new HttpsError("invalid-argument", quick.error);
+  if (!quick && !(await canStartMessages(me))) throw new HttpsError("permission-denied", "Reply with Got it, Done, or Need help – see me.");
+  const t = quick ? { text: quick.text } : messagingLib.cleanText(req.data?.text);
+  if (t.error) throw new HttpsError("invalid-argument", t.error);
+  const rootId = String(req.data?.rootId || "");
+  if (!/^[A-Za-z0-9]{1,40}$/.test(rootId)) throw new HttpsError("invalid-argument", "Pick a message.");
+  const root = await col("messages", test).doc(rootId).get();
+  if (!root.exists) throw new HttpsError("not-found", "That message is gone (messages are kept 90 days).");
+  const r = root.data();
+  let toEmp;
+  let participant;
+  if (r.fromEmp === me.employeeNumber) {
+    participant = String(req.data?.participant || "");
+    if (!(r.recipients || []).includes(participant)) throw new HttpsError("invalid-argument", "Pick someone who got this message.");
+    toEmp = participant;
+  } else {
+    if (!(r.recipients || []).includes(me.employeeNumber)) throw new HttpsError("permission-denied", "You can reply only to messages you got.");
+    participant = me.employeeNumber;
+    toEmp = r.fromEmp;
+  }
+  const [people, ctx] = await Promise.all([messagePeople(test), messageShiftContext(test)]);
+  const person = people.find((p) => p.id === toEmp);
+  const d = messagingLib.deliverOne(person, ctx);
+  const ref = col("messages", test).doc();
+  await ref.set({
+    rootId, conv: messagingLib.conv(rootId, participant), kind: "reply", fromEmp: me.employeeNumber, fromName: me.name, fromRole: messagingLib.startRole(me.roles),
+    to: { type: "person", id: toEmp, label: person?.name || r.fromName }, text: t.text, atMs: Date.now(), at: FieldValue.serverTimestamp(),
+    recipients: d.recipients, total: 1, notDelivered: d.recipients.length ? 0 : 1, why: d.why, quick: quick?.kind || null, ...(test ? { test: true } : {}),
+  });
+  // Someone who got the message answered: it's acknowledged for them (clears from their screen — Decision 106).
+  if (participant === me.employeeNumber && r.fromEmp !== me.employeeNumber) {
+    const ack = { kind: quick?.kind || "reply", atMs: Date.now(), name: me.name };
+    await root.ref.update({ [`acks.${me.employeeNumber}`]: ack });
+    // Acknowledgments go in the sign-off log too (Decision 108), tied to the message as sent.
+    await logSignoffNow(test, { kind: "message-ack", refId: rootId, version: signoffsLib.contentVersion({ text: r.text, atMs: r.atMs }), emp: me.employeeNumber, name: me.name, method: "app", ack: ack.kind, replyId: ref.id });
+  }
+  if (d.recipients.length) {
+    const help = quick?.kind === "help";
+    await pushTo(test ? [me.employeeNumber] : d.recipients, {
+      title: `${test ? "[TEST] " : ""}${help ? "🆘 Need help – see me: " : "💬 "}${me.name}`, body: help ? r.text.slice(0, 120) : t.text.slice(0, 140), url: "/?messages=1", ...(help ? { urgent: true } : {}),
+    });
+  }
+  return { id: ref.id, delivered: d.recipients.length, why: d.why };
+});
+
+// Read: { convs: [conversation keys] } → marks them seen now (own record only; entries older than 90 days drop off).
+exports.messagesSeenNow = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const convs = (Array.isArray(req.data?.convs) ? req.data.convs : []).filter((c) => typeof c === "string" && /^[A-Za-z0-9_]{1,90}$/.test(c)).slice(0, 50);
+  if (!convs.length) return { ok: true };
+  const ref = messagesSeen(test).doc(me.employeeNumber);
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const cutoff = Date.now() - 90 * 86400000;
+    const seen = Object.fromEntries(Object.entries(snap.exists ? snap.get("seen") || {} : {}).filter(([, ms]) => ms > cutoff));
+    for (const c of convs) seen[c] = Date.now();
+    tx.set(ref, { emp: me.employeeNumber, seen });
+  });
+  return { ok: true };
+});
+
+// The HR notice was shown: employees/{me}.messagingNoticeAt.
+exports.messagingNoticeSeen = onCall(async (req) => {
+  const me = await requireMember(req);
+  await employees.doc(me.employeeNumber).update({ messagingNoticeAt: FieldValue.serverTimestamp() });
+  return { ok: true };
+});
+
+// HR access: one person's messages (sent and received, last 90 days), only with a reason — every view logged.
+// { emp, reason } → { messages }
+exports.hrReviewMessages = onCall(async (req) => {
+  const me = await requireHr(req);
+  const test = isTest(req);
+  const emp = String(req.data?.emp || "");
+  const person = await employees.doc(emp).get();
+  if (!person.exists || emp === me.employeeNumber) throw new HttpsError("invalid-argument", "Pick the person.");
+  const { reason, error } = messagingLib.cleanReason(req.data?.reason);
+  if (error) throw new HttpsError("invalid-argument", error);
+  const c = col("messages", test);
+  const [got, sent] = await Promise.all([c.where("recipients", "array-contains", emp).get(), c.where("fromEmp", "==", emp).get()]);
+  const byId = new Map([...got.docs, ...sent.docs].map((d) => [d.id, d]));
+  const empName = person.get("name") || `#${emp}`;
+  await col("messageReviews", test).add({ by: me.employeeNumber, byName: me.name, emp, empName, reason, atMs: Date.now(), at: FieldValue.serverTimestamp() });
+  await auditLog.add({ type: "viewed messages", kind: "messages", recordId: emp, by: me.employeeNumber, at: FieldValue.serverTimestamp(), reason, count: byId.size, ...(test ? { test: true } : {}) });
+  const messages = [...byId.values()].map((d) => {
+    const m = d.data();
+    return { id: d.id, fromName: m.fromName, fromEmp: m.fromEmp, to: m.to, text: m.text, atMs: m.atMs, delivered: (m.recipients || []).includes(emp) || m.fromEmp === emp, kind: m.kind };
+  }).sort((a, b) => b.atMs - a.atMs);
+  return { empName, messages };
+});
+
+// HR access: the log of message reviews (last 50).
+exports.hrMessageReviewLog = onCall(async (req) => {
+  await requireHr(req);
+  const test = isTest(req);
+  const snap = await col("messageReviews", test).orderBy("atMs", "desc").limit(50).get();
+  return { reviews: snap.docs.map((d) => ({ id: d.id, byName: d.get("byName"), empName: d.get("empName"), reason: d.get("reason"), atMs: d.get("atMs") })) };
 });

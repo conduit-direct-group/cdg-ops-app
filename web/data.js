@@ -199,6 +199,7 @@ export function startData(me) {
   stopFns.push(watchMerged("shopLists", shopQuery("shopTasks"), shopQuery("test_shopTasks"), (a, b) => (b.startMs || 0) - (a.startMs || 0)));
   stopFns.push(watchMySigs(me));
   stopFns.push(watchMyOpens(me));
+  stopFns.push(watchMessages(me));
   stopFns.push(watchPlantStatus());
   if (me.safetyWatcher) {
     const urgent = (name) => query(collection(db, name), where("urgent", "==", true));
@@ -245,8 +246,9 @@ function watchAnnouncements(me) {
 function watchAnnTasks(me) {
   const c = collection(db, TEST_MODE ? "test_annTasks" : "annTasks");
   const mine = { key: "my announcement tasks", source: query(c, where("emp", "==", me.emp)), test: TEST_MODE };
-  const sort = (a, b) => String(a.dueDate).localeCompare(String(b.dueDate));
-  const sources = [mine];
+  const assigned = { key: "tasks I assigned", source: query(c, where("assignedBy", "==", me.emp)), test: TEST_MODE }; // Decision 106
+  const sort = (a, b) => (a.dueMs || Date.parse(a.dueDate || "") || 0) - (b.dueMs || Date.parse(b.dueDate || "") || 0);
+  const sources = [mine, assigned];
   const seesAll = (me.roles || []).some((r) => ["supervisor", "plant-manager", "admin"].includes(r));
   if (!seesAll && (me.roles || []).includes("lead")) {
     let stop = () => {};
@@ -254,8 +256,8 @@ function watchAnnTasks(me) {
     getDoc(doc(db, "employees", me.emp)).then((snap) => {
       if (cancelled) return;
       const team = snap.exists() ? snap.data()?.team || null : null;
-      stop = watchUnion("annTasks", team ? [mine, { key: "my team's announcement tasks", source: query(c, where("team", "==", team)), test: TEST_MODE }] : [mine], sort);
-    }, () => { if (!cancelled) stop = watchUnion("annTasks", [mine], sort); });
+      stop = watchUnion("annTasks", team ? [mine, assigned, { key: "my team's announcement tasks", source: query(c, where("team", "==", team)), test: TEST_MODE }] : [mine, assigned], sort);
+    }, () => { if (!cancelled) stop = watchUnion("annTasks", [mine, assigned], sort); });
     return () => { cancelled = true; stop(); };
   }
   if (seesAll) {
@@ -264,6 +266,19 @@ function watchAnnTasks(me) {
     sources.push({ key: "recent announcement tasks", source: query(c, where("createdAt", ">=", new Date(Date.now() - 30 * 86400000))), test: TEST_MODE });
   }
   return watchUnion("annTasks", sources, sort);
+}
+
+// Messages (Decision 102): the ones delivered to me and the ones I sent, and what I've read. Messages are made where
+// they're sent, so the test site reads only test_ copies.
+function watchMessages(me) {
+  const c = collection(db, TEST_MODE ? "test_messages" : "messages");
+  const seen = collection(db, TEST_MODE ? "test_messagesSeen" : "messagesSeen");
+  const stopA = watchUnion("messages", [
+    { key: "messages to me", source: query(c, where("recipients", "array-contains", me.emp)), test: TEST_MODE },
+    { key: "messages I sent", source: query(c, where("fromEmp", "==", me.emp)), test: TEST_MODE },
+  ], (a, b) => (a.atMs || 0) - (b.atMs || 0));
+  const stopB = watchUnion("messagesSeen", [{ key: "messages I read", source: query(seen, where("emp", "==", me.emp)), test: TEST_MODE }], () => 0);
+  return () => { stopA(); stopB(); };
 }
 
 // Important announcements I opened (the crew doesn't sign those) — per person, on every device. Opening one on the
