@@ -9,7 +9,9 @@ const people = [
   { id: "9003", name: "Op Two", team: "a", roles: ["operator"] },
   { id: "9004", name: "Op Three", team: "b", roles: ["operator"] },
   { id: "9005", name: "Test Coverer", team: "b", roles: ["operator"] },
-  { id: "9006", name: "Office Olive", team: null, roles: ["office"] },
+  { id: "9006", name: "Office Olive", team: null, roles: ["office"], department: "office" },
+  { id: "9007", name: "Quality Quinn", team: null, roles: ["quality"], department: "quality" },
+  { id: "9008", name: "Quality Pat", team: "c", roles: ["quality"], department: "quality" },
 ];
 // Today's line assignments (Crew Board, Decision 104) — no home lines.
 const ctx = { teamOnShift: "a", marks: { 9002: { status: "here" }, 9003: { status: "out" }, 9005: { status: "here" } }, lineNow: { 9002: ["l1"], 9005: ["l1", "l2"] } };
@@ -71,7 +73,41 @@ test("messaging: group messages reach only those on shift and not absent; coveri
   const role = m.deliver(people, { type: "role", id: "operator" }, "9001", ctx);
   assert.deepStrictEqual([role.recipients, role.total], [["9002", "9005"], 4]);
   const all = m.deliver(people, { type: "all", id: "all" }, "9001", ctx);
-  assert.deepStrictEqual([all.recipients, all.total, all.why], [["9002", "9005", "9006"], 5, ""]); // never the sender
+  assert.deepStrictEqual([all.recipients, all.total, all.why], [["9002", "9005"], 5, ""]); // never the sender; no-team people left out
+});
+
+test("messaging (Decision 108): people with no team get only messages that name them or their department", () => {
+  assert.strictEqual(m.deliver(people, { type: "role", id: "office" }, "9001", ctx).total, 0);
+  assert.deepStrictEqual(m.deliver(people, { type: "person", id: "9006" }, "9001", ctx).recipients, ["9006"]);
+  assert.deepStrictEqual(m.deliver(people, { type: "person", id: "9006" }, "9001", { ...ctx, marks: { 9006: { status: "out" } } }).why, "absent");
+  const dept = m.deliver(people, { type: "department", id: "quality" }, "9001", ctx);
+  assert.deepStrictEqual([dept.recipients, dept.total], [["9007"], 2]); // 9008 is on Team C, off shift
+  const mix = m.deliver(people, { type: "set", parts: [{ type: "department", id: "quality" }, { type: "team", id: "b" }, { type: "person", id: "9006" }] }, "9001", ctx);
+  assert.deepStrictEqual([mix.recipients, mix.total], [["9005", "9006", "9007"], 5]); // 9004 and 9008 off shift
+});
+
+test("messaging (Decision 108): who sends to what, and where a new message starts", () => {
+  const admin = m.sendOptions({ roles: ["admin"] });
+  assert.deepStrictEqual(admin.start, { type: "all" });
+  assert.strictEqual(m.checkTo({ type: "set", parts: [{ type: "department", id: "office" }, { type: "line", id: "l1" }] }, admin), "");
+  const head = m.sendOptions({ roles: ["quality"], deptHead: true, department: "quality" });
+  assert.deepStrictEqual(head.start, { type: "set", parts: [{ type: "department", id: "quality" }] });
+  assert.strictEqual(m.checkTo({ type: "set", parts: [{ type: "department", id: "quality" }, { type: "team", id: "b" }, { type: "person", id: "9002" }] }, head), "");
+  assert.match(m.checkTo({ type: "all", id: "all" }, head), /not everyone/);
+  assert.match(m.checkTo({ type: "department", id: "office" }, head), /own department/);
+  assert.match(m.checkTo({ type: "line", id: "l1" }, head), /can't send/);
+  const lead = m.sendOptions({ roles: ["lead"] });
+  assert.strictEqual(lead.start, null);
+  assert.strictEqual(m.checkTo({ type: "all", id: "all" }, lead), "");
+  assert.match(m.checkTo({ type: "department", id: "quality" }, lead), /Only Admins and department heads/);
+  // A supervisor who heads a department: the supervisor's choices plus their own department, which is where it starts.
+  const both = m.sendOptions({ roles: ["supervisor"], deptHead: true, department: "logistics" });
+  assert.strictEqual(m.checkTo({ type: "line", id: "l1" }, both), "");
+  assert.deepStrictEqual(both.start, { type: "set", parts: [{ type: "department", id: "logistics" }] });
+  // A mix is cleaned; one person alone is a one-on-one.
+  assert.deepStrictEqual(m.cleanTo({ type: "set", parts: [{ type: "person", id: "9002" }, { type: "person", id: "9002" }] }), { to: { type: "person", id: "9002" } });
+  assert.match(m.cleanTo({ type: "set", parts: [] }).error, /who/);
+  assert.match(m.cleanTo({ type: "set", parts: [{ type: "planet", id: "x" }] }).error, /lists/);
 });
 
 test("messaging: a reply goes to one person with the same shift check", () => {

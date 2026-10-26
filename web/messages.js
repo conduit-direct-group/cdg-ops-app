@@ -227,7 +227,7 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
       notices(),
       banner(ui),
       ui.loadError ? banner({ message: ui.loadError, messageKind: "error", retry: load }) : null,
-      s?.canStart ? el("button", { class: "btn", type: "button", onclick: () => { ui.form = { type: "person", id: "", text: "", isTask: false, taskEmps: null, dueMs: null }; ui.preview = null; go("new"); } }, "✎ New message") : null,
+      s?.canStart ? el("button", { class: "btn", type: "button", onclick: () => { ui.form = newForm(s); ui.preview = null; go("new"); if (ui.form.mix) refreshPreview(); } }, "✎ New message") : null,
       tabs,
       !data.messages ? spinner("Loading messages…")
         : ui.tab === "now"
@@ -238,8 +238,8 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
                el("span", { class: "msg-item-icon", "aria-hidden": "true" }, "📣"),
                el("span", { class: "msg-item-text" }, el("strong", {}, a.title), el("span", { class: "person-meta msg-preview" }, a.createdByName ? `from ${a.createdByName}` : "")),
                el("span", { class: "msg-item-side" }, el("span", { class: "person-meta" }, fmtWhen(a.createdAt?.toMillis?.() || 0))))))] : null],
-      s?.noTeam?.length ? collapsible("msg-noteam", `👥 No team yet — always receive messages (${s.noTeam.length})`,
-        el("p", { class: "card-note" }, "Until they have a team (Admin → People), these people are treated as always on shift."),
+      s?.noTeam?.length ? collapsible("msg-noteam", `👥 No team (${s.noTeam.length}) — get only messages that name them`,
+        el("p", { class: "card-note" }, "People with no team (day staff, office) get a message only when it names them or their department — never team, line, role, or everyone messages. Named, they get it right away unless marked absent."),
         el("p", {}, s.noTeam.join(", "))) : null,
       s?.hr ? el("button", { class: "btn secondary", type: "button", onclick: () => { ui.hr = { emp: "", reason: "", result: null, log: null }; go("hr"); } }, "🔒 Review someone's messages (HR)") : null,
     ];
@@ -333,11 +333,26 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
   }
 
   // ---- new message ----
+  // Admins and department heads build a mix (Decision 108): Admins start at Everyone, department heads at their own
+  // department, and either adds or removes departments, teams, people (Admins also lines and roles).
+  function newForm(s) {
+    const start = s?.options?.start;
+    const base = { text: "", isTask: false, taskEmps: null, dueMs: null };
+    if (!start) return { ...base, type: "person", id: "" };
+    return { ...base, mix: true, all: start.type === "all", parts: start.type === "set" ? start.parts.map((p) => ({ ...p })) : [] };
+  }
+  // What goes to the server: { type, id } or { type: "set", parts } (one person alone is a one-on-one).
+  function toOf(f) {
+    if (!f.mix) return { type: f.type, id: f.type === "all" ? "all" : f.id };
+    if (f.all) return { type: "all", id: "all" };
+    return f.parts.length === 1 && f.parts[0].type === "person" ? { ...f.parts[0] } : { type: "set", parts: f.parts };
+  }
+  const picked = (f) => (f.mix ? f.all || f.parts.length > 0 : f.type === "all" || !!f.id);
   async function refreshPreview() {
     const f = ui.form;
     ui.preview = null;
-    if (!f.id && f.type !== "all") return render();
-    try { ui.preview = (await callMessagePreview({ to: { type: f.type, id: f.type === "all" ? "all" : f.id } })).data; } catch { ui.preview = null; }
+    if (!picked(f)) return render();
+    try { ui.preview = (await callMessagePreview({ to: toOf(f) })).data; } catch { ui.preview = null; }
     // A task goes to people it reaches; all of them unless the sender unticks some. Due: end of this shift.
     f.taskEmps = new Set((ui.preview?.reachList || []).map((p) => p.emp));
     if (!f.dueMs) f.dueMs = ui.preview?.shiftEndMs || Date.now() + 8 * 3600000;
@@ -346,11 +361,12 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
   async function send() {
     const f = ui.form;
     if (!f.text.trim()) { Object.assign(ui, { message: "Write the message.", messageKind: "error" }); return render(); }
-    if (f.type !== "all" && !f.id) { Object.assign(ui, { message: "Pick who it's for.", messageKind: "error" }); return render(); }
+    if (!picked(f)) { Object.assign(ui, { message: "Pick who it's for.", messageKind: "error" }); return render(); }
+    const to = toOf(f);
     if (!navigator.onLine) { Object.assign(ui, { message: friendlyError({ code: "offline" }), messageKind: "error", retry: send }); return render(); }
     const pv = ui.preview;
-    if (f.type === "line" && pv?.noOneOnLine) { Object.assign(ui, { message: `No one is assigned to ${pv.name} yet this shift. Seat people on the Crew Board first.`, messageKind: "error", retry: null }); return render(); }
-    if (f.type === "person" && pv && pv.reach === 0) {
+    if (to.type === "line" && pv?.noOneOnLine) { Object.assign(ui, { message: `No one is assigned to ${pv.name} yet this shift. Seat people on the Crew Board first.`, messageKind: "error", retry: null }); return render(); }
+    if (to.type === "person" && pv && pv.reach === 0) {
       const why = pv.why === "absent" ? "absent" : "off shift";
       if (!(await confirmSheet({ title: `${pv.name} is ${why} today.`, text: "They will not receive this. Send it anyway? It will show “Not delivered”.", confirmLabel: "Send anyway", danger: true }))) return;
     }
@@ -359,10 +375,10 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
     try {
       const task = f.isTask ? { emps: [...(f.taskEmps || [])], dueMs: f.dueMs } : null;
       if (task && !task.emps.length) { Object.assign(ui, { busy: false, message: "Pick who does the task — only people it reaches now.", messageKind: "error", retry: null }); return render(); }
-      const { data: r } = await callMessageSend({ to: { type: f.type, id: f.type === "all" ? "all" : f.id }, text: f.text, task });
+      const { data: r } = await callMessageSend({ to, text: f.text, task });
       ui.busy = false;
-      toast(`${f.type === "person" ? (r.delivered ? "Sent" : "Not delivered") : `Delivered to ${r.delivered} of ${r.total}`}${r.tasks ? ` · task for ${r.tasks}` : ""}`);
-      go(f.type === "person" ? "conv" : "group", f.type === "person" ? conv(r.id, f.id) : r.id);
+      toast(`${to.type === "person" ? (r.delivered ? "Sent" : "Not delivered") : `Delivered to ${r.delivered} of ${r.total}`}${r.tasks ? ` · task for ${r.tasks}` : ""}`);
+      go(to.type === "person" ? "conv" : "group", to.type === "person" ? conv(r.id, to.id) : r.id);
     } catch (err) { Object.assign(ui, { busy: false, message: friendlyError(err), messageKind: "error", retry: send }); render(); }
   }
 
@@ -372,20 +388,44 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
     if (!s) return [spinner("Loading…")];
     const lists = { person: s.people.map((p) => ({ value: p.emp, label: p.team ? `${p.name} · ${p.team}` : p.name })), team: s.teams.map((t) => ({ value: t.id, label: t.name })), line: s.lines.map((l) => ({ value: l.id, label: l.name })), role: s.roles.map((r) => ({ value: r.id, label: r.name })) };
     const pv = ui.preview;
-    const reach = !pv ? null
-      : f.type === "person"
+    const to = picked(f) ? toOf(f) : null;
+    const reach = !pv || !to ? null
+      : to.type === "person"
         ? pv.reach ? el("p", { class: "message" }, `✓ ${pv.name} is on shift now.`) : el("p", { class: "message error" }, `${pv.name} is ${pv.why === "absent" ? "absent" : "off shift"} today. They will not receive this.`)
-        : f.type === "line" && pv.noOneOnLine
+        : to.type === "line" && pv.noOneOnLine
           ? el("p", { class: "message error" }, `No one is assigned to ${pv.name} yet this shift.`)
-          : el("p", { class: "message" }, pv.total ? `Will reach ${pv.reach} of ${pv.total} — only people on shift and not absent get it.` : "No one is in that group yet.");
+          : el("p", { class: "message" }, el("strong", {}, `${pv.name || "Who it's for"} – ${pv.total} ${pv.total === 1 ? "person" : "people"}`),
+              pv.total ? ` · ${pv.reach} ${pv.reach === 1 ? "gets" : "get"} it now (on shift, not absent).` : " · No one is in that group yet.");
+    // The mix builder (Admins and department heads, Decision 108).
+    const o = s.options || {};
+    const partName = (p) => (p.type === "department" ? `${(s.departments || []).find((x) => x.id === p.id)?.name || p.id} department`
+      : p.type === "person" ? s.people.find((x) => x.emp === p.id)?.name || `#${p.id}`
+      : (lists[p.type] || []).find((x) => x.value === p.id)?.label || p.id);
+    const has = (type, id) => f.parts?.some((p) => p.type === type && p.id === id);
+    const addPart = (type, id) => { if (id && !has(type, id)) f.parts.push({ type, id }); refreshPreview(); };
+    const ADD = [["department", "+ Add a department", (s.departments || []).map((x) => ({ value: x.id, label: x.name }))], ["team", "+ Add a team", lists.team], ["line", "+ Add a line", lists.line], ["role", "+ Add a role", lists.role], ["person", "+ Add a person", lists.person]];
+    const mixTo = f.mix ? [
+      o.all ? el("div", { class: "choices two" },
+        el("button", { class: f.all ? "choice on" : "choice", type: "button", "aria-pressed": String(f.all), onclick: () => { f.all = true; refreshPreview(); } }, "📢 Everyone"),
+        el("button", { class: !f.all ? "choice on" : "choice", type: "button", "aria-pressed": String(!f.all), onclick: () => { f.all = false; refreshPreview(); } }, "🎯 Pick who"))
+        : el("p", { class: "card-note" }, "Starts with your department. Add teams or people to reach more."),
+      !f.all ? el("div", { class: "msg-people" },
+        f.parts.map((p, i) => el("div", { class: "import-row" }, el("span", { class: "gap-term" }, partName(p)),
+          el("button", { class: "link-btn", type: "button", onclick: () => { f.parts.splice(i, 1); refreshPreview(); } }, "Remove"))),
+        ADD.filter(([type]) => (o.kinds || []).includes(type)).map(([type, label, options]) => {
+          const left = (options || []).filter((x) => !has(type, x.value));
+          return left.length ? picker({ title: label.slice(2), value: "", placeholder: label, options: left, onChange: (v) => addPart(type, v) }) : null;
+        })) : null,
+    ] : null;
     return [
       el("button", { class: "link-btn", type: "button", onclick: () => go("list") }, "← Messages"),
       el("h1", {}, "✎ New message"),
       el("form", { class: "card msg-new", onsubmit: (e) => { e.preventDefault(); send(); } },
         el("span", { class: "field-label strong" }, "To"),
-        el("div", { class: "choices msg-to" }, [["person", "👤 One person"], ["team", "🅰 A team"], ["line", "🏭 A line"], ["role", "🏷 A role"], ["all", "📢 Everyone"]].map(([t, label]) =>
+        mixTo,
+        f.mix ? null : el("div", { class: "choices msg-to" }, [["person", "👤 One person"], ["team", "🅰 A team"], ["line", "🏭 A line"], ["role", "🏷 A role"], ["all", "📢 Everyone"]].map(([t, label]) =>
           el("button", { class: f.type === t ? "choice on" : "choice", type: "button", "aria-pressed": String(f.type === t), onclick: () => { Object.assign(f, { type: t, id: "" }); refreshPreview(); } }, label))),
-        f.type !== "all" ? picker({ title: "Who?", value: f.id, placeholder: "Pick…", options: lists[f.type], onChange: (v) => { f.id = v; refreshPreview(); } }) : null,
+        !f.mix && f.type !== "all" ? picker({ title: "Who?", value: f.id, placeholder: "Pick…", options: lists[f.type], onChange: (v) => { f.id = v; refreshPreview(); } }) : null,
         reach,
         el("span", { class: "field-label strong" }, "Message"),
         el("textarea", { class: "field", rows: "4", maxlength: "2000", oninput: (e) => { f.text = e.target.value; const h = maintenanceHint(f.text); if (h !== !!ui.hint) { ui.hint = h; render(); } } }, f.text),
@@ -406,7 +446,7 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
           el("span", { class: "card-note" }, "Sounds like a machine problem — you can also send it to Maintenance."),
           el("button", { class: "btn secondary", type: "button", onclick: () => onMaintenance(machineIn(f.text), f.text) }, "🚨 Send as Maintenance Request")) : null,
         banner(ui),
-        el("button", { class: "btn", type: "submit", disabled: ui.busy || (f.type === "line" && !!pv?.noOneOnLine) }, ui.busy ? "Sending…" : "Send")),
+        el("button", { class: "btn", type: "submit", disabled: ui.busy || (to?.type === "line" && !!pv?.noOneOnLine) }, ui.busy ? "Sending…" : "Send")),
       notices(),
     ];
   }

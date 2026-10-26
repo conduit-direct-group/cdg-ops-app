@@ -2050,7 +2050,14 @@ async function peopleList() {
     id: d.id, name: d.get("name") || `Employee ${d.id}`, roles: d.get("roles") || [], team: d.get("team") || null,
     active: d.get("active") !== false, loginEnabled: login.has(d.id),
     supervisesTeams: d.get("supervisesTeams") || [], position: d.get("position") || "", trainingName: d.get("trainingName") || null,
+    department: d.get("department") || null,
   }));
+}
+
+// Active departments [{ id, name }] (Admin → Departments), for audiences.
+async function departmentList() {
+  const snap = await db.collection("meta").doc("departments").get();
+  return (snap.get("departments") || deptLib.startingDepartments()).filter((x) => x.active !== false).map((x) => ({ id: x.id, name: x.name }));
 }
 
 // ---------------------------------------------------------------------------
@@ -2089,18 +2096,26 @@ const announcementPush = (a, test, kind) => ({
 });
 
 // Posters (department heads, Admins, and people ticked "Can post" — Decision 106) and people who see everything: the people list for an audience.
-async function canPostAnnouncements(me) {
+async function posterOf(me) {
   const snap = await employees.doc(me.employeeNumber).get();
-  return annLib.canPostNow({ roles: me.roles, deptHead: snap.get("deptHead") === true, canPost: snap.get("canPost") === true });
+  return { roles: me.roles, deptHead: snap.get("deptHead") === true, department: snap.get("department") || null, canPost: snap.get("canPost") === true };
+}
+async function canPostAnnouncements(me) {
+  return annLib.canPostNow(await posterOf(me));
 }
 exports.announcementPeople = onCall(async (req) => {
   const me = await requireMember(req);
   if (!(await canPostAnnouncements(me)) && !hasRole(me.roles, annLib.SEE_ALL_ROLES)) {
     throw new HttpsError("permission-denied", "Only department heads, Admins, and people an Admin allows post announcements.");
   }
-  const people = withShiftLines((await peopleList()).filter((p) => p.active), await shiftLineAssignments(isTest(req)));
+  const [list, onLines, departments, poster] = await Promise.all([peopleList(), shiftLineAssignments(isTest(req)), departmentList(), posterOf(me)]);
+  const people = withShiftLines(list.filter((p) => p.active), onLines);
   people.sort((x, y) => x.name.localeCompare(y.name));
-  return { people: people.map(({ id, name, roles: r, team, supervisesTeams, lineIds, loginEnabled }) => ({ id, name, roles: r, team, supervisesTeams, lineIds, loginEnabled })) };
+  // Decision 108: what this poster may pick, and the audience a new announcement starts with.
+  return {
+    people: people.map(({ id, name, roles: r, team, department, supervisesTeams, lineIds, loginEnabled }) => ({ id, name, roles: r, team, department, supervisesTeams, lineIds, loginEnabled })),
+    departments, options: annLib.postOptions(poster),
+  };
 });
 
 // Post { title, body, priority, ackBy, endDate?, file?, audience, keepForNewHires } or edit (same plus { id }).
@@ -2108,13 +2123,15 @@ exports.announcementPeople = onCall(async (req) => {
 exports.postAnnouncement = onCall(async (req) => {
   const me = await requireMember(req);
   const test = isTest(req);
-  const [roleSnaps, teamSnaps, lineSnaps, everyone, onLines] = await Promise.all([roles.get(), teams.get(), lines.get(), peopleList(), shiftLineAssignments(test)]);
+  const [roleSnaps, teamSnaps, lineSnaps, everyone, onLines, departments, poster] = await Promise.all([roles.get(), teams.get(), lines.get(), peopleList(), shiftLineAssignments(test), departmentList(), posterOf(me)]);
   const people = withShiftLines(everyone, onLines); // a line audience = who is on that line this shift (Decision 104)
   const live = (snaps) => snaps.docs.filter((d) => d.get("active") !== false).map((d) => d.id);
   const roleDocs = roleSnaps.docs.map((d) => ({ id: d.id, ...d.data() }));
-  const known = { roles: live(roleSnaps), teams: live(teamSnaps), lines: live(lineSnaps) };
+  const known = { roles: live(roleSnaps), teams: live(teamSnaps), lines: live(lineSnaps), departments: departments.map((x) => x.id) };
   const { announcement, error } = annLib.cleanAnnouncement(req.data, known, (u) => (fixesLib.storagePath(u, BUCKET) || "").startsWith("uploads/"), plantToday());
   if (error) throw new HttpsError("invalid-argument", error);
+  const notAllowed = annLib.checkAudience(announcement.audience, annLib.postOptions(poster)); // Decision 108
+  if (notAllowed) throw new HttpsError("permission-denied", notAllowed);
   const audienceEmps = annLib.matchAudience(announcement.audience, people);
   if (!audienceEmps.length) throw new HttpsError("invalid-argument", "Nobody matches that audience right now. Pick others.");
   if (!annLib.signersOf({ ...announcement, audienceEmps }, people).length) {
@@ -5553,9 +5570,22 @@ async function requireMessageStarter(me) {
   if (!(await canStartMessages(me))) throw new HttpsError("permission-denied", "Only Line Leads, Supervisors, department heads, the Production Manager, and Admins start messages. You can answer with Got it, Done, or Need help.");
 }
 
-// What the target is called ("Team A", "Line 2", "Supervisors", "Everyone", a person's name).
+// The sender as messaging.js needs them: { roles, deptHead, department }.
+async function messageSender(me) {
+  const snap = await employees.doc(me.employeeNumber).get();
+  return { roles: me.roles, deptHead: snap.get("deptHead") === true, department: snap.get("department") || null };
+}
+
+// What the target is called ("Team A", "Line 2", "Supervisors", "Quality department", "Everyone", a person's name;
+// a mix joins its parts: "Quality department + Team B + Sam Sample").
 async function messageTargetLabel(to, people) {
   if (to.type === "all") return "Everyone";
+  if (to.type === "set") {
+    const names = await Promise.all(to.parts.map((p) => messageTargetLabel(p, people)));
+    if (names.some((n) => !n)) return null;
+    return names.length > 4 ? `${names.slice(0, 3).join(" + ")} + ${names.length - 3} more` : names.join(" + ");
+  }
+  if (to.type === "department") { const d = (await departmentList()).find((x) => x.id === to.id); return d ? `${d.name} department` : null; }
   if (to.type === "person") return people.find((p) => p.id === to.id)?.name || `#${to.id}`;
   if (to.type === "team") { const t = await teams.doc(to.id).get(); return t.exists ? `Team ${t.get("name") || to.id}` : null; }
   if (to.type === "line") { const l = await lines.doc(to.id).get(); return l.exists ? l.get("name") || to.id : null; }
@@ -5569,9 +5599,13 @@ exports.messageStart = onCall(async (req) => {
   const test = isTest(req);
   const [people, teamSnaps, lineSnaps, roleSnaps, mine] = await Promise.all([messagePeople(test), teams.get(), lines.get(), roles.get(), employees.doc(me.employeeNumber).get()]);
   const teamName = new Map(teamSnaps.docs.map((d) => [d.id, d.get("name") || d.id]));
-  const start = messagingLib.canStart({ roles: me.roles, deptHead: mine.get("deptHead") === true });
+  const sender = { roles: me.roles, deptHead: mine.get("deptHead") === true, department: mine.get("department") || null };
+  const start = messagingLib.canStart(sender);
+  const opts = messagingLib.sendOptions(sender); // Decision 108: what this sender may pick, and the default "to"
+  const allDepts = start && opts.kinds.includes("department") ? await departmentList() : [];
   return {
-    test, canStart: start, hr: me.hr, noticeSeen: !!mine.get("messagingNoticeAt"),
+    test, canStart: start, hr: me.hr, noticeSeen: !!mine.get("messagingNoticeAt"), options: opts,
+    departments: opts.departments === "any" ? allDepts : allDepts.filter((x) => (opts.departments || []).includes(x.id)),
     people: (start || me.hr) ? people.filter((p) => p.id !== me.employeeNumber).map((p) => ({ emp: p.id, name: p.name, team: p.team ? teamName.get(p.team) || "" : "" })).sort((a, b) => a.name.localeCompare(b.name)) : [],
     teams: start ? teamSnaps.docs.filter((d) => d.get("active") !== false).map((d) => ({ id: d.id, name: `Team ${d.get("name") || d.id}` })) : [],
     lines: start ? lineSnaps.docs.filter((d) => d.get("active") !== false).map((d) => ({ id: d.id, name: d.get("name") || d.id })) : [],
@@ -5587,12 +5621,15 @@ exports.messagePreview = onCall(async (req) => {
   const test = isTest(req);
   const { to, error } = messagingLib.cleanTo(req.data?.to);
   if (error) throw new HttpsError("invalid-argument", error);
+  const notAllowed = messagingLib.checkTo(to, messagingLib.sendOptions(await messageSender(me)));
+  if (notAllowed) throw new HttpsError("permission-denied", notAllowed);
   const [people, ctx] = await Promise.all([messagePeople(test), messageShiftContext(test)]);
   const d = messagingLib.deliver(people, to, me.employeeNumber, ctx);
-  const label = to.type === "line" ? await messageTargetLabel(to, people) : "";
+  const label = (await messageTargetLabel(to, people)) || "";
   const nameOf = new Map(people.map((p) => [p.id, p.name]));
   return {
-    total: d.total, reach: d.recipients.length, why: d.why, name: to.type === "person" ? people.find((p) => p.id === to.id)?.name || "" : label, noOneOnLine: to.type === "line" && !d.total,
+    // name: who it's for, e.g. "Quality department" — the screen shows "Quality department – 4 people" (Decision 108).
+    total: d.total, reach: d.recipients.length, why: d.why, name: label, noOneOnLine: to.type === "line" && !d.total,
     // For "This is a task" (Decision 106): who it reaches now, and when this shift ends (the default due time).
     reachList: d.recipients.map((e) => ({ emp: e, name: nameOf.get(e) || `#${e}` })), shiftEndMs: ctx.shiftEndMs || null,
   };
@@ -5607,6 +5644,8 @@ exports.messageSend = onCall(async (req) => {
   if (error) throw new HttpsError("invalid-argument", error);
   const t = messagingLib.cleanText(req.data?.text);
   if (t.error) throw new HttpsError("invalid-argument", t.error);
+  const notAllowed = messagingLib.checkTo(to, messagingLib.sendOptions(await messageSender(me)));
+  if (notAllowed) throw new HttpsError("permission-denied", notAllowed);
   const [people, ctx] = await Promise.all([messagePeople(test), messageShiftContext(test)]);
   const label = await messageTargetLabel(to, people);
   if (!label || (to.type === "person" && !people.some((p) => p.id === to.id && p.id !== me.employeeNumber))) throw new HttpsError("invalid-argument", "Pick who it's for from the list.");

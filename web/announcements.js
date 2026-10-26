@@ -560,7 +560,11 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
     if (ui.people) return;
     ui.peopleError = "";
     callAnnouncementPeople().then(
-      ({ data: r }) => { ui.people = r.people; if (ui.view === "form") render(); },
+      ({ data: r }) => {
+        Object.assign(ui, { people: r.people, annDepts: r.departments || [], annOpts: r.options || { any: true, start: { everyone: true } } });
+        startAudience();
+        if (ui.view === "form") render();
+      },
       (err) => { ui.peopleError = friendlyError(err); if (ui.view === "form") render(); }
     );
   }
@@ -574,16 +578,42 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
           lines: [...(a.audience?.lines || [])], people: [...(a.audience?.people || [])], keepForNewHires: a.keepForNewHires === true, isTask: a.isTask === true,
           was: { title: a.title, body: a.body, priority: a.priority, fileUrl: a.file?.url || "" },
         }
-      : { id: null, title: "", body: "", priority: "normal", ackBy: addDays(today, 7), endDate: "", file: null, everyone: true, roles: [], roleTeams: [], teams: [], lines: [], people: [], keepForNewHires: false, isTask: false };
+      : { id: null, title: "", body: "", priority: "normal", ackBy: addDays(today, 7), endDate: "", file: null, everyone: true, roles: [], roleTeams: [], teams: [], lines: [], people: [], keepForNewHires: false, isTask: false, fresh: true };
+    ui.draft.departments = a ? [...(a.audience?.departments || [])] : [];
     loadPeople();
+    startAudience();
     show("form");
   }
 
-  // Who it reaches right now (same matching as the server).
+  // A new announcement starts where the poster's choices start (Decision 108): Admins — everyone; department heads —
+  // their own department (they can add teams or people).
+  function startAudience() {
+    const d = ui.draft;
+    if (!d?.fresh || !ui.annOpts) return;
+    const s = ui.annOpts.start || { everyone: true };
+    Object.assign(d, { everyone: s.everyone === true, departments: [...(s.departments || [])], fresh: false });
+  }
+
+  // Who it reaches right now (same matching as the server). No team (Decision 108): only when named or their
+  // department is picked.
   function reach(d) {
     if (!ui.people) return null;
     const onRoleTeams = (p) => !d.roleTeams.length || d.roleTeams.includes(p.team) || (p.supervisesTeams || []).some((t) => d.roleTeams.includes(t));
-    return ui.people.filter((p) => d.everyone || (p.roles.some((r) => d.roles.includes(r)) && onRoleTeams(p)) || (p.team && d.teams.includes(p.team)) || (p.lineIds || []).some((l) => d.lines.includes(l)) || d.people.includes(p.id));
+    const named = (p) => d.people.includes(p.id) || (!!p.department && d.departments.includes(p.department));
+    return ui.people.filter((p) => named(p) || (!!p.team && (d.everyone || (p.roles.some((r) => d.roles.includes(r)) && onRoleTeams(p)) || d.teams.includes(p.team) || (p.lineIds || []).some((l) => d.lines.includes(l)))));
+  }
+  // Who it's for, in words: "Quality department + Team B + 2 people" (Decision 108).
+  function audienceLabel(d) {
+    if (d.everyone) return "Everyone on a team";
+    const name = (list, id) => list.find((x) => x.id === id)?.name || id;
+    const parts = [
+      ...d.departments.map((id) => `${name(ui.annDepts || [], id)} department`),
+      ...d.roles.map((id) => name(data.roles || [], id)),
+      ...d.teams.map((id) => `Team ${name(data.teams || [], id)}`),
+      ...d.lines.map((id) => name(data.lines || [], id)),
+      ...(d.people.length ? [d.people.length === 1 ? ui.people?.find((p) => p.id === d.people[0])?.name || "1 person" : `${d.people.length} people by name`] : []),
+    ];
+    return parts.join(" + ");
   }
 
   function renderForm() {
@@ -617,7 +647,7 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
       if (d.title.trim().length < 3) return say("Give it a title (a few words).");
       if (d.body.trim().length < 3) return say("Write the message.");
       if (!d.ackBy) return say("Pick an “acknowledge by” date.");
-      if (!d.everyone && !d.roles.length && !d.teams.length && !d.lines.length && !d.people.length) return say("Pick who it's for.");
+      if (!d.everyone && !d.departments.length && !d.roles.length && !d.teams.length && !d.lines.length && !d.people.length) return say("Pick who it's for.");
       const n = reached?.length;
       const ok = await confirmSheet({
         title: d.id ? (signAgain ? "Save and ask everyone to sign again?" : "Save changes?") : `Post to ${n ?? "the"} ${n === 1 ? "person" : "people"}?`,
@@ -632,7 +662,7 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
       try {
         const { data: r } = await callPostAnnouncement({
           ...(d.id ? { id: d.id } : {}), title: d.title, body: d.body, priority: d.priority, ackBy: d.ackBy, endDate: d.endDate || null, file: d.file,
-          audience: { everyone: d.everyone, roles: d.roles, roleTeams: d.roles.length ? d.roleTeams : [], teams: d.teams, lines: d.lines, people: d.people }, keepForNewHires: d.keepForNewHires, isTask: d.isTask,
+          audience: { everyone: d.everyone, roles: d.roles, roleTeams: d.roles.length ? d.roleTeams : [], teams: d.teams, departments: d.departments, lines: d.lines, people: d.people }, keepForNewHires: d.keepForNewHires, isTask: d.isTask,
         });
         toast(d.id ? (r.signAgain ? `Saved — everyone signs version ${r.version}` : "Saved") : `Posted to ${r.audience} ${r.audience === 1 ? "person" : "people"}${r.test ? " (test)" : ""}`);
         ui.draft = null;
@@ -649,6 +679,10 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
     const unpicked = (ui.people || []).filter((p) => !d.people.includes(p.id));
     const personName = (id) => ui.people?.find((p) => p.id === id)?.name || `#${id}`;
     const today = plantToday();
+    // Department heads (Decision 108): their own department, teams, and people — not everyone, roles, or lines.
+    const any = ui.annOpts ? ui.annOpts.any !== false : true;
+    const depts = (ui.annDepts || []).filter((x) => any || (ui.annOpts?.departments || []).includes(x.id));
+    const pickAll = any && d.everyone;
 
     return [
       backBtn(d.id ? "Back" : "Announcements", () => (d.id ? show("read", { id: d.id }) : show("list"))),
@@ -681,15 +715,18 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
             el("input", { class: "field", id: "ann-end", type: "date", min: d.ackBy || today, value: d.endDate, onchange: (e) => { d.endDate = e.target.value; render(); } }),
             d.endDate ? el("button", { class: "link-btn", type: "button", onclick: () => { d.endDate = ""; render(); } }, "No end date") : el("p", { class: "card-note" }, "No end date: stays up until ended."))),
         el("p", { class: "field-label" }, "Who it's for"),
-        el("div", { class: "choices two" },
-          el("button", { class: d.everyone ? "choice on" : "choice", type: "button", "aria-pressed": String(d.everyone), onclick: () => { d.everyone = true; render(); } }, "Everyone"),
-          el("button", { class: !d.everyone ? "choice on" : "choice", type: "button", "aria-pressed": String(!d.everyone), onclick: () => { d.everyone = false; render(); } }, "Pick roles, teams, lines, people")),
-        !d.everyone
+        any
+          ? el("div", { class: "choices two" },
+              el("button", { class: d.everyone ? "choice on" : "choice", type: "button", "aria-pressed": String(d.everyone), onclick: () => { d.everyone = true; render(); } }, "Everyone"),
+              el("button", { class: !d.everyone ? "choice on" : "choice", type: "button", "aria-pressed": String(!d.everyone), onclick: () => { d.everyone = false; render(); } }, "Pick who"))
+          : el("p", { class: "card-note" }, "Department heads post to their own department. Add teams or people to reach more."),
+        !pickAll
           ? el("div", { class: "card" },
-              el("p", { class: "field-label" }, "Roles"),
-              el("div", { class: "chips" }, activeRoles.map((r) => chip("roles", r.id, r.name))),
+              depts.length ? [el("p", { class: "field-label" }, any ? "Departments (everyone in them, on a team or not)" : "Your department"), el("div", { class: "chips" }, depts.map((x) => chip("departments", x.id, x.name)))] : null,
+              any ? [el("p", { class: "field-label" }, "Roles"),
+              el("div", { class: "chips" }, activeRoles.map((r) => chip("roles", r.id, r.name)))] : null,
               // The roles picked, on which teams? (e.g. only Team B's Line Leads and Supervisors — Chris, 10-23-2026)
-              d.roles.length && activeTeams.length
+              any && d.roles.length && activeTeams.length
                 ? [el("p", { class: "field-label" }, "Those roles on which teams?"),
                    el("div", { class: "chips" },
                      el("button", { class: d.roleTeams.length ? "chip" : "chip on", type: "button", "aria-pressed": String(!d.roleTeams.length), onclick: () => { d.roleTeams = []; render(); } }, "All teams"),
@@ -699,7 +736,7 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
                      : "Every person with those roles, on every team.")]
                 : null,
               activeTeams.length ? [el("p", { class: "field-label" }, "Whole teams (everyone on them)"), el("div", { class: "chips" }, activeTeams.map((t) => chip("teams", t.id, `Team ${t.name}`)))] : null,
-              activeLines.length ? [el("p", { class: "field-label" }, "Lines (the people on that line this shift)"), el("div", { class: "chips" }, activeLines.map((l) => chip("lines", l.id, l.name)))] : null,
+              any && activeLines.length ? [el("p", { class: "field-label" }, "Lines (the people on that line this shift)"), el("div", { class: "chips" }, activeLines.map((l) => chip("lines", l.id, l.name)))] : null,
               el("p", { class: "field-label" }, "People"),
               d.people.map((id) => el("div", { class: "import-row" }, el("span", { class: "gap-term" }, personName(id)), el("button", { class: "link-btn", type: "button", onclick: () => toggle("people", id) }, "Remove"))),
               ui.peopleError
@@ -707,7 +744,10 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
                 : !ui.people ? spinner("Loading people…")
                 : unpicked.length ? picker({ id: "ann-person", title: "Add a person", value: "", placeholder: "+ Add a person", options: unpicked.map((p) => ({ value: p.id, label: `${p.name} (#${p.id})` })), onChange: (v) => toggle("people", v) }) : null)
           : null,
-        el("p", { class: "ann-reach" }, reached === null ? (ui.peopleError ? "" : "Counting who it reaches…") : `Reaches ${reached.length} ${reached.length === 1 ? "person" : "people"} now${noLogin ? ` (${noLogin} with no login yet — a supervisor can record “Reviewed in person”)` : ""}.`),
+        el("p", { class: "ann-reach" }, reached === null ? (ui.peopleError ? "" : "Counting who it reaches…")
+          : el("strong", {}, `${audienceLabel(d) || "Nobody picked yet"} – ${reached.length} ${reached.length === 1 ? "person" : "people"}`),
+          reached === null ? null : noLogin ? ` (${noLogin} with no login yet — a supervisor can record “Reviewed in person”).` : ""),
+        el("p", { class: "card-note" }, "People with no team (day staff, office) get it only when their name or their department is picked."),
         el("label", { class: "check-row" },
           el("input", { type: "checkbox", checked: d.isTask, onchange: (e) => { d.isTask = e.target.checked; } }),
           el("span", {}, el("strong", {}, "📋 This is a task"), " — Line Leads and Supervisors who get it assign it to people on their shift; each person taps Done and the assigner confirms. (Reading and signing it stays separate.)")),
