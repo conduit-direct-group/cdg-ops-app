@@ -201,10 +201,10 @@ export function openDocuments(container, { me, onExit, backLabel = "More" }) {
       ? [{ value: "", label: "Its usual department" }, ...L.departments.map((d) => ({ value: d.id, label: d.name }))]
       : L.departments.filter((d) => L.mine.includes(d.id)).map((d) => ({ value: d.id, label: d.name }));
     return collapsible("docs-add", "＋ Add a document, form, or checklist",
-      el("p", { class: "hint" }, "New master copies are added only here. Pick the department first."),
-      el("label", { class: "field-label" }, "Department"),
+      el("p", { class: "hint" }, choices.length > 1 ? "New master copies are added only here. Pick the department first." : "New master copies are added only here, under your department."),
+      choices.length > 1 ? el("label", { class: "field-label" }, "Department") : null,
       choices.length > 1 ? picker({ title: "Department", value: ui.addDept || "", options: choices, onChange: (v) => { ui.addDept = v; render(); } })
-        : el("p", { class: "card-note" }, choices[0]?.label || ""),
+        : el("p", { class: "card-note" }, `Saved under ${choices[0]?.label || ""}.`),
       ui.draft
         ? el("section", { class: "card" },
             el("strong", {}, `New document: ${ui.draft.fileName}`),

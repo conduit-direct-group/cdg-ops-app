@@ -2466,13 +2466,24 @@ async function refreshAnnouncementLists() {
 
 const formTemplates = db.collection("formTemplates");
 
+// Until the release (Chris, 10-26-2026): roles that the live Admin → Roles screen lets edit a form (role.editForms,
+// Decision 60) keep editing that existing form, so department heads can work on the test site now without changing
+// the live site. Remove at release, with the adminSaveRole change.
+async function legacyFormEditor(req, formId, isNew, err) {
+  if (isNew || err?.code !== "permission-denied") throw err;
+  const me = await requireMember(req);
+  const roleDocs = (await roles.get()).docs.map((d) => ({ id: d.id, ...d.data() }));
+  if (!roleDocs.some((r) => r.active !== false && me.roles.includes(r.id) && (r.editForms || []).includes(formId))) throw err;
+  return { me, dept: null };
+}
+
 // { formId, create?, department? (new forms), name, kind, intro, sections, note } — saves a new revision (or the first one).
 // Records already started keep the revision they started on; the next one started uses this.
 exports.saveFormTemplate = onCall(async (req) => {
   const formId = String(req.data?.formId || "");
   if (!records.isRecordId(formId)) throw new HttpsError("invalid-argument", "Form id must start with a letter (e.g. handoff).");
   const isNew = req.data?.create === true;
-  const { me, dept } = await requireDocEditor(req, `form:${formId}`, isNew ? { newDept: req.data?.department } : {});
+  const { me, dept } = await requireDocEditor(req, `form:${formId}`, isNew ? { newDept: req.data?.department } : {}).catch((err) => legacyFormEditor(req, formId, isNew, err));
   const { template, error } = formsLib.cleanTemplate(req.data);
   if (error) throw new HttpsError("invalid-argument", error);
   const note = typeof req.data?.note === "string" ? req.data.note.trim().slice(0, 300) : "";
