@@ -44,6 +44,7 @@ import { openWhoToCall, openCallAdmin, lineDownReminder } from "./whotocall.js";
 import { openIncidents, openRotationAdmin, openInjuryExport, openHrAccess } from "./incidents.js";
 import { openWriteups, canWriteUps } from "./writeups.js";
 import { openRetentionAdmin } from "./retention.js";
+import { navShows, ISSUE_VIEW_ROLES } from "./nav.js";
 import { openSilos, openSiloAdmin, UPDATE_ROLES as SILO_UPDATE_ROLES, ALERT_ROLES as SILO_ALERT_ROLES } from "./silos.js";
 
 const screen = document.getElementById("screen");
@@ -364,15 +365,16 @@ function openMore() {
   const act = (fn) => () => { close(); fn(); };
   const row = (icon, label, fn, cls = "") => el("button", { class: `more-item ${cls}`, type: "button", onclick: act(fn) }, el("span", { "aria-hidden": "true" }, icon), el("span", {}, label));
   const items = [
-    usesCrewBoard(roles) ? row("👥", "Who's here today", () => openCrewScreen()) : null,
-    usesHandoffs(roles) ? row("📝", "Shift handoff", () => openHandoffScreen()) : null,
-    runsShopList(roles) ? row("🧹", "Keep the Shop Clean", () => openShopScreen()) : null,
-    usesMachines(roles) ? row("🔧", "Fix Library", () => openFixes()) : null,
-    roles.some((r) => ["maintenance", "admin", "plant-manager"].includes(r)) ? row("🚨", "Open issues", () => openIssues()) : null,
-    roles.some((r) => ["training-safety", "admin"].includes(r)) ? row("🎓", "Training", () => { location.href = "training.html"; }) : null,
-    canViewTrucks(roles) && !canCheckTrucks(roles) ? row("🚚", "Trucks (look only)", () => openTrucksScreen()) : null,
-    usesQc(roles) && !roles.includes("quality") ? row("🏷", "QC hold — flagged reels", () => openReelScreen()) : null,
-    usesDowntime(roles) ? row("⏱", "Downtime & scrap shift report", () => openDowntimeScreen()) : null,
+    // Per role (Admin → Roles → More menu; starts as the approved table — nav.js). QC hold is Quality's Home button.
+    navShows("crew", roles) ? row("👥", "Who's here today", () => openCrewScreen()) : null,
+    navShows("handoff", roles) ? row("📝", "Shift handoff", () => openHandoffScreen()) : null,
+    navShows("shop", roles) ? row("🧹", "Keep the Shop Clean", () => openShopScreen()) : null,
+    navShows("fixes", roles) ? row("🔧", "Fix Library", () => openFixes()) : null,
+    navShows("issues", roles) ? row("🚨", "Open issues", () => openIssues()) : null,
+    navShows("training", roles) ? row("🎓", "Training", () => { location.href = "training.html"; }) : null,
+    navShows("trucksView", roles) ? row("🚚", "Trucks (look only)", () => openTrucksScreen()) : null,
+    navShows("qcList", roles) && !roles.includes("quality") ? row("🏷", "QC hold — flagged reels", () => openReelScreen()) : null,
+    navShows("downtime", roles) ? row("⏱", "Downtime & scrap shift report", () => openDowntimeScreen()) : null,
     // Home's quick button starts a new report; this is the full list (open reports, My reports, by month).
     row("🦺", "All safety reports", () => openIncidentScreen()),
     row("📣", "All announcements (and past ones)", () => openAnn()),
@@ -733,7 +735,7 @@ function me() {
     approver: roles.some((r) => APPROVER_ROLES.includes(r)),
     hr: data.myself?.hrAccess === true, // HR access: injury details, write-ups, reviews (a per-person switch, not a role)
     fixer: roles.some((r) => FIXER_ROLES.includes(r)),
-    issueViewer: roles.includes("plant-manager"), // sees the Open issues board; can't mark fixed
+    issueViewer: roles.some((r) => ISSUE_VIEW_ROLES.includes(r)), // sees the Open issues board (Production Manager, Supervisors — 108 item 6); can't mark fixed
     safetyWatcher: roles.some((r) => ["supervisor", "training-safety", "plant-manager", "admin"].includes(r)),
     roles,
   };

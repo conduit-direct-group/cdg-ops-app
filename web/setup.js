@@ -6,6 +6,7 @@
 import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, picker } from "./ui.js";
 import { data, onDataChange, lineName } from "./data.js";
 import { rolePosts } from "./announcements.js";
+import { NAV_ITEMS, roleShows } from "./nav.js";
 import { roleEditsMachines } from "./machines.js";
 import { rolePostsTrucks } from "./trucks.js";
 import { callAdminSaveLine, callAdminSaveMachine, callAdminSaveRole, callAdminSaveTeam, callAdminSaveMachineType, callAdminListEmployees } from "./firebase.js";
@@ -631,7 +632,23 @@ export function openRoles(container, { onExit }) {
           const ok = await kit.act(() => callAdminSaveRole({ id: r.id, name: r.name, editMachines: !edits }), flipMachines);
           if (ok) show("item", edits ? `${r.name}: editing machines turned off` : `${r.name} can now edit machines`, "ok");
         };
+        // What this role sees in More (Decision 108 item 6). Only the items the role is allowed to use are listed.
+        const navItems = NAV_ITEMS.filter((i) => i.allowed([r.id]));
+        const flipNav = async (key) => {
+          const next = { ...(r.nav || {}), [key]: !roleShows(r.id, key) };
+          const ok = await kit.act(() => callAdminSaveRole({ id: r.id, name: r.name, nav: next }), () => flipNav(key));
+          if (ok) show("item", `${r.name}: More menu updated`, "ok");
+        };
         return [
+          el("div", { class: "card" },
+            el("strong", {}, "☰ More menu"),
+            navItems.length
+              ? [el("p", { class: "card-note" }, "Tap to show or hide each item for people with this role. Home buttons, All safety reports, All announcements, My profile, Who to Call, and Reference documents are always there."),
+                 el("div", { class: "chips" }, navItems.map((i) => {
+                   const on = roleShows(r.id, i.key);
+                   return el("button", { class: on ? "chip on" : "chip", type: "button", "aria-pressed": String(on), disabled: kit.busy, onclick: () => flipNav(i.key) }, `${on ? "✓ " : ""}${i.label}`);
+                 }))]
+              : el("p", { class: "card-note" }, "Nothing extra for this role — More has the items everyone gets.")),
           el("div", { class: "card" },
             el("strong", {}, "📣 Announcements"),
             el("p", { class: "card-note" }, on ? "People with this role can post announcements." : "People with this role can't post announcements."),

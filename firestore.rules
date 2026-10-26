@@ -179,11 +179,12 @@ service cloud.firestore {
 
     // Open issues (mirrored from Odoo maintenance requests): Maintenance, Admin, Production Manager only (Decision 54).
     // Test-site reports: test_issues.
+    // The Open issues board: Maintenance, Admin, Production Manager, and Supervisors (Decision 108 item 6, look only).
     match /issues/{id} {
-      allow read: if fixer();
+      allow read: if fixer() || (member() && employee().roles.hasAny(['supervisor']));
     }
     match /test_issues/{id} {
-      allow read: if fixer();
+      allow read: if fixer() || (member() && employee().roles.hasAny(['supervisor']));
     }
 
     // "Need something?" request types (Admin → Request types & routing): everyone signed in reads them.

@@ -142,9 +142,9 @@ test("employee records: you see only your own", async () => {
 
 // ---- open issues -------------------------------------------------------------------------------------------------
 
-test("open issues board: Maintenance, Production Manager, Admin only", async () => {
-  for (const emp of [9005, 9003, 9004]) await assertSucceeds(getDoc(doc(db(emp), "issues", "i1")));
-  for (const emp of [9001, 9002, 9006, 9007]) await assertFails(getDoc(doc(db(emp), "issues", "i1")));
+test("open issues board: Maintenance, Production Manager, Admin, and Supervisors (look only — 108 item 6)", async () => {
+  for (const emp of [9005, 9003, 9004, 9006]) await assertSucceeds(getDoc(doc(db(emp), "issues", "i1")));
+  for (const emp of [9001, 9002, 9011, 9007]) await assertFails(getDoc(doc(db(emp), "issues", "i1")));
 });
 
 // ---- announcement tasks ---------------------------------------------------------------------------------------------

@@ -541,6 +541,15 @@ exports.adminSaveRole = onCall(async (req) => {
       if (typeof d.postTrucks !== "boolean") throw new HttpsError("invalid-argument", "postTrucks must be true or false.");
       extra.postTrucks = d.postTrucks;
     }
+    // { nav: { key: true|false } } — what people with this role see in More (Decision 108 item 6; web/nav.js). Unset = the
+    // approved table.
+    if (d.nav !== undefined) {
+      const keys = ["crew", "handoff", "shop", "fixes", "issues", "training", "trucksView", "qcList", "downtime"];
+      if (!d.nav || typeof d.nav !== "object" || Array.isArray(d.nav) || Object.entries(d.nav).some(([k, v]) => !keys.includes(k) || typeof v !== "boolean")) {
+        throw new HttpsError("invalid-argument", "Pick More menu items from the list.");
+      }
+      extra.nav = d.nav;
+    }
     // { editMachines: true|false } — may add and edit machine parts & specs (Machines). Unset = Maintenance and Admin.
     if (d.editMachines !== undefined) {
       if (typeof d.editMachines !== "boolean") throw new HttpsError("invalid-argument", "editMachines must be true or false.");
