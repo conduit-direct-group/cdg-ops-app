@@ -47,12 +47,12 @@ test("an announcement needs a title, message, priority, acknowledge-by date, and
 });
 
 test("audience: everyone, or any mix of roles, teams, departments, lines, people — never someone turned off", () => {
-  // No team (Decision 109): only when named — a department reaches its people on a team.
-  assert.deepStrictEqual(a.matchAudience({ everyone: true }, people), ["2001", "2002", "3001", "4003"]);
+  // No team (Decision 109): everyone, their department, or by name — never through roles, teams, or lines.
+  assert.deepStrictEqual(a.matchAudience({ everyone: true }, people), ["1001", "2001", "2002", "3001", "3002", "3003", "4001", "4002", "4003"]);
   assert.deepStrictEqual(a.matchAudience({ roles: ["office"], teams: ["team-a"] }, people), ["2001", "3001"]);
   assert.deepStrictEqual(a.matchAudience({ lines: ["line-2"], people: ["1001", "2003"] }, people), ["1001", "2002"]);
-  assert.deepStrictEqual(a.matchAudience({ departments: ["quality"] }, people), ["4003"]);
-  assert.deepStrictEqual(a.matchAudience({ departments: ["quality"], teams: ["team-a"], people: ["4001"] }, people), ["2001", "3001", "4001", "4003"]);
+  assert.deepStrictEqual(a.matchAudience({ departments: ["quality"] }, people), ["4002", "4003"]);
+  assert.deepStrictEqual(a.matchAudience({ departments: ["quality"], teams: ["team-a"], people: ["4001"] }, people), ["2001", "3001", "4001", "4002", "4003"]);
 });
 
 test("who picks what (Decision 108): Admins any audience, everyone first; department heads their department, teams, people", () => {

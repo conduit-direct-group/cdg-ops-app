@@ -5550,11 +5550,42 @@ exports.adminSaveRetention = onCall(async (req) => {
 
 const messagesSeen = (test) => col("messagesSeen", test);
 
-// The shift on now, for the delivery check: { teamOnShift, marks }.
-async function messageShiftContext(test) {
-  const [s, onLines] = await Promise.all([crewShift(test), shiftLineAssignments(test)]);
-  return { teamOnShift: s?.teamId || null, marks: s?.saved?.marks || {}, lineNow: onLines.now, shiftEndMs: s?.now?.endMs || null };
+// Day hours for people with no team (Decision 109): meta/messaging.dayHours, set in Admin → Message hours.
+const messagingDoc = db.collection("meta").doc("messaging");
+async function messageDayHours() {
+  const raw = (await messagingDoc.get()).get("dayHours");
+  return raw ? messagingLib.cleanDayHours(raw).hours || messagingLib.DEFAULT_DAY_HOURS : messagingLib.DEFAULT_DAY_HOURS;
 }
+// Plant time now: { dow (0 = Sunday), minutes since midnight }.
+function plantClockNow() {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+    .formatToParts(new Date()).map((x) => [x.type, x.value]));
+  return { dow: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(parts.weekday), minutes: Number(parts.hour) * 60 + Number(parts.minute) };
+}
+
+// The shift on now, for the delivery check: { teamOnShift, marks, lineNow, shiftEndMs, dayHours, dayNow }.
+async function messageShiftContext(test) {
+  const [s, onLines, dayHours] = await Promise.all([crewShift(test), shiftLineAssignments(test), messageDayHours()]);
+  return { teamOnShift: s?.teamId || null, marks: s?.saved?.marks || {}, lineNow: onLines.now, shiftEndMs: s?.now?.endMs || null, dayHours, dayNow: plantClockNow() };
+}
+
+// Admins: the day hours for people with no team (Admin → Message hours). → { hours, text, isDefault }
+exports.adminMessageHours = onCall(async (req) => {
+  await requireAdmin(req);
+  const raw = (await messagingDoc.get()).get("dayHours");
+  const hours = await messageDayHours();
+  return { hours, text: messagingLib.dayHoursText(hours), isDefault: !raw };
+});
+// Admins: { days: [0–6], start: "HH:MM", end: "HH:MM" } (plant time).
+exports.adminSaveMessageHours = onCall(async (req) => {
+  const adminNumber = await requireAdmin(req);
+  const { hours, error } = messagingLib.cleanDayHours(req.data);
+  if (error) throw new HttpsError("invalid-argument", error);
+  const before = await messageDayHours();
+  await messagingDoc.set({ dayHours: hours, updatedBy: adminNumber, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+  await auditLog.add({ type: "updated", kind: "message hours", recordId: "dayHours", by: adminNumber, at: FieldValue.serverTimestamp(), from: before, to: hours });
+  return { ok: true, hours, text: messagingLib.dayHoursText(hours) };
+});
 
 // Active people (practice accounts only on the test site), shaped for messaging.js.
 async function messagePeople(test) {
@@ -5629,7 +5660,8 @@ exports.messagePreview = onCall(async (req) => {
   const nameOf = new Map(people.map((p) => [p.id, p.name]));
   return {
     // name: who it's for, e.g. "Quality department" — the screen shows "Quality department – 4 people" (Decision 108).
-    total: d.total, reach: d.recipients.length, why: d.why, name: label, noOneOnLine: to.type === "line" && !d.total,
+    // dayHours: when people with no team receive ("Mon–Fri, 5 AM–5 PM") — for the "off hours" warning (Decision 109).
+    total: d.total, reach: d.recipients.length, why: d.why, name: label, noOneOnLine: to.type === "line" && !d.total, dayHours: messagingLib.dayHoursText(ctx.dayHours), offHours: d.offHours,
     // For "This is a task" (Decision 106): who it reaches now, and when this shift ends (the default due time).
     reachList: d.recipients.map((e) => ({ emp: e, name: nameOf.get(e) || `#${e}` })), shiftEndMs: ctx.shiftEndMs || null,
   };

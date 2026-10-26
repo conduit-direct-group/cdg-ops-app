@@ -9,8 +9,9 @@
 // "Not acknowledged" for that person. Cleared messages are in History (90 days).
 // Who receives: only people on their designated shift and not marked absent on Who's here today, decided when the
 // message is sent — anything else is never delivered (not held, not queued).
-// People with no team (day staff, office — Decision 109): they get only messages that name them — never team, line,
-// role, department, or everyone messages. Named, they get it right away unless marked absent.
+// People with no team (day staff, office — Decision 109): they get messages that name them, their department, or
+// everyone — never team, line, or role messages. They receive only in the day hours (Admin → Message hours; starts
+// Mon–Fri 5 AM–5 PM) and not when marked absent; outside those hours nothing is delivered (like off shift). Named, they get it right away unless marked absent.
 // Who can send to what (Decision 108): Admins — everyone by default, or any mix of people, teams, departments, lines,
 // and roles. Department heads — their own department by default, widened with teams or people. Line Leads,
 // Supervisors, the Production Manager — one person, a team, a line, a role, or everyone (as before).
@@ -35,6 +36,27 @@ const START_ROLES = ["lead", "supervisor", "plant-manager", "admin"];
 const TARGETS = ["person", "team", "line", "role", "department", "all", "set"];
 const PART_TYPES = ["person", "team", "line", "role", "department"];
 const MAX_PARTS = 30;
+// Day hours for people with no team (Decision 109). days: 0 = Sunday … 6 = Saturday; start / end "HH:MM", plant time.
+const DEFAULT_DAY_HOURS = { days: [1, 2, 3, 4, 5], start: "05:00", end: "17:00" };
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const isClock = (v) => typeof v === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(v);
+const minutesOf = (hhmm) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3));
+function cleanDayHours(raw) {
+  const days = Array.isArray(raw?.days) ? [...new Set(raw.days.map(Number))].filter((d) => Number.isInteger(d) && d >= 0 && d <= 6).sort() : [];
+  if (!days.length) return { error: "Pick at least one day." };
+  if (!isClock(raw?.start) || !isClock(raw?.end)) return { error: "Pick a start and end time." };
+  if (minutesOf(raw.end) <= minutesOf(raw.start)) return { error: "The end time must be after the start time." };
+  return { hours: { days, start: raw.start, end: raw.end } };
+}
+// In the day hours now? at: { dow (0–6), minutes (since midnight) } in plant time.
+const inDayHours = (hours, at) => hours.days.includes(at.dow) && at.minutes >= minutesOf(hours.start) && at.minutes < minutesOf(hours.end);
+// "Mon–Fri, 5 AM–5 PM"
+function dayHoursText(h) {
+  const clock = (v) => { const m = minutesOf(v); const hr = Math.floor(m / 60); const mm = m % 60; return `${hr % 12 || 12}${mm ? `:${String(mm).padStart(2, "0")}` : ""} ${hr < 12 ? "AM" : "PM"}`; };
+  const d = h.days;
+  const run = d.length > 2 && d.every((x, i) => i === 0 || x === d[i - 1] + 1);
+  return `${run ? `${DAY_NAMES[d[0]]}–${DAY_NAMES[d[d.length - 1]]}` : d.map((x) => DAY_NAMES[x]).join(", ")}, ${clock(h.start)}–${clock(h.end)}`;
+}
 const MAX_TEXT = 2000;
 const MAINT_WORDS = /\b(down|leak|leaking|leaks|broken|broke|jam|jammed|jams|not working)\b/i;
 const M_NUMBER = /\bM-?\d{3}\b/i;
@@ -126,17 +148,19 @@ function checkTo(to, opts) {
 }
 
 // Where someone stands right now. ctx: { teamOnShift (team id or null), marks ({ emp: { status } } for this shift) }.
-//   "on" — on their team's shift · "noteam" — no team (gets it when named, unless absent) · "covering" — Here on another team's shift
-//   "absent" — marked Out this shift · "off" — not their shift
+//   "on" — on their team's shift · "noteam" — no team, in the day hours · "offhours" — no team, outside the day hours
+//   "covering" — Here on another team's shift · "absent" — marked Out this shift · "off" — not their shift
+// ctx.dayHours / ctx.dayNow: the day hours and plant time now (no dayHours = no hour check).
 function standing(p, ctx) {
   const mark = ctx.marks?.[p.id]?.status;
   if (mark === "out") return "absent";
-  if (!p.team) return "noteam";
+  if (!p.team) return !ctx.dayHours || !ctx.dayNow || inDayHours(ctx.dayHours, ctx.dayNow) ? "noteam" : "offhours";
   if (ctx.teamOnShift && p.team === ctx.teamOnShift) return "on";
   if (mark === "here") return "covering";
   return "off";
 }
 const receives = (s) => s === "on" || s === "noteam" || s === "covering";
+const whyNot = (s) => (s === "absent" ? "absent" : s === "offhours" ? "off hours" : "off shift");
 
 // Is one person in one target? Team messages to the team on shift reach the people covering that shift too.
 function inPart(p, part, ctx) {
@@ -150,24 +174,27 @@ function inPart(p, part, ctx) {
   }
 }
 // Everyone a message to `to` is meant for (before the shift check), not the sender. people: active, non-practice.
-// People with no team count only where they're named (Decision 109).
+// People with no team count for a person, department, or everyone message — never team, line, or role (Decision 109).
+const REACHES_NO_TEAM = ["person", "department", "all"];
 function audience(people, to, fromEmp, ctx) {
   const parts = to.type === "set" ? to.parts : [to];
-  return people.filter((p) => p.id !== fromEmp && parts.some((part) => inPart(p, part, ctx) && (p.team || part.type === "person")));
+  return people.filter((p) => p.id !== fromEmp && parts.some((part) => inPart(p, part, ctx) && (p.team || REACHES_NO_TEAM.includes(part.type))));
 }
 
 // Who gets it now: { recipients [emp], total, notDelivered, why (one-on-one: "off shift" | "absent" | "") }.
 function deliver(people, to, fromEmp, ctx) {
   const list = audience(people, to, fromEmp, ctx);
   const recipients = list.filter((p) => receives(standing(p, ctx))).map((p) => p.id);
-  const why = to.type === "person" && list.length && !recipients.length ? (standing(list[0], ctx) === "absent" ? "absent" : "off shift") : "";
-  return { recipients, total: list.length, notDelivered: list.length - recipients.length, why };
+  const why = to.type === "person" && list.length && !recipients.length ? whyNot(standing(list[0], ctx)) : "";
+  // offHours: people with no team it misses because it's outside their day hours (the sender is warned first).
+  const offHours = list.filter((p) => standing(p, ctx) === "offhours").length;
+  return { recipients, total: list.length, notDelivered: list.length - recipients.length, why, offHours };
 }
 
 // One reply goes to one person, with the same shift check. → { recipients, why }
 function deliverOne(person, ctx) {
   const s = person ? standing(person, ctx) : "off";
-  return receives(s) ? { recipients: [person.id], why: "" } : { recipients: [], why: s === "absent" ? "absent" : "off shift" };
+  return receives(s) ? { recipients: [person.id], why: "" } : { recipients: [], why: whyNot(s) };
 }
 
 // "Send as Maintenance Request" shows for a machine number or trouble words — never blocks the message.
@@ -182,7 +209,7 @@ function cleanReason(v) {
 }
 
 module.exports = {
-  START_ROLES, TARGETS, PART_TYPES, MAX_PARTS, sendOptions, checkTo, inPart,
+  START_ROLES, TARGETS, PART_TYPES, MAX_PARTS, DEFAULT_DAY_HOURS, cleanDayHours, inDayHours, dayHoursText, sendOptions, checkTo, inPart,
  MAX_TEXT, QUICK, canStart, cleanQuick, cleanMessageTask, ackStatus, clearedFor, startRole, cleanText, cleanTo, standing, receives, audience, deliver, deliverOne,
   maintenanceHint, machineNumber, conv, cleanReason,
 };

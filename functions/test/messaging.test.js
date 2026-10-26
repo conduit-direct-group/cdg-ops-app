@@ -56,10 +56,10 @@ test("messaging: on shift, absent, off shift, covering, no team", () => {
 });
 
 test("messaging: one-on-one to someone off shift or absent is not delivered, and says why", () => {
-  assert.deepStrictEqual(m.deliver(people, { type: "person", id: "9002" }, "9001", ctx), { recipients: ["9002"], total: 1, notDelivered: 0, why: "" });
-  assert.deepStrictEqual(m.deliver(people, { type: "person", id: "9004" }, "9001", ctx), { recipients: [], total: 1, notDelivered: 1, why: "off shift" });
-  assert.deepStrictEqual(m.deliver(people, { type: "person", id: "9003" }, "9001", ctx), { recipients: [], total: 1, notDelivered: 1, why: "absent" });
-  assert.deepStrictEqual(m.deliver(people, { type: "person", id: "9006" }, "9001", ctx).recipients, ["9006"]); // no team = always on
+  assert.deepStrictEqual(m.deliver(people, { type: "person", id: "9002" }, "9001", ctx), { recipients: ["9002"], total: 1, notDelivered: 0, why: "", offHours: 0 });
+  assert.deepStrictEqual(m.deliver(people, { type: "person", id: "9004" }, "9001", ctx), { recipients: [], total: 1, notDelivered: 1, why: "off shift", offHours: 0 });
+  assert.deepStrictEqual(m.deliver(people, { type: "person", id: "9003" }, "9001", ctx), { recipients: [], total: 1, notDelivered: 1, why: "absent", offHours: 0 });
+  assert.deepStrictEqual(m.deliver(people, { type: "person", id: "9006" }, "9001", ctx).recipients, ["9006"]); // no team, no hour check here
 });
 
 test("messaging: group messages reach only those on shift and not absent; covering people get the shift's team messages", () => {
@@ -73,17 +73,36 @@ test("messaging: group messages reach only those on shift and not absent; coveri
   const role = m.deliver(people, { type: "role", id: "operator" }, "9001", ctx);
   assert.deepStrictEqual([role.recipients, role.total], [["9002", "9005"], 4]);
   const all = m.deliver(people, { type: "all", id: "all" }, "9001", ctx);
-  assert.deepStrictEqual([all.recipients, all.total, all.why], [["9002", "9005"], 5, ""]); // never the sender; no-team people left out
+  assert.deepStrictEqual([all.recipients, all.total, all.why], [["9002", "9005", "9006", "9007"], 7, ""]); // never the sender; no team included (no hour check here)
 });
 
-test("messaging (Decision 109): people with no team get only messages that name them — not even their department's", () => {
+test("messaging (Decision 109): no team — named, their department, or everyone; never team, line, or role", () => {
   assert.strictEqual(m.deliver(people, { type: "role", id: "office" }, "9001", ctx).total, 0);
   assert.deepStrictEqual(m.deliver(people, { type: "person", id: "9006" }, "9001", ctx).recipients, ["9006"]);
   assert.deepStrictEqual(m.deliver(people, { type: "person", id: "9006" }, "9001", { ...ctx, marks: { 9006: { status: "out" } } }).why, "absent");
   const dept = m.deliver(people, { type: "department", id: "quality" }, "9001", ctx);
-  assert.deepStrictEqual([dept.recipients, dept.total], [[], 1]); // 9007 has no team; 9008 is on Team C, off shift
+  assert.deepStrictEqual([dept.recipients, dept.total], [["9007"], 2]); // 9008 is on Team C, off shift
   const mix = m.deliver(people, { type: "set", parts: [{ type: "department", id: "quality" }, { type: "team", id: "b" }, { type: "person", id: "9006" }] }, "9001", ctx);
-  assert.deepStrictEqual([mix.recipients, mix.total], [["9005", "9006"], 4]); // 9006 named; 9004 and 9008 off shift
+  assert.deepStrictEqual([mix.recipients, mix.total], [["9005", "9006", "9007"], 5]); // 9004 and 9008 off shift
+});
+
+test("messaging (Decision 109): people with no team receive only in the day hours (Mon–Fri 5 AM–5 PM to start)", () => {
+  const H = m.DEFAULT_DAY_HOURS;
+  assert.strictEqual(m.dayHoursText(H), "Mon–Fri, 5 AM–5 PM");
+  assert.strictEqual(m.inDayHours(H, { dow: 2, minutes: 5 * 60 }), true);
+  assert.strictEqual(m.inDayHours(H, { dow: 2, minutes: 17 * 60 }), false); // 5:00 PM is the end
+  assert.strictEqual(m.inDayHours(H, { dow: 6, minutes: 10 * 60 }), false); // Saturday
+  const night = { ...ctx, dayHours: H, dayNow: { dow: 3, minutes: 22 * 60 } };
+  assert.deepStrictEqual(m.deliver(people, { type: "person", id: "9006" }, "9001", night).why, "off hours");
+  assert.deepStrictEqual(m.deliverOne(people[5], night), { recipients: [], why: "off hours" });
+  const all = m.deliver(people, { type: "all", id: "all" }, "9001", night);
+  assert.deepStrictEqual([all.recipients, all.offHours], [["9002", "9005"], 2]); // the sender is warned about 2
+  const day = { ...night, dayNow: { dow: 3, minutes: 9 * 60 } };
+  assert.deepStrictEqual(m.deliver(people, { type: "person", id: "9006" }, "9001", day).recipients, ["9006"]);
+  assert.deepStrictEqual(m.cleanDayHours({ days: [5, 1, 1], start: "06:30", end: "15:00" }), { hours: { days: [1, 5], start: "06:30", end: "15:00" } });
+  assert.match(m.cleanDayHours({ days: [], start: "05:00", end: "17:00" }).error, /day/);
+  assert.match(m.cleanDayHours({ days: [1], start: "17:00", end: "05:00" }).error, /after/);
+  assert.match(m.cleanDayHours({ days: [1], start: "5am", end: "17:00" }).error, /time/);
 });
 
 test("messaging (Decision 108): who sends to what, and where a new message starts", () => {

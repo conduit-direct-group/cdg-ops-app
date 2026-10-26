@@ -166,7 +166,7 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
     const status = mine
       ? m.kind === "new" && m.to?.type !== "person"
         ? `Delivered to ${delivered} of ${m.total}`
-        : delivered ? "Delivered" : `Not delivered — ${m.why === "absent" ? "absent" : "off shift"}`
+        : delivered ? "Delivered" : `Not delivered — ${m.why || "off shift"}`
       : "";
     const machineId = machineIn(m.text);
     return el("div", { class: mine ? "msg-bubble mine" : "msg-bubble" },
@@ -188,7 +188,7 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
     try {
       const { data: r } = await callMessageReply({ rootId: c.rootId, participant: c.participant, ...(quick ? { quick } : { text }) });
       if (!quick) ui.draft = "";
-      toast(r.delivered ? (quick === "help" ? "Sent — they've been alerted" : "Sent") : `Not delivered — ${r.why === "absent" ? "they're absent today" : "they're off shift"}`);
+      toast(r.delivered ? (quick === "help" ? "Sent — they've been alerted" : "Sent") : `Not delivered — ${r.why === "absent" ? "they're absent today" : r.why === "off hours" ? "outside their hours" : "they're off shift"}`);
     } catch (err) { Object.assign(ui, { message: friendlyError(err), messageKind: "error", retry: () => sendReply(c, quick) }); }
     ui.busy = false;
     render();
@@ -238,8 +238,8 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
                el("span", { class: "msg-item-icon", "aria-hidden": "true" }, "📣"),
                el("span", { class: "msg-item-text" }, el("strong", {}, a.title), el("span", { class: "person-meta msg-preview" }, a.createdByName ? `from ${a.createdByName}` : "")),
                el("span", { class: "msg-item-side" }, el("span", { class: "person-meta" }, fmtWhen(a.createdAt?.toMillis?.() || 0))))))] : null],
-      s?.noTeam?.length ? collapsible("msg-noteam", `👥 No team (${s.noTeam.length}) — get only messages that name them`,
-        el("p", { class: "card-note" }, "People with no team (day staff, office) get a message only when it names them — never team, line, role, department, or everyone messages. Named, they get it right away unless marked absent."),
+      s?.noTeam?.length ? collapsible("msg-noteam", `👥 No team (${s.noTeam.length}) — when they get messages`,
+        el("p", { class: "card-note" }, "People with no team (day staff, office) get messages that name them, their department, or everyone — never team, line, or role messages. They receive only in their hours (Admin → Message hours) and not when marked absent. Named, they get it right away unless marked absent."),
         el("p", {}, s.noTeam.join(", "))) : null,
       s?.hr ? el("button", { class: "btn secondary", type: "button", onclick: () => { ui.hr = { emp: "", reason: "", result: null, log: null }; go("hr"); } }, "🔒 Review someone's messages (HR)") : null,
     ];
@@ -300,7 +300,7 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
           el("span", { class: "person-meta" }, [ACK_LABEL[ack], t ? `task: ${t.status === "verified" ? "confirmed" : t.status === "done" ? "waiting for your confirmation" : "not done"}` : ""].filter(Boolean).join(" · ")),
           t && t.status === "done" ? taskRow(t, me, { busy: ui.busy }) : null);
       })),
-      g.root.notDelivered ? el("p", { class: "card-note" }, `${g.root.notDelivered} didn't get it (off shift or absent).`) : null,
+      g.root.notDelivered ? el("p", { class: "card-note" }, `${g.root.notDelivered} didn't get it (off shift, outside their hours, or absent).`) : null,
       el("h2", { class: "home-h2" }, `Replies (${g.replies})`),
       g.threads.length
         ? el("div", { class: "msg-list" }, g.threads.sort((a, b) => b.last.atMs - a.last.atMs).map((t) => el("button", { class: t.unread ? "msg-item unread" : "msg-item", type: "button", onclick: () => go("conv", t.key) },
@@ -367,9 +367,11 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
     const pv = ui.preview;
     if (to.type === "line" && pv?.noOneOnLine) { Object.assign(ui, { message: `No one is assigned to ${pv.name} yet this shift. Seat people on the Crew Board first.`, messageKind: "error", retry: null }); return render(); }
     if (to.type === "person" && pv && pv.reach === 0) {
-      const why = pv.why === "absent" ? "absent" : "off shift";
-      if (!(await confirmSheet({ title: `${pv.name} is ${why} today.`, text: "They will not receive this. Send it anyway? It will show “Not delivered”.", confirmLabel: "Send anyway", danger: true }))) return;
+      const title = pv.why === "off hours" ? `${pv.name} gets messages only ${pv.dayHours}.` : `${pv.name} is ${pv.why === "absent" ? "absent" : "off shift"} today.`;
+      if (!(await confirmSheet({ title, text: "They will not receive this. Send it anyway? It will show “Not delivered”.", confirmLabel: "Send anyway", danger: true }))) return;
     }
+    // People with no team outside their hours (Decision 109): warn before a group message goes.
+    if (to.type !== "person" && pv?.offHours && !(await confirmSheet({ title: `${pv.offHours} ${pv.offHours === 1 ? "person" : "people"} with no team won't get this.`, text: `People with no team get messages only ${pv.dayHours}. Send it anyway?`, confirmLabel: "Send anyway" }))) return;
     Object.assign(ui, { busy: true, message: "" });
     render();
     try {
@@ -391,11 +393,12 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
     const to = picked(f) ? toOf(f) : null;
     const reach = !pv || !to ? null
       : to.type === "person"
-        ? pv.reach ? el("p", { class: "message" }, `✓ ${pv.name} is on shift now.`) : el("p", { class: "message error" }, `${pv.name} is ${pv.why === "absent" ? "absent" : "off shift"} today. They will not receive this.`)
+        ? pv.reach ? el("p", { class: "message" }, `✓ ${pv.name} is on shift now.`) : el("p", { class: "message error" }, pv.why === "off hours" ? `${pv.name} gets messages only ${pv.dayHours}. They will not receive this now.` : `${pv.name} is ${pv.why === "absent" ? "absent" : "off shift"} today. They will not receive this.`)
         : to.type === "line" && pv.noOneOnLine
           ? el("p", { class: "message error" }, `No one is assigned to ${pv.name} yet this shift.`)
           : el("p", { class: "message" }, el("strong", {}, `${pv.name || "Who it's for"} – ${pv.total} ${pv.total === 1 ? "person" : "people"}`),
-              pv.total ? ` · ${pv.reach} ${pv.reach === 1 ? "gets" : "get"} it now (on shift, not absent).` : f.mix ? " · No one picked is on a team — add people by name." : " · No one is in that group yet.");
+              pv.total ? ` · ${pv.reach} ${pv.reach === 1 ? "gets" : "get"} it now (on shift, not absent).` : " · No one is in that group yet.",
+              pv.offHours ? el("span", {}, ` ⚠ ${pv.offHours} with no team won't get it — they receive only ${pv.dayHours}.`) : null);
     // The mix builder (Admins and department heads, Decision 108).
     const o = s.options || {};
     const partName = (p) => (p.type === "department" ? `${(s.departments || []).find((x) => x.id === p.id)?.name || p.id} department`
