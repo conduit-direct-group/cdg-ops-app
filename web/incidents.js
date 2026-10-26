@@ -270,7 +270,7 @@ export function openIncidents(container, { me, start = "home", startId = null, o
     return [
       back(backLabel, onExit),
       el("h1", {}, "🦺 Safety reports"),
-      el("p", { class: "hint" }, "Near misses, first aid, injuries, property damage, spills. Reporting a near miss helps prevent the next injury."),
+      el("p", { class: "hint" }, "Near misses, safety concerns, first aid, injuries, property damage, spills. Reporting a near miss or a safety concern helps prevent the next injury."),
       banner(ui),
       el("button", { class: "btn big", type: "button", onclick: () => { ui.form = newForm(); show("report"); } }, "🦺 Report a near miss or incident"),
       (data.myIncidentActions || []).some((a) => !a.done && a.ownerEmp === me.emp) ? el("button", { class: "btn secondary", type: "button", onclick: () => show("actions") }, "🛠 My safety actions") : null,
@@ -512,7 +512,7 @@ export function openIncidents(container, { me, start = "home", startId = null, o
   function thanksView() {
     return [
       el("h1", {}, "✓ Thank you"),
-      el("p", {}, ui.sentAnon ? "Your near miss was sent anonymously. You can follow its status from this device under My reports." : "Training & Safety and the Production Manager have it. You can follow its status under My reports."),
+      el("p", {}, ui.sentAnon ? "Your report was sent anonymously. You can follow its status from this device under My reports." : "Training & Safety and the Production Manager have it. You can follow its status under My reports."),
       el("button", { class: "btn", type: "button", onclick: () => show("home") }, "Done"),
     ];
   }
