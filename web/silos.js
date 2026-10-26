@@ -4,7 +4,7 @@
 // red Home item while a silo is below its line.
 // Rules match functions/silos.js.
 
-import { el, friendlyError, spinner, banner, toast, picker } from "./ui.js";
+import { el, friendlyError, spinner, banner, toast, picker, deviceFold } from "./ui.js";
 import { data, onDataChange } from "./data.js";
 import { callUpdateSiloLevels, callAdminSaveSiloSettings, callAdminListEmployees } from "./firebase.js";
 
@@ -61,6 +61,26 @@ export function siloCard(onOpen) {
   return el(onOpen ? "button" : "div", { class: "dash-card silo-card", type: onOpen ? "button" : null, onclick: onOpen || null, "data-card": "silos" },
     el("span", { class: "dash-title" }, "🛢 Silo levels"),
     data.siloLevels ? el("div", { class: "silo-rows" }, rows) : el("span", { class: "dash-line" }, "Loading…"));
+}
+
+// Home (Decision 108): silo levels in a fold-away section, closed until opened (remembered on this device). The header
+// names the lowest silo. A low silo is already its own Needs you item ("Low silo"), so the fold isn't red too —
+// every item on Home once.
+export function siloFold(onOpen) {
+  if (!data.siloLevels) return deviceFold("home-silos", "🛢 Silo levels — loading…", {}, spinner());
+  const rows = SILOS.map((s) => {
+    const l = levelOf(s.id);
+    const st = setting(s.id);
+    return { s, l, low: !!(l && st && st.alert !== false && typeof st.low === "number" && l.level < st.low) };
+  });
+  const known = rows.filter((r) => r.l).sort((a, b) => a.l.level - b.l.level);
+  const summary = known.length ? `🛢 Silo levels — lowest: ${known[0].s.name} ${known[0].l.level}%` : "🛢 Silo levels — not entered yet";
+  return deviceFold("home-silos", summary, {},
+    el("div", { class: "silo-rows" }, rows.map(({ s, l, low: isLow }) => el("div", { class: isLow ? "silo-row low" : "silo-row" },
+      el("span", { class: "silo-name" }, s.name),
+      el("strong", { class: "silo-level" }, l ? `${isLow ? "⚠ " : ""}${l.level}%` : "—"),
+      el("span", { class: "silo-when" }, l ? `${when(l.at)} · ${l.byName || ""}${l.test ? " (test)" : ""}` : "not entered yet")))),
+    onOpen ? el("button", { class: "btn secondary", type: "button", onclick: onOpen }, "Open silo levels") : null);
 }
 
 // The silo screen: all levels, and (for operators and up) "Update silo levels".

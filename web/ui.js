@@ -178,6 +178,20 @@ export function collapsible(key, summary, ...children) {
   );
 }
 
+// A fold-away section that remembers open / closed on this device (localStorage; a private window just starts at
+// the default). alert: the header turns red (⚠ in the words too) so nothing urgent hides inside a closed fold.
+export function deviceFold(key, summary, { open = false, alert = false } = {}, ...children) {
+  let saved = null;
+  try { saved = localStorage.getItem(`fold:${key}`); } catch {}
+  const d = el("details", {
+    class: alert ? "fold fold-todo" : "fold", open: saved === null ? open : saved === "1",
+    ontoggle: (e) => { try { localStorage.setItem(`fold:${key}`, e.target.open ? "1" : "0"); } catch {} },
+  },
+  el("summary", {}, el("span", {}, summary), el("span", { class: "fold-arrow", "aria-hidden": "true" }, "▾")),
+  el("div", { class: "fold-body" }, ...children));
+  return d;
+}
+
 // A fold-away line colored by status: red (something not done) or green (all done) — always with an icon and
 // words, e.g. "⚠ Machine checklists · 15 overdue" or "✓ Machine checklists · all done".
 export function statusFold(key, ok, summary, ...children) {

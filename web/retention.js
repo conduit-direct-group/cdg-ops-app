@@ -48,7 +48,7 @@ export function openRetentionAdmin(container, { onExit }) {
       g.canChange
         ? picker({ title: g.label, value: g.days == null ? "never" : String(g.days), options: g.choices.map((c) => ({ value: c.days == null ? "never" : String(c.days), label: c.label })), onChange: (v) => change(g, v === "never" ? null : Number(v)) })
         : el("p", { class: "ret-period" }, label(g, g.days)),
-      !g.canChange && g.hr ? el("span", { class: "person-meta" }, "Changing this needs HR access.") : null,
+      g.locked ? el("span", { class: "person-meta" }, "🔒 Locked — always kept as proof people were told.") : !g.canChange && g.hr ? el("span", { class: "person-meta" }, "Changing this needs HR access.") : null,
       g.days !== g.defaultDays ? el("span", { class: "person-meta" }, `Plan default: ${label(g, g.defaultDays)}`) : null);
   }
 

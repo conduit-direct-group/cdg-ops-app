@@ -45,6 +45,9 @@ const stored = (k) => { try { return localStorage.getItem(k); } catch { return n
 const store = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
 const toMs = (t) => (typeof t === "number" ? t : t?.toMillis ? t.toMillis() : t instanceof Date ? t.getTime() : t?.seconds ? t.seconds * 1000 : 0);
 const fmtTime = (t) => new Date(toMs(t)).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+// Every entry shows its date and time (Decision 108 item 1): "Mon, Oct 26 · 2:15 PM".
+const fmtStamp = (t) => (toMs(t) ? `${new Date(toMs(t)).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })} · ${fmtTime(t)}` : "");
+const fmtDay = (d) => (d ? new Date(`${d}T12:00:00`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }) : "");
 const fmtWhen = (t) => (toMs(t) ? new Date(toMs(t)).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "");
 const lineForm = () => (data.formTemplates || []).find((t) => t.id === LINE_FORM && t.active !== false) || null;
 const shiftNow = () => currentShift((data.formTemplates || []).find((t) => t.id === SHIFT_FORM)?.shifts);
@@ -158,7 +161,7 @@ export function openLineCheck(container, { me, startLine = null, startLogId = nu
         const state = log?.review ? ["✓ Reviewed", "tag ok"] : log?.operatorSign ? ["Signed — waiting for review", "tag warn"] : d.overdue ? [`⚠ ${dueText(d)}`, "tag off"] : [dueText(d), "tag warn"];
         return el("button", { class: d.overdue && !log?.operatorSign ? "person-row urgent" : "person-row", type: "button", onclick: () => openLine(l.id) },
           el("span", { class: "person-name" }, `${l.name}${l.id === mine ? " · this tablet's line" : ""}`),
-          el("span", { class: "person-meta" }, log?.rounds?.length ? `${log.rounds.length} check${log.rounds.length === 1 ? "" : "s"} · last ${fmtTime(log.rounds[log.rounds.length - 1].at)} by ${log.rounds[log.rounds.length - 1].name}` : "No checks yet this shift"),
+          el("span", { class: "person-meta" }, log?.rounds?.length ? `${log.rounds.length} check${log.rounds.length === 1 ? "" : "s"} · last ${fmtStamp(log.rounds[log.rounds.length - 1].at)} by ${log.rounds[log.rounds.length - 1].name}` : "No checks yet this shift"),
           el("span", { class: "tags" }, el("span", { class: state[1] }, state[0]), log?.test ? el("span", { class: "tag test" }, "TEST") : null));
       })) : null,
       form && now && (form.sections || []).some((s) => s.scope === "plant")
@@ -197,7 +200,7 @@ export function openLineCheck(container, { me, startLine = null, startLogId = nu
     return [
       back("Lines", () => show("pick", { logId: null })),
       el("h1", {}, `📈 ${log.lineName}`),
-      el("p", { class: "hint" }, `${log.shift.name} shift · form revision ${log.formRev}${log.test ? " · TEST" : ""}`),
+      el("p", { class: "hint" }, `${fmtDay(log.date)} · ${log.shift.name} shift · form revision ${log.formRev}${log.test ? " · TEST" : ""}`),
       banner(ui),
       signed ? null : el("section", { class: d.overdue ? "timer-card late" : "timer-card", role: "status" },
         el("span", { class: "timer-label" }, d.overdue ? "⚠ Check overdue" : "Next check"),
@@ -207,7 +210,7 @@ export function openLineCheck(container, { me, startLine = null, startLogId = nu
       el("h2", {}, `Checks this shift (${rounds.length})`),
       !rounds.length ? emptyState("No checks yet", "Tap “Record a check” to log the first one.") : el("div", { class: "round-list" }, rounds.map((r) =>
         el("div", { class: r.flags?.length ? "round-row flagged" : "round-row" },
-          el("div", { class: "row-between" }, el("strong", {}, fmtTime(r.at)), el("span", { class: "person-meta" }, `${r.name}${r.flags?.length ? ` · ⚠ ${r.flags.length} flagged` : ""}`)),
+          el("div", { class: "row-between" }, el("strong", {}, fmtStamp(r.at)), el("span", { class: "person-meta" }, `${r.name}${r.flags?.length ? ` · ⚠ ${r.flags.length} flagged` : ""}`)),
           el("p", { class: "round-values" }, fields.filter((f) => r.values?.[f.id] !== undefined).map((f) => {
             const v = r.values[f.id];
             const bad = r.flags?.includes(f.id);
@@ -266,7 +269,7 @@ export function openLineCheck(container, { me, startLine = null, startLogId = nu
     return [
       back(log.lineName, () => show("log")),
       el("h1", {}, `Check · ${log.lineName}`),
-      el("p", { class: "hint" }, `Read each gauge — the gray number is the last reading (${last ? fmtTime(last.at) : "none yet"}). Leave a box empty if you didn't check it.`),
+      el("p", { class: "hint" }, `Read each gauge — the gray number is the last reading (${last ? fmtStamp(last.at) : "none yet"}). Leave a box empty if you didn't check it.`),
       banner(ui),
       (log.sections || []).map((s) => el("section", { class: "card ho-section" },
         el("h2", {}, s.title),
@@ -321,7 +324,7 @@ export function openLineCheck(container, { me, startLine = null, startLogId = nu
     return [
       back("Lines", () => show("pick")),
       el("h1", {}, "🏭 Plant-wide checks"),
-      el("p", { class: "hint" }, `${p.shift.name} shift · logged once for the whole plant. Tap when you do it — the app stamps the time and your name.`),
+      el("p", { class: "hint" }, `${fmtDay(p.date)} · ${p.shift.name} shift · logged once for the whole plant. Tap when you do it — the app stamps the time and your name.`),
       banner(ui),
       (p.sections || []).map((s) => el("section", { class: "card ho-section" },
         el("h2", {}, s.title),
@@ -333,7 +336,7 @@ export function openLineCheck(container, { me, startLine = null, startLogId = nu
             el("div", { class: "task-main" },
               el("span", { class: "person-name" }, f.label),
               el("span", { class: "person-meta" }, [hasRange ? `${f.expectMin === f.expectMax ? f.expectMin : `${f.expectMin}–${f.expectMax}`}× per shift` : "", f.help].filter(Boolean).join(" · ")),
-              taps.length ? el("span", { class: "person-meta" }, taps.map((t) => fmtTime(t.at)).join(" · ")) : null),
+              taps.length ? el("span", { class: "person-meta" }, taps.map((t) => fmtStamp(t.at)).join(", ")) : null),
             el("span", { class: enough && taps.length ? "tally-count ok" : "tally-count" }, hasRange ? `${taps.length} of ${f.expectMin === f.expectMax ? f.expectMin : `${f.expectMin}–${f.expectMax}`}` : String(taps.length)),
             el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: () => tap(f) }, "＋ Done now"));
         })))),

@@ -6,7 +6,7 @@
 
 import { el, breakable, friendlyError, spinner, emptyState, banner, toast, picker, confirmSheet } from "./ui.js";
 import { data, onDataChange } from "./data.js";
-import { db, storage, TEST_MODE, callReportIncident, callMyIncidents, callSaveIncidentFollowUp, callAddIncidentAction, callCompleteIncidentAction, callCloseIncident, callMarkIncidentShared, callIncidentPeople, callAdminSaveRotation, callSignIncident, callIncidentFiles, callExportInjuryReports, callSetHrAccess, callHrAccessList, callAdminListEmployees } from "./firebase.js";
+import { db, storage, TEST_MODE, callReportIncident, callMyIncidents, callSaveIncidentFollowUp, callAddIncidentAction, callCompleteIncidentAction, callCloseIncident, callMarkIncidentShared, callIncidentPeople, callAdminSaveRotation, callSignIncident, callIncidentFiles, callExportInjuryReports, callSetHrAccess, callHrAccessList, callAdminListEmployees, callOrgChart } from "./firebase.js";
 import { collection, doc, getDoc, getDocs, query, where } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 import { ref, uploadBytesResumable } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-storage.js";
 import { signOff, signedNote, deviceInfo } from "./signoff.js";
@@ -15,7 +15,9 @@ import { sigPad } from "./sigpad.js";
 
 export const FOLLOW_ROLES = ["training-safety", "plant-manager", "admin"];
 export const canFollowIncidents = (roles) => roles.some((r) => FOLLOW_ROLES.includes(r));
-const TYPES = [["near-miss", "⚠ Near miss"], ["first-aid", "🩹 First aid"], ["injury", "🚑 Injury"], ["property", "🏚 Property damage"], ["spill", "🛢 Spill / environmental"]];
+// Near misses and safety concerns can be sent anonymously (Decision 108); injury and first aid never.
+const ANON_TYPES = ["near-miss", "safety-concern"];
+const TYPES = [["near-miss", "⚠ Near miss"], ["safety-concern", "🦺 Safety concern"], ["first-aid", "🩹 First aid"], ["injury", "🚑 Injury"], ["property", "🏚 Property damage"], ["spill", "🛢 Spill / environmental"]];
 const TYPE_LABEL = Object.fromEntries(TYPES);
 const STATUS = { reported: "🆕 Reported", investigating: "🔍 Investigating", actions: "🛠 Actions open", closed: "✓ Closed" };
 const ANON_KEY = "cdg.anonIncidents";
@@ -88,7 +90,9 @@ export function incidentCard(id, onOpen) {
     const m = today().slice(0, 7);
     const list = data.recentIncidents.filter((i) => i.month === m);
     const nm = list.filter((i) => i.type === "near-miss").length;
-    return { icon: "📈", title: "This month", num: list.length, line: `${nm} near miss${nm === 1 ? "" : "es"} · ${list.length - nm} incident${list.length - nm === 1 ? "" : "s"}`, alert: false, onOpen };
+    const sc = list.filter((i) => i.type === "safety-concern").length;
+    const inc = list.length - nm - sc;
+    return { icon: "📈", title: "This month", num: list.length, line: [`${nm} near miss${nm === 1 ? "" : "es"}`, sc ? `${sc} safety concern${sc === 1 ? "" : "s"}` : null, `${inc} incident${inc === 1 ? "" : "s"}`].filter(Boolean).join(" · "), alert: false, onOpen };
   }
   return null;
 }
@@ -143,9 +147,26 @@ export function openIncidents(container, { me, start = "home", startId = null, o
   function signaturesFrom(f) {
     if (!SIG_TYPES.includes(f.type)) return null;
     const sup = pads.get("sup");
-    const supervisor = f.supName.trim() || (sup && !sup.isEmpty()) ? { name: f.supName, png: sup?.png() || "" } : null;
-    const witnesses = f.witnessRows.map((w) => ({ name: w.name, png: pads.get(w.key)?.png() || "" }));
+    const supervisor = f.supName.trim() || (sup && !sup.isEmpty()) ? { name: f.supName, emp: f.supEmp || null, png: sup?.png() || "" } : null;
+    const witnesses = f.witnessRows.map((w) => ({ name: w.name, emp: w.emp || null, png: pads.get(w.key)?.png() || "" }));
     return { supervisor, witnesses };
+  }
+
+  // Who's signing (Decision 108): pick them from the people list so their employee # is saved with the signature, or
+  // "Not an employee" to type a visitor's or contractor's name. List: names and titles (the org chart).
+  function loadSigners() {
+    if (ui.signers || ui.signersLoading) return;
+    ui.signersLoading = true;
+    callOrgChart().then(({ data: r }) => { ui.signers = r.people || []; ui.signersLoading = false; render(); }, () => { ui.signers = []; ui.signersLoading = false; render(); });
+  }
+  function signerPicker(title, cur, onPick) {
+    loadSigners();
+    if (!ui.signers) return spinner("Loading people…");
+    return picker({
+      title, value: cur.emp || (cur.typed ? "-" : ""), placeholder: "Pick who is signing",
+      options: [...ui.signers.map((p) => ({ value: p.emp, label: p.title ? `${p.name} · ${p.title}` : p.name })), { value: "-", label: "Not an employee — type the name" }],
+      onChange: (v) => { const p = ui.signers.find((x) => x.emp === v); onPick(p ? { emp: p.emp, name: p.name, typed: false } : { emp: null, name: "", typed: true }); render(); },
+    });
   }
 
   async function submit() {
@@ -182,7 +203,7 @@ export function openIncidents(container, { me, start = "home", startId = null, o
       banner(ui),
       el("form", { class: "card inc-form", onsubmit: (e) => { e.preventDefault(); submit(); } },
         label("What kind?"),
-        el("div", { class: "chips" }, TYPES.map(([v, n]) => el("button", { class: f.type === v ? "chip on" : "chip", type: "button", "aria-pressed": String(f.type === v), onclick: () => { f.type = v; if (v !== "near-miss") f.anonymous = false; render(); } }, n))),
+        el("div", { class: "chips" }, TYPES.map(([v, n]) => el("button", { class: f.type === v ? "chip on" : "chip", type: "button", "aria-pressed": String(f.type === v), onclick: () => { f.type = v; if (!ANON_TYPES.includes(v)) f.anonymous = false; render(); } }, n))),
         label("When"), el("input", { class: "field", type: "datetime-local", value: f.occurredAt, max: plantNow(), oninput: (e) => { f.occurredAt = e.target.value; } }),
         label("Where"),
         el("div", { class: "chips" }, lines.map((l) => el("button", { class: f.lineId === l.id ? "chip on" : "chip", type: "button", onclick: () => { f.lineId = f.lineId === l.id ? "" : l.id; render(); } }, l.name))),
@@ -204,16 +225,18 @@ export function openIncidents(container, { me, start = "home", startId = null, o
         hurt ? el("section", { class: "inc-sigs" },
           el("strong", {}, "✍ Signatures"),
           el("p", { class: "card-note" }, "The Supervisor signs every injury and first-aid report, and so does each witness — with a finger, here on this screen."),
-          label("Supervisor — printed name"), el("input", { class: "field", value: f.supName, maxlength: "80", oninput: (e) => { f.supName = e.target.value; } }),
+          label("Supervisor"), signerPicker("Supervisor", { emp: f.supEmp, typed: f.supTyped }, (p) => Object.assign(f, { supEmp: p.emp, supName: p.name, supTyped: p.typed })),
+          f.supTyped ? [label("Supervisor — printed name"), el("input", { class: "field", value: f.supName, maxlength: "80", oninput: (e) => { f.supName = e.target.value; } })] : null,
           pad("sup", "Supervisor signature").el,
           el("p", { class: "card-note" }, "Supervisor not here? Send it now — they sign later from My reports on this device."),
           f.witnessRows.map((w, n) => el("div", { class: "inc-witness" },
-            label(`Witness ${n + 1} — printed name`), el("input", { class: "field", value: w.name, maxlength: "80", oninput: (e) => { w.name = e.target.value; } }),
+            label(`Witness ${n + 1}`), signerPicker(`Witness ${n + 1}`, w, (p) => Object.assign(w, p)),
+            w.typed ? [label(`Witness ${n + 1} — printed name`), el("input", { class: "field", value: w.name, maxlength: "80", oninput: (e) => { w.name = e.target.value; } })] : null,
             pad(w.key, `Witness ${n + 1} signature`).el,
             el("button", { class: "link-btn danger-link", type: "button", onclick: () => { f.witnessRows.splice(n, 1); pads.delete(w.key); render(); } }, "✕ Remove this witness"))),
           f.witnessRows.length < 6 ? el("button", { class: "btn secondary", type: "button", onclick: () => { f.witnessRows.push({ key: `w${Date.now()}`, name: "" }); render(); } }, "+ Add a witness") : null,
           el("p", { class: "card-note" }, "📝 Also fill out the full incident report form. This report keeps the log.")) : null,
-        f.type === "near-miss" ? el("label", { class: "check-row" }, el("input", { type: "checkbox", checked: f.anonymous, onchange: (e) => { f.anonymous = e.target.checked; } }), el("span", {}, "Send anonymously (your name isn't saved)")) : null,
+        ANON_TYPES.includes(f.type) ? el("label", { class: "check-row" }, el("input", { type: "checkbox", checked: f.anonymous, onchange: (e) => { f.anonymous = e.target.checked; } }), el("span", {}, el("strong", {}, "Submit anonymously"), " — your name and employee number aren't saved anywhere. You can still follow it from this phone under My reports.")) : null,
         el("button", { class: "btn big", type: "submit", disabled: ui.busy || !f.type }, ui.busy ? "Sending…" : "Send report")),
     ];
   }
@@ -425,17 +448,19 @@ export function openIncidents(container, { me, start = "home", startId = null, o
     const goBack = () => { signPad = null; show(s.back, s.back === "one" ? { one: null } : { mine: null }); };
     async function save() {
       const name = (ui.signName || "").trim();
-      const out = await act(() => callSignIncident({ id: s.id, role: s.role, name, png: signPad.png(), device: deviceInfo() }), save, `Signed by ${name}`);
-      if (out) { ui.signName = ""; ui.id = s.id; goBack(); }
+      const out = await act(() => callSignIncident({ id: s.id, role: s.role, name, emp: ui.signEmp || null, png: signPad.png(), device: deviceInfo() }), save, `Signed by ${name}`);
+      if (out) { Object.assign(ui, { signName: "", signEmp: null, signTyped: false }); ui.id = s.id; goBack(); }
     }
     return [
       back("Back", goBack),
       el("h1", {}, `✍ ${who} signature`),
-      el("p", { class: "hint" }, "Print your name, then sign in the box with your finger."),
+      el("p", { class: "hint" }, "Pick your name (or type it if you aren't an employee), then sign in the box with your finger."),
       banner(ui),
       el("section", { class: "card" },
-        el("span", { class: "field-label strong" }, "Printed name"),
-        el("input", { class: "field", value: ui.signName || "", maxlength: "80", oninput: (e) => { ui.signName = e.target.value; } }),
+        el("span", { class: "field-label strong" }, "Who is signing?"),
+        signerPicker(who, { emp: ui.signEmp, typed: ui.signTyped }, (p) => Object.assign(ui, { signEmp: p.emp, signName: p.name, signTyped: p.typed })),
+        ui.signTyped ? [el("span", { class: "field-label strong" }, "Printed name"),
+          el("input", { class: "field", value: ui.signName || "", maxlength: "80", oninput: (e) => { ui.signName = e.target.value; } })] : null,
         signPad.el,
         el("button", { class: "btn big", type: "button", disabled: ui.busy, onclick: save }, ui.busy ? "Saving…" : "Save signature")),
     ];

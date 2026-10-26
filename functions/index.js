@@ -48,6 +48,7 @@ const annTasksLib = require("./anntasks");
 const crewSeatsLib = require("./crewseats");
 const writeupsLib = require("./writeups");
 const retentionLib = require("./retentionrules");
+const signoffsLib = require("./signoffs");
 const crypto = require("node:crypto");
 const { getMessaging } = require("firebase-admin/messaging");
 const { defineSecret } = require("firebase-functions/params");
@@ -817,12 +818,14 @@ exports.reviewFix = onCall(async (req) => {
       const fields = Object.fromEntries(FIX_FIELDS.map((k) => [k, p[k]]));
       saveVersion(tx, original.ref, original.data(), me.employeeNumber, "approved a suggested change");
       trashDroppedFiles(tx, test, original.data(), fields, p.editOf, me.employeeNumber);
-      tx.update(original.ref, { ...fields, updatedBy: p.createdBy, updatedAt: now, approvedBy: me.employeeNumber, approvedAt: now });
-      tx.update(snap.ref, { status: "merged", reviewedBy: me.employeeNumber, reviewedAt: now });
+      tx.update(original.ref, { ...fields, updatedBy: p.createdBy, updatedAt: now, approvedBy: me.employeeNumber, approvedByName: me.name, approvedAt: now });
+      tx.update(snap.ref, { status: "merged", reviewedBy: me.employeeNumber, reviewedByName: me.name, reviewedAt: now });
+      logSignoff(tx, test, { kind: "fix-approved", refId: p.editOf, version: signoffsLib.contentVersion(fields), suggestion: id, emp: me.employeeNumber, name: me.name, method: "app" });
       auditRecord(tx, "approved-edit", "fix", p.editOf, me.employeeNumber, { suggestion: id, title: p.title, test });
       return { id: p.editOf, status: "approved" };
     }
-    tx.update(snap.ref, { status: "approved", approvedBy: me.employeeNumber, approvedAt: now, updatedAt: now });
+    tx.update(snap.ref, { status: "approved", approvedBy: me.employeeNumber, approvedByName: me.name, approvedAt: now, updatedAt: now });
+    logSignoff(tx, test, { kind: "fix-approved", refId: id, version: signoffsLib.contentVersion(Object.fromEntries(FIX_FIELDS.map((k) => [k, p[k]]))), emp: me.employeeNumber, name: me.name, method: "app" });
     auditRecord(tx, "approved", "fix", id, me.employeeNumber, { title: p.title, test });
     return { id, status: "approved" };
   });
@@ -1366,6 +1369,7 @@ exports.markIssueFixed = onCall({ secrets: [odooKey] }, async (req) => {
   const name = await employeeName(me.employeeNumber);
   if (test) {
     await ref.update({ open: false, stage: "Repaired", closedAt: FieldValue.serverTimestamp(), closedBy: name, closedByEmp: me.employeeNumber, fixNote: note });
+    await logSignoffNow(true, { kind: "issue-fixed", refId: ref.id, version: signoffsLib.contentVersion({ title: snap.get("title"), note }), emp: me.employeeNumber, name, method: "app" });
     await writePlantStatus(true);
     return { ok: true, test: true };
   }
@@ -1383,6 +1387,7 @@ exports.markIssueFixed = onCall({ secrets: [odooKey] }, async (req) => {
     throw new HttpsError("unavailable", "Couldn't reach Odoo to close the request. Try again in a minute, or close it in Odoo.");
   }
   await ref.update({ open: false, stage: "Repaired", closedAt: FieldValue.serverTimestamp(), closedBy: name, closedByEmp: me.employeeNumber, fixNote: note });
+  await logSignoffNow(false, { kind: "issue-fixed", refId: ref.id, version: signoffsLib.contentVersion({ odooId: snap.get("odooId"), title: snap.get("title"), note }), emp: me.employeeNumber, name, method: "app" });
   const machineId = snap.get("machineId");
   if (machineId) await machines.doc(machineId).set({ lastRepairDate: today }, { merge: true }).catch(() => {});
   await auditLog.add({ type: "fixed", kind: "issue", recordId: ref.id, by: me.employeeNumber, at: FieldValue.serverTimestamp(), note });
@@ -1413,7 +1418,8 @@ exports.markLineBackUp = onCall({ secrets: [odooKey] }, async (req) => {
       throw new HttpsError("unavailable", "Couldn't reach Odoo. Try again in a minute, or untick Downtime Related in Odoo.");
     }
   }
-  await ref.update({ lineDown: false, lineBackUpAt: FieldValue.serverTimestamp(), lineBackUpBy: name });
+  await ref.update({ lineDown: false, lineBackUpAt: FieldValue.serverTimestamp(), lineBackUpBy: name, lineBackUpByEmp: me.employeeNumber });
+  await logSignoffNow(test, { kind: "line-back-up", refId: ref.id, version: signoffsLib.contentVersion({ odooId: snap.get("odooId") || null, title: snap.get("title") }), emp: me.employeeNumber, name, method: "app" });
   await auditLog.add({ type: "line-back-up", kind: "issue", recordId: ref.id, by: me.employeeNumber, at: FieldValue.serverTimestamp(), test });
   await writePlantStatus(test);
   return { ok: true, test };
@@ -1527,6 +1533,9 @@ exports.signChecklist = onCall(signable(async (req) => {
   const template = templates.find((t) => t.id === unit.templateId);
   const known = new Set((template.items || []).map((i) => i.id));
   if (!itemIds.every((id) => known.has(id))) throw new HttpsError("invalid-argument", "That checklist changed. Close it and open it again.");
+  // The exact version signed (Decision 108): the template's revision and the words of each item as signed.
+  const rev = template.rev || 1;
+  const itemTexts = Object.fromEntries((template.items || []).filter((i) => itemIds.includes(i.id)).map((i) => [i.id, i.text || ""]));
 
   const at = Date.now();
   const done = Object.fromEntries(itemIds.map((id) => [id, { at, by: me.employeeNumber, byName: me.name }]));
@@ -1535,15 +1544,15 @@ exports.signChecklist = onCall(signable(async (req) => {
   // pending: sign-offs waiting for Verified (two-step sign-off, verify.js); due dates count from Done.
   batch.set(
     col("checklistUnits", test).doc(unit.id),
-    { templateId: unit.templateId, lineId: unit.lineId, items: done, pending: { [signoffRef.id]: { items: itemIds, by: me.employeeNumber, byName: me.name, at } }, updatedAt: FieldValue.serverTimestamp() },
+    { templateId: unit.templateId, lineId: unit.lineId, items: done, pending: { [signoffRef.id]: { items: itemIds, by: me.employeeNumber, byName: me.name, at, rev } }, updatedAt: FieldValue.serverTimestamp() },
     { merge: true }
   );
   batch.create(signoffRef, {
-    unitId: unit.id, templateId: unit.templateId, lineId: unit.lineId, items: itemIds,
+    unitId: unit.id, templateId: unit.templateId, lineId: unit.lineId, items: itemIds, rev, itemTexts,
     by: me.employeeNumber, byName: me.name, method: "pin", device, signedOn: signedIn.employeeNumber,
     at: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}),
   });
-  logSignoff(batch, test, { kind: "checklist", refId: unit.id, version: null, items: itemIds, emp: me.employeeNumber, name: me.name, method: "pin", device, signedOn: signedIn.employeeNumber });
+  logSignoff(batch, test, { kind: "checklist", refId: unit.id, version: rev, itemTexts, items: itemIds, emp: me.employeeNumber, name: me.name, method: "pin", device, signedOn: signedIn.employeeNumber });
   await batch.commit();
   return { ok: true, count: itemIds.length, name: me.name, test };
 }));
@@ -1566,7 +1575,7 @@ exports.verifyChecklist = onCall(signable(async (req) => {
     const stamp = verifyStamp(signer, who, device);
     tx.update(unitRef, { [`pending.${signoffId}`]: FieldValue.delete(), updatedAt: FieldValue.serverTimestamp() });
     tx.update(col("checklistSignoffs", test).doc(signoffId), { verified: stamp });
-    logSignoff(tx, test, { kind: "checklist-verify", refId: unitRef.id, version: null, items: p.items, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber, role: who.role, backup: who.backup });
+    logSignoff(tx, test, { kind: "checklist-verify", refId: unitRef.id, version: p.rev || 1, signoffId, items: p.items, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber, role: who.role, backup: who.backup });
     return who;
   });
   return { ok: true, name: signer.name, role: w.roleName, backup: w.backup, test };
@@ -1615,7 +1624,10 @@ exports.adminSaveChecklist = onCall(async (req) => {
       if (!records.isRecordId(id)) throw new HttpsError("invalid-argument", "Name must start with a letter.");
       const ref = checklistTemplates.doc(id);
       if ((await tx.get(ref)).exists) throw new HttpsError("already-exists", `"${template.name}" already exists.`);
-      tx.create(ref, { ...template, createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+      // Revisions (Decision 108): rev 1 now; every change saves the new words as the next revision.
+      const doc = { ...template, rev: 1, createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() };
+      tx.create(ref, doc);
+      tx.create(ref.collection("revisions").doc("1"), { ...template, rev: 1, savedAt: FieldValue.serverTimestamp(), savedBy: adminNumber });
       auditRecord(tx, "created", "checklist", id, adminNumber, { name: template.name });
       return { id };
     }
@@ -1624,9 +1636,12 @@ exports.adminSaveChecklist = onCall(async (req) => {
     if (!snap.exists) throw new HttpsError("not-found", "That checklist no longer exists.");
     const template = requireTemplate(req.data, snap.data());
     trashTemplateFiles(tx, snap.data(), template, ref.id, adminNumber);
-    tx.update(ref, { ...template, updatedAt: FieldValue.serverTimestamp() });
-    auditRecord(tx, "updated", "checklist", ref.id, adminNumber, { name: template.name, items: template.items.length, active: template.active });
-    return { id: ref.id };
+    // Old sign-offs keep the rev and words they signed; this saves the new words as the next revision.
+    const rev = (snap.get("rev") || 1) + 1;
+    tx.update(ref, { ...template, rev, updatedAt: FieldValue.serverTimestamp() });
+    tx.create(ref.collection("revisions").doc(String(rev)), { ...template, rev, savedAt: FieldValue.serverTimestamp(), savedBy: adminNumber });
+    auditRecord(tx, "updated", "checklist", ref.id, adminNumber, { name: template.name, items: template.items.length, active: template.active, rev });
+    return { id: ref.id, rev };
   });
 });
 
@@ -1933,6 +1948,7 @@ exports.updateRequest = onCall(async (req) => {
       history: FieldValue.arrayUnion({ status, by: me.employeeNumber, byName: me.name, at: new Date(), ...(note ? { note } : {}) }),
     };
     if (status === "done") Object.assign(update, { doneBy: me.employeeNumber, doneByName: me.name, doneAt: FieldValue.serverTimestamp(), doneNote: note });
+    if (status === "done") logSignoff(tx, test, { kind: "request-done", refId: ref.id, version: signoffsLib.contentVersion({ typeId: cur.typeId, description: cur.description, note }), emp: me.employeeNumber, name: me.name, method: "app" });
     if (status === "open") Object.assign(update, { doneBy: FieldValue.delete(), doneByName: FieldValue.delete(), doneAt: FieldValue.delete(), doneNote: FieldValue.delete() });
     if (status === "in-progress") Object.assign(update, { takenBy: me.employeeNumber, takenByName: me.name });
     tx.update(ref, update);
@@ -2013,11 +2029,21 @@ async function requireSignature(data) {
   return { employeeNumber: emp, name: result.employee.name || `Employee ${emp}`, roles: result.employee.roles || [], employee: result.employee };
 }
 
+// The sign-off log (Decision 108 item 10): every entry has name, employee #, the time (server), and the exact version
+// signed — an entry without them is a bug, so it stops the sign-off instead of saving a weak record (signoffs.js).
 function logSignoff(tx, test, entry) {
+  const gap = signoffsLib.missing(entry);
+  if (gap) throw new HttpsError("internal", gap);
   const signedAtMs = offlineSend.getStore()?.signedAtMs;
   tx.create(col("signoffs", test).doc(), {
     ...entry, at: FieldValue.serverTimestamp(), ...(signedAtMs ? { signedAtMs, offline: true } : {}), ...(test ? { test: true } : {}),
   });
+}
+// The same, outside a transaction (actions that aren't a PIN sign-off: request done, issue fixed, fix approved …).
+async function logSignoffNow(test, entry) {
+  const batch = db.batch();
+  logSignoff(batch, test, entry);
+  await batch.commit();
 }
 
 // Offline sign-offs (offline.js): a sign-off saved on a device with no connection arrives later with { clientId,
@@ -2205,7 +2231,9 @@ exports.signAnnouncement = onCall(signable(async (req) => {
   const version = a.version || 1;
   const ref = sigCol(test).doc(sigId(snap.id, version, signer.employeeNumber));
   const already = await db.runTransaction(async (tx) => {
-    if ((await tx.get(ref)).exists) return true;
+    const [sig, now] = await Promise.all([tx.get(ref), tx.get(snap.ref)]);
+    if ((now.get("version") || 1) !== version) throw new HttpsError("failed-precondition", "It was just updated. Read the new version, then sign.");
+    if (sig.exists) return true;
     tx.create(ref, {
       annId: snap.id, version, title: a.title, emp: signer.employeeNumber, name: signer.name, method: "pin", device,
       signedOn: me.employeeNumber, at: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}),
@@ -2927,7 +2955,7 @@ exports.signStationList = onCall(signable(async (req) => {
     const missing = formsLib.stationMissing(l.sections, v.values);
     if (missing.length) throw new HttpsError("failed-precondition", `Not done yet: ${missing.slice(0, 4).join(", ")}${missing.length > 4 ? ` +${missing.length - 4} more` : ""}.`);
     tx.update(snap.ref, { values: v.values, signed: { emp: signer.employeeNumber, name: signer.name, at: new Date(), device }, updatedAt: FieldValue.serverTimestamp() });
-    logSignoff(tx, test, { kind: "station-checklist", refId: snap.id, version: l.formRev, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber });
+    logSignoff(tx, test, { kind: "station-checklist", refId: snap.id, version: l.formRev, content: signoffsLib.contentVersion(v.values), emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber });
     return l.formName;
   });
   return { ok: true, name: signer.name, form: name, test };
@@ -2970,7 +2998,7 @@ exports.redoStationList = onCall(async (req) => {
     if (!snap.exists) throw new HttpsError("not-found", "That checklist no longer exists.");
     const l = snap.data();
     if (!l.signed) throw new HttpsError("failed-precondition", "It isn't signed Done yet — nothing to reopen.");
-    const history = [...(l.history || []), { kind: "redo", reason, prevDone: l.signed, prevCheck: l.verified || null, by: me.employeeNumber, byName: me.name, at: new Date() }];
+    const history = [...(l.history || []), { kind: "redo", reason, prevDone: l.signed, prevCheck: l.verified || null, prevValues: l.values || {}, by: me.employeeNumber, byName: me.name, at: new Date() }];
     tx.update(ref, { signed: null, verified: null, history, updatedAt: FieldValue.serverTimestamp() });
     auditRecord(tx, "redo", "station checklist", ref.id, me.employeeNumber, { reason, test });
     return l.formName;
@@ -3445,7 +3473,15 @@ exports.reportIncident = onCall(async (req) => {
   // Files first, into the report's private folder: photos moved from incoming, signatures saved as PNG files.
   const folder = safetyFolder(test, ref.id);
   const photoPaths = await moveIncoming(report.photos, folder);
-  const stamp = async (x, file) => ({ name: x.name, path: await saveSignature(folder, file, x.png), atMs: Date.now(), device, collectedBy: me.employeeNumber });
+  // Signers picked from the list carry their employee # (Decision 108); the version is the report as signed.
+  const version = incidentSignedVersion({ ...report, place: report.place }, hurt ? { injuredName: hurt.name, bodyPart: hurt.bodyPart } : null);
+  const named = new Map();
+  for (const x of [sigs.supervisor, ...sigs.witnesses].filter((s) => s?.emp)) {
+    const e = await employees.doc(x.emp).get();
+    if (!e.exists || e.get("active") === false) throw new HttpsError("invalid-argument", "Pick the person from the list (or type a name for someone who isn't an employee).");
+    named.set(x.emp, e.get("name") || x.name);
+  }
+  const stamp = async (x, file) => ({ name: x.emp ? named.get(x.emp) : x.name, emp: x.emp || null, path: await saveSignature(folder, file, x.png), atMs: Date.now(), device, collectedBy: me.employeeNumber, collectedByName: me.name, version });
   const sigDoc = needsSigs ? {
     supervisor: sigs.supervisor ? await stamp(sigs.supervisor, "sig-supervisor") : null,
     witnesses: await Promise.all(sigs.witnesses.map((w, n) => stamp(w, `sig-witness-${n + 1}`))),
@@ -3459,7 +3495,12 @@ exports.reportIncident = onCall(async (req) => {
       createdAt: FieldValue.serverTimestamp(), createdAtMs: Date.now(), month: report.occurredAt.slice(0, 7), ...(test ? { test: true } : {}),
     });
     if (hurt) tx.create(ref.collection("private").doc("osha"), { injuredName: hurt.name, bodyPart: hurt.bodyPart });
-    if (sigDoc) tx.create(ref.collection("private").doc("signatures"), sigDoc);
+    if (sigDoc) {
+      tx.create(ref.collection("private").doc("signatures"), sigDoc);
+      for (const [role, s] of [["supervisor", sigDoc.supervisor], ...sigDoc.witnesses.map((w) => ["witness", w])]) {
+        if (s) logSignoff(tx, test, { kind: `incident-signature (${role})`, refId: ref.id, version, emp: s.emp || `not-employee:${s.name}`, name: s.name, method: "drawn", device, collectedBy: me.employeeNumber, collectedByName: me.name });
+      }
+    }
     auditRecord(tx, "reported", "incident", ref.id, report.anonymous ? "anonymous" : me.employeeNumber, { type: report.type, test });
   });
   const t = incidentsLib.TYPES[report.type];
@@ -3506,6 +3547,13 @@ exports.saveIncidentFollowUp = onCall(async (req) => {
     const { status } = await refreshIncident(tx, test, ref, snap.get("status"), started);
     tx.update(ref, { whys, rootCause, status, updatedAt: FieldValue.serverTimestamp(), updatedBy: me.employeeNumber, updatedByName: me.name });
     if (osha && !me.hr) throw new HttpsError("permission-denied", "The injury record needs HR access.");
+    // Signed reports (Decision 108): who was hurt and the body part are what the Supervisor and witnesses signed.
+    if (osha && (snap.get("supervisorSigned") || snap.get("witnessSignatures"))) {
+      const was = (await tx.get(ref.collection("private").doc("osha"))).data() || {};
+      if ((osha.injuredName || "") !== (was.injuredName || "") || (osha.bodyPart || "") !== (was.bodyPart || "")) {
+        throw new HttpsError("failed-precondition", "Who was hurt and the body part were signed — they can't be changed now. Add a note in the root cause instead.");
+      }
+    }
     if (osha && ["injury", "first-aid"].includes(snap.get("type"))) tx.set(ref.collection("private").doc("osha"), { ...osha, updatedAt: FieldValue.serverTimestamp(), updatedBy: me.employeeNumber });
     auditRecord(tx, "followed-up", "incident", ref.id, me.employeeNumber, { status, test });
     return { status };
@@ -3573,8 +3621,10 @@ exports.closeIncident = onCall(signable(async (req) => {
     if (openActions) throw new HttpsError("failed-precondition", `Finish the ${openActions} open action${openActions === 1 ? "" : "s"} first.`);
     if (incidentsLib.SIG_TYPES.includes(snap.get("type")) && snap.get("supervisorSigned") !== true) throw new HttpsError("failed-precondition", "The Supervisor hasn't signed this report yet.");
     const closedAtMs = Date.now();
-    tx.update(ref, { status: "closed", openActions: 0, closedAtMs, keepUntilMs: incidentsLib.keepUntilMs({ closedAtMs }), closed: { by: signer.employeeNumber, byName: signer.name, at: FieldValue.serverTimestamp(), device } });
-    logSignoff(tx, test, { kind: "incident-closed", refId: ref.id, version: 1, emp: signer.employeeNumber, name: signer.name, method: "pin", device });
+    const i = snap.data();
+    const version = signoffsLib.contentVersion({ type: i.type, occurredAt: i.occurredAt, place: i.place, what: i.what, immediate: i.immediate, whys: i.whys, rootCause: i.rootCause });
+    tx.update(ref, { status: "closed", openActions: 0, closedAtMs, keepUntilMs: incidentsLib.keepUntilMs({ closedAtMs }), closed: { by: signer.employeeNumber, byName: signer.name, at: FieldValue.serverTimestamp(), device, version } });
+    logSignoff(tx, test, { kind: "incident-closed", refId: ref.id, version, emp: signer.employeeNumber, name: signer.name, method: "pin", device });
     auditRecord(tx, "closed", "incident", ref.id, signer.employeeNumber, { test });
     return { ok: true, name: signer.name, test };
   });
@@ -3611,7 +3661,11 @@ exports.signIncident = onCall(async (req) => {
     if (snap.get("status") === "closed") throw new HttpsError("failed-precondition", "That report is closed.");
     const sigRef = ref.collection("private").doc("signatures");
     const cur = (await tx.get(sigRef)).data() || { supervisor: null, witnesses: [] };
-    const stamped = { name: sig.name, path: sigPath, atMs: Date.now(), device, collectedBy: me.employeeNumber };
+    const i = snap.data();
+    const named = sig.emp ? await tx.get(employees.doc(sig.emp)) : null;
+    if (sig.emp && (!named.exists || named.get("active") === false)) throw new HttpsError("invalid-argument", "Pick the person from the list (or type a name for someone who isn't an employee).");
+    const version = incidentSignedVersion(i, (await tx.get(ref.collection("private").doc("osha"))).data());
+    const stamped = { name: named ? named.get("name") || sig.name : sig.name, emp: sig.emp || null, path: sigPath, atMs: Date.now(), device, collectedBy: me.employeeNumber, collectedByName: me.name, version };
     if (role === "supervisor") {
       if (cur.supervisor) throw new HttpsError("failed-precondition", `Already signed by ${cur.supervisor.name}.`);
       cur.supervisor = stamped;
@@ -3621,10 +3675,16 @@ exports.signIncident = onCall(async (req) => {
     }
     tx.set(sigRef, cur);
     tx.update(ref, { supervisorSigned: !!cur.supervisor, supervisorSignedName: cur.supervisor?.name || "", witnessSignatures: (cur.witnesses || []).length });
+    logSignoff(tx, test, { kind: `incident-signature (${role})`, refId: ref.id, version, emp: stamped.emp || `not-employee:${stamped.name}`, name: stamped.name, method: "drawn", device, collectedBy: me.employeeNumber, collectedByName: me.name });
     auditRecord(tx, `signed (${role})`, "incident", ref.id, me.employeeNumber, { name: sig.name, test });
     return { ok: true, role, name: sig.name };
   });
 });
+
+// What an injury / first-aid signature signs (Decision 108): the report and who was hurt, where on the body.
+function incidentSignedVersion(i, osha) {
+  return signoffsLib.contentVersion({ type: i.type, occurredAt: i.occurredAt, place: i.place, what: i.what, immediate: i.immediate, injuredName: osha?.injuredName || "", bodyPart: osha?.bodyPart || "" });
+}
 
 // Follow-up: { id } — the report's photos and signatures as pictures (read here on the server from the private folder).
 exports.incidentFiles = onCall(async (req) => {
@@ -3863,11 +3923,13 @@ exports.decideReel = onCall(signable(async (req) => {
     const snap = await getReel(tx, test, req.data?.id);
     if (!["flagged", "staged"].includes(snap.get("status"))) throw new HttpsError("failed-precondition", "That reel already has a decision.");
     const done = d.next === "done";
+    const { status: _s, decision: _d, updatedAt: _u, ...flagged } = snap.data();
+    const version = signoffsLib.contentVersion(flagged);
     tx.update(snap.ref, {
-      status: d.next, decision: { kind, label: d.label, note, by: signer.employeeNumber, byName: signer.name, at: FieldValue.serverTimestamp(), atMs: Date.now(), device },
+      status: d.next, decision: { kind, label: d.label, note, by: signer.employeeNumber, byName: signer.name, at: FieldValue.serverTimestamp(), atMs: Date.now(), device, version },
       ...(done ? { doneAtMs: Date.now() } : {}),
     });
-    logSignoff(tx, test, { kind: "reel-decision", refId: snap.id, version: 1, emp: signer.employeeNumber, name: signer.name, method: "pin", device, decision: kind });
+    logSignoff(tx, test, { kind: "reel-decision", refId: snap.id, version, emp: signer.employeeNumber, name: signer.name, method: "pin", device, decision: kind });
     auditRecord(tx, "decided", "reel", snap.id, signer.employeeNumber, { decision: kind, test });
     return { ok: true, name: signer.name, next: d.next, test };
   });
@@ -4328,7 +4390,7 @@ async function shiftReportView(test, report) {
     col("changeoverEvents", test).where("reportId", "==", report.id).get(),
     col("downtimeEvents", test).where("reportId", "==", report.id).get(),
     col("scrapEntries", test).where("reportId", "==", report.id).get(),
-    reelScrapsFor(test, report),
+    report.signed?.reelScraps ? report.signed.reelScraps : reelScrapsFor(test, report), // frozen once signed (Decision 108)
     col("issues", test).where("open", "==", true).get(),
   ]);
   const lineMachines = new Set((await machines.where("lineId", "==", report.lineId).get()).docs.map((d) => d.id));
@@ -4460,20 +4522,26 @@ exports.signShiftReport = onCall(signable(async (req) => {
   const device = annLib.cleanDevice(req.data?.device);
   const ref = col("shiftReports", test).doc(String(req.data?.reportId || "x"));
   const first = await ref.get();
-  const reelScraps = first.exists ? (await reelScrapsFor(test, { id: first.id, ...first.data() })).length : 0;
+  const reelList = first.exists ? await reelScrapsFor(test, { id: first.id, ...first.data() }) : [];
   return db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     if (!snap.exists) throw new HttpsError("failed-precondition", "Save the product size first.");
     if (snap.get("signed")) throw new HttpsError("failed-precondition", `Already signed by ${snap.get("signed").byName}.`);
-    const [events, scraps] = await Promise.all([
+    const [events, scraps, changeovers] = await Promise.all([
       tx.get(col("downtimeEvents", test).where("reportId", "==", ref.id)),
       tx.get(col("scrapEntries", test).where("reportId", "==", ref.id)),
+      tx.get(col("changeoverEvents", test).where("reportId", "==", ref.id)),
     ]);
-    const notReady = downtimeLib.notReadyToSign(snap.data(), { downtime: events.size, scrap: scraps.size + reelScraps });
+    const notReady = downtimeLib.notReadyToSign(snap.data(), { downtime: events.size, scrap: scraps.size + reelList.length });
     if (notReady) throw new HttpsError("failed-precondition", notReady);
     const comments = req.data?.comments === undefined ? snap.get("comments") || "" : String(req.data.comments || "").replace(/\r\n/g, "\n").trim().slice(0, 2000);
-    tx.update(ref, { comments, signed: { by: signer.employeeNumber, byName: signer.name, atMs: Date.now(), device } });
-    logSignoff(tx, test, { kind: "shift-report", refId: ref.id, version: 1, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber });
+    // Decision 108: the flagged-reel scrap is frozen into the report as signed (a reel decided later doesn't change it),
+    // and the version is a fingerprint of everything on it.
+    const r = snap.data();
+    const rows = (q) => q.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => (a.id < b.id ? -1 : 1));
+    const version = signoffsLib.contentVersion({ productSize: r.productSize, changeover: r.changeover, none: r.none || {}, comments, events: rows(events), scraps: rows(scraps), changeovers: rows(changeovers), reelScraps: reelList });
+    tx.update(ref, { comments, signed: { by: signer.employeeNumber, byName: signer.name, atMs: Date.now(), device, version, reelScraps: reelList } });
+    logSignoff(tx, test, { kind: "shift-report", refId: ref.id, version, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber });
     auditRecord(tx, "signed", "shift report", ref.id, signer.employeeNumber, { test });
     return { ok: true, name: signer.name };
   });
@@ -4523,7 +4591,7 @@ exports.verifyShiftReport = onCall(signable(async (req) => {
     if (r.verified) throw new HttpsError("failed-precondition", `Already verified by ${r.verified.name}.`);
     const who = requireVerifier(signer, supervisorOnShift, [r.signed.by]);
     tx.update(ref, { verified: verifyStamp(signer, who, device) });
-    logSignoff(tx, test, { kind: "shift-report-verify", refId: ref.id, version: 1, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber, role: who.role, backup: who.backup });
+    logSignoff(tx, test, { kind: "shift-report-verify", refId: ref.id, version: r.signed.version || signoffsLib.contentVersion(r), emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber, role: who.role, backup: who.backup });
     return who;
   });
   return { ok: true, name: signer.name, role: w.roleName, backup: w.backup, test };
@@ -4571,8 +4639,11 @@ exports.exportShiftReports = onCall(async (req) => {
     const s = downtimeLib.reelScrap(reel);
     const at = formsLib.currentShift(shifts, reel.flaggedAtMs);
     if (!s || !at || at.date < from || at.date > to) continue;
-    reportFor(downtimeLib.reportId(reel.lineId, at.date, at.shift.id), { date: at.date, lineId: reel.lineId }).scraps.push(s);
+    const rid = downtimeLib.reportId(reel.lineId, at.date, at.shift.id);
+    if (byReport.get(rid)?.signed?.reelScraps) continue; // signed: the frozen list below, not today's reels
+    reportFor(rid, { date: at.date, lineId: reel.lineId }).scraps.push(s);
   }
+  for (const r of byReport.values()) if (r.signed?.reelScraps) r.scraps.push(...r.signed.reelScraps);
   const out = { changeover: [], downtime: [], scrap: [] };
   for (const r of [...byReport.values()].sort((a, b) => (a.id < b.id ? -1 : 1))) {
     const rows = downtimeLib.sheetRows(r, r.events.sort((a, b) => a.atMs - b.atMs), r.scraps, r.changeovers);
@@ -4899,6 +4970,12 @@ exports.assignAnnouncementTask = onCall(async (req) => {
   return { assigned: fresh.length, skipped: task.emps.length - fresh.length, test };
 });
 
+// The announcement's version right now (Decision 108: a task sign-off is tied to the version current when it's signed).
+async function annVersionNow(tx, test, task) {
+  const a = task.annId ? await tx.get(annCol(test).doc(task.annId)) : null;
+  return a?.exists ? a.get("version") || 1 : task.annVersion || 1;
+}
+
 // Done, by the person it's assigned to: { id, signer: { emp, pin }, device }.
 exports.markAnnTaskDone = onCall(signable(async (req) => {
   const me = await requireMember(req);
@@ -4909,8 +4986,9 @@ exports.markAnnTaskDone = onCall(signable(async (req) => {
     const { ref, task } = await openAnnTask(tx, test, req.data?.id);
     if (task.emp !== signer.employeeNumber) throw new HttpsError("permission-denied", `This task is ${task.name}'s — ${signer.name} can't sign it done.`);
     if (task.status !== "open") return task.annTitle;
-    tx.update(ref, { status: "done", done: { emp: signer.employeeNumber, name: signer.name, at: new Date(), device } });
-    logSignoff(tx, test, { kind: "announcement-task", refId: ref.id, version: task.annVersion, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber });
+    const version = await annVersionNow(tx, test, task);
+    tx.update(ref, { status: "done", done: { emp: signer.employeeNumber, name: signer.name, at: new Date(), device, annVersion: version } });
+    logSignoff(tx, test, { kind: "announcement-task", refId: ref.id, version, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber });
     return task.annTitle;
   });
   return { ok: true, name: signer.name, title: out, test };
@@ -4929,8 +5007,9 @@ exports.signAnnTask = onCall(signable(async (req) => {
     if (task.status === "verified") throw new HttpsError("failed-precondition", `Already signed off by ${task.verified?.name}.`);
     const who = annTasksLib.secondSigner({ id: signer.employeeNumber, roles: signer.roles, team: signer.employee.team || null, supervisesTeams: signer.employee.supervisesTeams || [] }, task);
     if (who.error) throw new HttpsError("permission-denied", who.error);
-    tx.update(ref, { status: "verified", verified: { emp: signer.employeeNumber, name: signer.name, at: new Date(), device, role: who.role, roleName: who.roleName } });
-    logSignoff(tx, test, { kind: "announcement-task-verify", refId: ref.id, version: task.annVersion, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber, role: who.role });
+    const version = await annVersionNow(tx, test, task);
+    tx.update(ref, { status: "verified", verified: { emp: signer.employeeNumber, name: signer.name, at: new Date(), device, role: who.role, roleName: who.roleName, annVersion: version } });
+    logSignoff(tx, test, { kind: "announcement-task-verify", refId: ref.id, version, emp: signer.employeeNumber, name: signer.name, method: "pin", device, signedOn: me.employeeNumber, role: who.role });
     return who;
   });
   return { ok: true, name: signer.name, role: w.roleName, test };
@@ -5201,6 +5280,9 @@ exports.writeupPrinted = onCall(async (req) => {
   return { ok: true };
 });
 
+// What a write-up's signatures sign: the form and the earlier write-ups listed on it (same fields as at saving).
+const writeupVersion = (w) => w.version || signoffsLib.contentVersion({ emp: w.emp, date: w.date, type: w.type, policy: w.policy, description: w.description, correctiveAction: w.correctiveAction, priorNotes: w.priorNotes, prior: w.prior });
+
 // The writer (the person signed in) saves the form and signs by hand. { writeup: form, signature (PNG), device } → { id }
 exports.saveWriteup = onCall(async (req) => {
   const me = await requireMember(req);
@@ -5217,15 +5299,18 @@ exports.saveWriteup = onCall(async (req) => {
   const earlier = await c.where("emp", "==", writeup.emp).get();
   const device = annLib.cleanDevice(req.data?.device);
   const ref = c.doc();
+  const prior = writeupsLib.priorList(earlier.docs.map((d) => d.data()), writeup.date);
+  // What both people sign (no edits after): the form and the earlier write-ups listed on it (Decision 108).
+  const version = signoffsLib.contentVersion({ ...writeup, prior });
   await db.runTransaction(async (tx) => {
     tx.create(ref, {
-      ...writeup, empName: person.get("name") || `Employee ${writeup.emp}`,
-      prior: writeupsLib.priorList(earlier.docs.map((d) => d.data()), writeup.date),
+      ...writeup, empName: person.get("name") || `Employee ${writeup.emp}`, version,
+      prior,
       writerEmp: me.employeeNumber, writerName: me.name, writerRole: writeupsLib.writerRole(me.roles),
       writerSig: { emp: me.employeeNumber, name: me.name, role: writeupsLib.writerRole(me.roles), atMs: Date.now(), device, png: sig.png },
       status: "waiting", employeeComments: "", createdAt: FieldValue.serverTimestamp(), ...(test ? { test: true } : {}),
     });
-    logSignoff(tx, test, { kind: "write-up (writer)", refId: ref.id, emp: me.employeeNumber, name: me.name, method: "drawn", device, signedOn: me.employeeNumber });
+    logSignoff(tx, test, { kind: "write-up (writer)", refId: ref.id, version, emp: me.employeeNumber, name: me.name, method: "drawn", device, signedOn: me.employeeNumber });
     auditRecord(tx, "created", "write-up", ref.id, me.employeeNumber, test ? { test: true } : {});
   });
   return { id: ref.id };
@@ -5247,7 +5332,7 @@ exports.writeupEmployeeSign = onCall(async (req) => {
     if (w.status !== "waiting") throw new HttpsError("failed-precondition", "This write-up is already signed or marked refused.");
     const witness = { emp: me.employeeNumber, name: me.name };
     tx.update(snap.ref, { status: "signed", employeeComments: comments, employeeSig: { emp: w.emp, name: w.empName, atMs: Date.now(), device, png: sig.png, witnessedBy: witness }, updatedAt: FieldValue.serverTimestamp() });
-    logSignoff(tx, test, { kind: "write-up (employee)", refId: snap.id, emp: w.emp, name: w.empName, method: "drawn", device, signedOn: me.employeeNumber, recordedBy: me.employeeNumber });
+    logSignoff(tx, test, { kind: "write-up (employee)", refId: snap.id, version: w.version || writeupVersion(w), emp: w.emp, name: w.empName, method: "drawn", device, signedOn: me.employeeNumber, recordedBy: me.employeeNumber });
     auditRecord(tx, "signed", "write-up", snap.id, me.employeeNumber, { employee: w.emp, method: "drawn", ...(test ? { test: true } : {}) });
   });
   return { ok: true };
@@ -5262,7 +5347,9 @@ exports.writeupRefused = onCall(async (req) => {
   await db.runTransaction(async (tx) => {
     const fresh = await tx.get(snap.ref);
     if (fresh.get("status") !== "waiting") throw new HttpsError("failed-precondition", "This write-up is already signed or marked refused.");
+    const w = fresh.data();
     tx.update(snap.ref, { status: "refused", employeeComments: comments, refused: { by: me.employeeNumber, byName: me.name, atMs: Date.now() }, updatedAt: FieldValue.serverTimestamp() });
+    logSignoff(tx, test, { kind: "write-up (refused)", refId: snap.id, version: w.version || writeupVersion(w), emp: me.employeeNumber, name: me.name, method: "app", employee: w.emp, employeeName: w.empName, recordedBy: me.employeeNumber });
     auditRecord(tx, "refused to sign", "write-up", snap.id, me.employeeNumber, test ? { test: true } : {});
   });
   return { ok: true };
@@ -5426,7 +5513,7 @@ exports.adminRetention = onCall(async (req) => {
   return {
     hr: me.hr,
     groups: retentionLib.CATEGORIES.map((c) => ({
-      key: c.key, label: c.label, covers: c.covers, hr: !!c.hr, days: p[c.key], defaultDays: c.days, canChange: retentionLib.canChange(c, me),
+      key: c.key, label: c.label, covers: c.covers, hr: !!c.hr, locked: !!c.locked, days: p[c.key], defaultDays: c.days, canChange: retentionLib.canChange(c, me),
       choices: retentionLib.CHOICES.filter((d) => d == null || !c.minDays || d >= c.minDays).map((d) => ({ days: d, label: retentionLib.periodLabel(d) })),
     })),
     runs: runs.docs.map((d) => ({ id: d.id, atMs: d.get("atMs"), removed: d.get("removed") || {}, keptOpen: d.get("keptOpen") || {}, errors: d.get("errors") || [] })),

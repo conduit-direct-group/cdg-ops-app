@@ -67,3 +67,11 @@ test("retention: safety reports go only after closing + their period; injury rep
   // never delete (the default) keeps everything
   assert.ok(!r.incidentMayGo({ type: "near-miss", closedAtMs: closed(9) }, r.periods(), now));
 });
+
+test("announcement sign-offs are never deleted, and that can't be changed (Decision 108)", () => {
+  const r = require("../retentionrules");
+  const cat = r.byKey("annSigs");
+  assert.strictEqual(r.canChange(cat, { roles: ["admin"], hr: true }), false);
+  assert.match(r.cleanPeriod("annSigs", 365).error, /never deleted/);
+  assert.strictEqual(r.periods({ annSigs: 30 }).annSigs, null); // an old saved period is ignored
+});
