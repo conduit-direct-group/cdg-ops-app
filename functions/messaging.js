@@ -9,8 +9,8 @@
 // "Not acknowledged" for that person. Cleared messages are in History (90 days).
 // Who receives: only people on their designated shift and not marked absent on Who's here today, decided when the
 // message is sent — anything else is never delivered (not held, not queued).
-// People with no team (day staff, office — Decision 108): they get only messages that name them (or their department);
-// never team, line, role, or everyone messages. Named, they get it right away unless marked absent.
+// People with no team (day staff, office — Decision 109): they get only messages that name them — never team, line,
+// role, department, or everyone messages. Named, they get it right away unless marked absent.
 // Who can send to what (Decision 108): Admins — everyone by default, or any mix of people, teams, departments, lines,
 // and roles. Department heads — their own department by default, widened with teams or people. Line Leads,
 // Supervisors, the Production Manager — one person, a team, a line, a role, or everyone (as before).
@@ -150,11 +150,10 @@ function inPart(p, part, ctx) {
   }
 }
 // Everyone a message to `to` is meant for (before the shift check), not the sender. people: active, non-practice.
-// People with no team count only where they're named, or in their department (Decision 108).
+// People with no team count only where they're named (Decision 109).
 function audience(people, to, fromEmp, ctx) {
   const parts = to.type === "set" ? to.parts : [to];
-  const named = (p, part) => part.type === "person" || part.type === "department";
-  return people.filter((p) => p.id !== fromEmp && parts.some((part) => inPart(p, part, ctx) && (p.team || named(p, part))));
+  return people.filter((p) => p.id !== fromEmp && parts.some((part) => inPart(p, part, ctx) && (p.team || part.type === "person")));
 }
 
 // Who gets it now: { recipients [emp], total, notDelivered, why (one-on-one: "off shift" | "absent" | "") }.

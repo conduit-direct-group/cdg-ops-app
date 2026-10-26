@@ -239,7 +239,7 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
                el("span", { class: "msg-item-text" }, el("strong", {}, a.title), el("span", { class: "person-meta msg-preview" }, a.createdByName ? `from ${a.createdByName}` : "")),
                el("span", { class: "msg-item-side" }, el("span", { class: "person-meta" }, fmtWhen(a.createdAt?.toMillis?.() || 0))))))] : null],
       s?.noTeam?.length ? collapsible("msg-noteam", `👥 No team (${s.noTeam.length}) — get only messages that name them`,
-        el("p", { class: "card-note" }, "People with no team (day staff, office) get a message only when it names them or their department — never team, line, role, or everyone messages. Named, they get it right away unless marked absent."),
+        el("p", { class: "card-note" }, "People with no team (day staff, office) get a message only when it names them — never team, line, role, department, or everyone messages. Named, they get it right away unless marked absent."),
         el("p", {}, s.noTeam.join(", "))) : null,
       s?.hr ? el("button", { class: "btn secondary", type: "button", onclick: () => { ui.hr = { emp: "", reason: "", result: null, log: null }; go("hr"); } }, "🔒 Review someone's messages (HR)") : null,
     ];
@@ -395,7 +395,7 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
         : to.type === "line" && pv.noOneOnLine
           ? el("p", { class: "message error" }, `No one is assigned to ${pv.name} yet this shift.`)
           : el("p", { class: "message" }, el("strong", {}, `${pv.name || "Who it's for"} – ${pv.total} ${pv.total === 1 ? "person" : "people"}`),
-              pv.total ? ` · ${pv.reach} ${pv.reach === 1 ? "gets" : "get"} it now (on shift, not absent).` : " · No one is in that group yet.");
+              pv.total ? ` · ${pv.reach} ${pv.reach === 1 ? "gets" : "get"} it now (on shift, not absent).` : f.mix ? " · No one picked is on a team — add people by name." : " · No one is in that group yet.");
     // The mix builder (Admins and department heads, Decision 108).
     const o = s.options || {};
     const partName = (p) => (p.type === "department" ? `${(s.departments || []).find((x) => x.id === p.id)?.name || p.id} department`

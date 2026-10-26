@@ -76,14 +76,14 @@ test("messaging: group messages reach only those on shift and not absent; coveri
   assert.deepStrictEqual([all.recipients, all.total, all.why], [["9002", "9005"], 5, ""]); // never the sender; no-team people left out
 });
 
-test("messaging (Decision 108): people with no team get only messages that name them or their department", () => {
+test("messaging (Decision 109): people with no team get only messages that name them — not even their department's", () => {
   assert.strictEqual(m.deliver(people, { type: "role", id: "office" }, "9001", ctx).total, 0);
   assert.deepStrictEqual(m.deliver(people, { type: "person", id: "9006" }, "9001", ctx).recipients, ["9006"]);
   assert.deepStrictEqual(m.deliver(people, { type: "person", id: "9006" }, "9001", { ...ctx, marks: { 9006: { status: "out" } } }).why, "absent");
   const dept = m.deliver(people, { type: "department", id: "quality" }, "9001", ctx);
-  assert.deepStrictEqual([dept.recipients, dept.total], [["9007"], 2]); // 9008 is on Team C, off shift
+  assert.deepStrictEqual([dept.recipients, dept.total], [[], 1]); // 9007 has no team; 9008 is on Team C, off shift
   const mix = m.deliver(people, { type: "set", parts: [{ type: "department", id: "quality" }, { type: "team", id: "b" }, { type: "person", id: "9006" }] }, "9001", ctx);
-  assert.deepStrictEqual([mix.recipients, mix.total], [["9005", "9006", "9007"], 5]); // 9004 and 9008 off shift
+  assert.deepStrictEqual([mix.recipients, mix.total], [["9005", "9006"], 4]); // 9006 named; 9004 and 9008 off shift
 });
 
 test("messaging (Decision 108): who sends to what, and where a new message starts", () => {

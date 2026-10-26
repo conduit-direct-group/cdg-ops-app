@@ -1,7 +1,7 @@
 // Announcements with "Read & understood" sign-off. No database code here, so it can be tested on its own.
 //
 // An announcement goes to an audience: everyone, or any mix of roles, teams, departments, lines, and people.
-// People with no team (day staff, office — Decision 108) get one only when they're named, or their department is picked.
+// People with no team (day staff, office — Decision 109) get one only when they're named — a department reaches its people on a team.
 // Department heads post to their own department by default and may add teams or people; Admins default to everyone.
 // When it is posted the server turns the audience into a fixed list of employee numbers (`audienceEmps`) —
 // the database rules show it only to them. "Keep for new hires": anyone who matches the audience later
@@ -83,16 +83,16 @@ function cleanAnnouncement(data, known, bucketPath, today) {
 
 // Audience -> employee numbers of everyone on (active) who matches.
 // employees: [{ id, roles, team, department, supervisesTeams, lineIds (the lines they're on this shift — Decision 104), active }]
-// No team (Decision 108): only when named or their department is picked — never everyone, roles, teams, or lines.
+// No team (Decision 109): only when named — never everyone, departments, roles, teams, or lines.
 function matchAudience(audience, employees) {
   const on = employees.filter((e) => e.active !== false);
   const limit = audience.roleTeams || [];
   const onRoleTeams = (e) => !limit.length || limit.includes(e.team) || (e.supervisesTeams || []).some((t) => limit.includes(t));
-  const named = (e) => (audience.people || []).includes(e.id) || (!!e.department && (audience.departments || []).includes(e.department));
   const hit = (e) =>
-    named(e) ||
+    (audience.people || []).includes(e.id) ||
     (!!e.team && (
       audience.everyone === true ||
+      (!!e.department && (audience.departments || []).includes(e.department)) ||
       ((e.roles || []).some((r) => (audience.roles || []).includes(r)) && onRoleTeams(e)) ||
       (audience.teams || []).includes(e.team) ||
       (e.lineIds || []).some((l) => (audience.lines || []).includes(l))));

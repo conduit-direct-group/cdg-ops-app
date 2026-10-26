@@ -599,8 +599,7 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
   function reach(d) {
     if (!ui.people) return null;
     const onRoleTeams = (p) => !d.roleTeams.length || d.roleTeams.includes(p.team) || (p.supervisesTeams || []).some((t) => d.roleTeams.includes(t));
-    const named = (p) => d.people.includes(p.id) || (!!p.department && d.departments.includes(p.department));
-    return ui.people.filter((p) => named(p) || (!!p.team && (d.everyone || (p.roles.some((r) => d.roles.includes(r)) && onRoleTeams(p)) || d.teams.includes(p.team) || (p.lineIds || []).some((l) => d.lines.includes(l)))));
+    return ui.people.filter((p) => d.people.includes(p.id) || (!!p.team && (d.everyone || (!!p.department && d.departments.includes(p.department)) || (p.roles.some((r) => d.roles.includes(r)) && onRoleTeams(p)) || d.teams.includes(p.team) || (p.lineIds || []).some((l) => d.lines.includes(l)))));
   }
   // Who it's for, in words: "Quality department + Team B + 2 people" (Decision 108).
   function audienceLabel(d) {
@@ -722,7 +721,7 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
           : el("p", { class: "card-note" }, "Department heads post to their own department. Add teams or people to reach more."),
         !pickAll
           ? el("div", { class: "card" },
-              depts.length ? [el("p", { class: "field-label" }, any ? "Departments (everyone in them, on a team or not)" : "Your department"), el("div", { class: "chips" }, depts.map((x) => chip("departments", x.id, x.name)))] : null,
+              depts.length ? [el("p", { class: "field-label" }, any ? "Departments (the people in them who are on a team)" : "Your department (the people in it who are on a team)"), el("div", { class: "chips" }, depts.map((x) => chip("departments", x.id, x.name)))] : null,
               any ? [el("p", { class: "field-label" }, "Roles"),
               el("div", { class: "chips" }, activeRoles.map((r) => chip("roles", r.id, r.name)))] : null,
               // The roles picked, on which teams? (e.g. only Team B's Line Leads and Supervisors — Chris, 10-23-2026)
@@ -746,8 +745,8 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
           : null,
         el("p", { class: "ann-reach" }, reached === null ? (ui.peopleError ? "" : "Counting who it reaches…")
           : el("strong", {}, `${audienceLabel(d) || "Nobody picked yet"} – ${reached.length} ${reached.length === 1 ? "person" : "people"}`),
-          reached === null ? null : noLogin ? ` (${noLogin} with no login yet — a supervisor can record “Reviewed in person”).` : ""),
-        el("p", { class: "card-note" }, "People with no team (day staff, office) get it only when their name or their department is picked."),
+          reached === null ? null : !reached.length ? " — no one picked is on a team. Add people by name." : noLogin ? ` (${noLogin} with no login yet — a supervisor can record “Reviewed in person”).` : ""),
+        el("p", { class: "card-note" }, "People with no team (day staff, office) get it only when their own name is picked — even for their department."),
         el("label", { class: "check-row" },
           el("input", { type: "checkbox", checked: d.isTask, onchange: (e) => { d.isTask = e.target.checked; } }),
           el("span", {}, el("strong", {}, "📋 This is a task"), " — Line Leads and Supervisors who get it assign it to people on their shift; each person taps Done and the assigner confirms. (Reading and signing it stays separate.)")),
