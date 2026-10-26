@@ -221,21 +221,7 @@ service cloud.firestore {
       allow read: if member() && resource.data.emp == me();
     }
     // "Opened" records for Important announcements the crew doesn't sign: your own only (written by the server).
-    // Messages (Decision 102): only the ones delivered to you, or sent by you — nobody browses anyone else's (HR access
-    // opens one person's messages through the server, with a reason, logged). What you've read: your own only.
-    // Written only by the server.
-    match /messages/{id} {
-      allow read: if member() && (me() in resource.data.recipients || resource.data.fromEmp == me());
-    }
-    match /test_messages/{id} {
-      allow read: if member() && (me() in resource.data.recipients || resource.data.fromEmp == me());
-    }
-    match /messagesSeen/{emp} {
-      allow read: if member() && emp == me();
-    }
-    match /test_messagesSeen/{emp} {
-      allow read: if member() && emp == me();
-    }
+
     match /announcementOpens/{id} {
       allow read: if member() && resource.data.emp == me();
     }

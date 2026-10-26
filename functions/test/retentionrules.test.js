@@ -6,7 +6,7 @@ const DAY = 86400000;
 
 test("retention: Chris's periods are the defaults", () => {
   const p = r.periods();
-  assert.deepStrictEqual(p, { checklists: 90, lineChecks: 730, reels: 730, downtime: 730, handoffs: 365, annSigs: null, injury: null, incidents: null, writeups: null, messages: 90 });
+  assert.deepStrictEqual(p, { checklists: 90, lineChecks: 730, reels: 730, downtime: 730, handoffs: 365, annSigs: null, injury: null, incidents: null, writeups: null });
   assert.strictEqual(r.periods({ handoffs: 730 }).handoffs, 730);
   assert.strictEqual(r.periods({ writeups: null }).writeups, null);
   assert.strictEqual(r.periodLabel(730), "2 years");

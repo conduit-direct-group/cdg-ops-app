@@ -281,29 +281,6 @@ test("write-ups and the Crew Board station setup are server-only — not even HR
   await assertFails(setDoc(doc(db(9009), "writeups", "w2"), { emp: "9003", writerEmp: "9009" }));
 });
 
-test("messages: only the ones delivered to you or sent by you — not even an Admin or HR access browses others'", async () => {
-  await seed(async (d) => {
-    for (const c of ["messages", "test_messages"]) {
-      await setDoc(doc(d, c, "m1"), { fromEmp: "9006", recipients: ["9001"], text: "made-up" });
-      await setDoc(doc(d, c, "m2"), { fromEmp: "9006", recipients: [], text: "not delivered" });
-    }
-    await setDoc(doc(d, "messagesSeen", "9001"), { emp: "9001", seen: {} });
-    await setDoc(doc(d, "messageReviews", "r1"), { by: "9009", emp: "9001", reason: "made-up" });
-  });
-  for (const c of ["messages", "test_messages"]) {
-    await assertSucceeds(getDoc(doc(db(9001), c, "m1"))); // delivered to them
-    await assertSucceeds(getDoc(doc(db(9006), c, "m1"))); // the sender
-    for (const emp of [9002, 9004, 9009, 9003]) await assertFails(getDoc(doc(db(emp), c, "m1")));
-    await assertFails(getDoc(doc(db(9001), c, "m2"))); // never delivered = never readable
-    await assertSucceeds(getDocs(query(collection(db(9001), c), where("recipients", "array-contains", "9001"))));
-    await assertFails(getDocs(query(collection(db(9004), c), where("recipients", "array-contains", "9001"))));
-  }
-  await assertSucceeds(getDoc(doc(db(9001), "messagesSeen", "9001")));
-  await assertFails(getDoc(doc(db(9006), "messagesSeen", "9001")));
-  for (const emp of [9004, 9009]) await assertFails(getDoc(doc(db(emp), "messageReviews", "r1")));
-  await assertFails(setDoc(doc(db(9006), "messages", "m3"), { fromEmp: "9006", recipients: ["9001"], text: "x" }));
-});
-
 test("phones can't write anything — every change goes through the server", async () => {
   const tries = [
     [9011, "handoffs", "h9"], [9011, "shopTasks", "s9"], [9001, "stationLists", "x9"], [9001, "checklistUnits", "u9"],
