@@ -8,7 +8,7 @@
 // app can't read other people's records: "18 of 24 signed", who hasn't, Remind, Reviewed in person, Print.
 
 import { el, friendlyError, spinner, emptyState, banner, toast, confirmSheet, picker, collapsible } from "./ui.js";
-import { data, onDataChange, lineName } from "./data.js";
+import { data, onDataChange } from "./data.js";
 import {
   storage, TEST_MODE, callAnnouncementPeople, callPostAnnouncement, callEndAnnouncement, callSignAnnouncement,
   callRecordReviewedInPerson, callAnnouncementTracking, callRemindAnnouncement, callSignoffPeople,
@@ -462,7 +462,7 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
   }
 
   function personMeta(p) {
-    return [`#${p.id}`, p.team ? `Team ${data.teams?.find((t) => t.id === p.team)?.name || p.team}` : "", p.homeLineId ? lineName(p.homeLineId) : "", p.olderVersion ? `signed version ${p.olderVersion}` : ""].filter(Boolean).join(" · ");
+    return [`#${p.id}`, p.team ? `Team ${data.teams?.find((t) => t.id === p.team)?.name || p.team}` : "", p.olderVersion ? `signed version ${p.olderVersion}` : ""].filter(Boolean).join(" · ");
   }
   function sigText(p) {
     if (!p.sig) return "";
@@ -520,7 +520,7 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
       "section",
       { class: "card ann-track" },
       el("h2", {}, t.scope === "crew" ? "Your crew's sign-offs" : "Sign-offs"),
-      t.noCrew ? el("p", { class: "message" }, "Your crew is the people on your team (or your home line). Ask an admin to set your team in Admin → People.") : null,
+      t.noCrew ? el("p", { class: "message" }, "Your crew is the people on your team. Ask an admin to set your team in Admin → People.") : null,
       el("p", { class: "ann-count" }, el("strong", {}, `${isRelay(a) ? "Line Leads & Supervisors: " : ""}${c.signed} of ${c.total} signed`), c.noLogin ? ` · ${c.noLogin} with no login, not reviewed yet` : ""),
       t.readOnly ? el("p", { class: "card-note" }, "Real announcement — on the test site, signatures here are practice only.") : null,
       // People with a login who haven't signed stay in view; people with no login yet fold away (until launch that
@@ -632,7 +632,7 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
   function reach(d) {
     if (!ui.people) return null;
     const onRoleTeams = (p) => !d.roleTeams.length || d.roleTeams.includes(p.team) || (p.supervisesTeams || []).some((t) => d.roleTeams.includes(t));
-    return ui.people.filter((p) => d.everyone || (p.roles.some((r) => d.roles.includes(r)) && onRoleTeams(p)) || (p.team && d.teams.includes(p.team)) || (p.homeLineId && d.lines.includes(p.homeLineId)) || d.people.includes(p.id));
+    return ui.people.filter((p) => d.everyone || (p.roles.some((r) => d.roles.includes(r)) && onRoleTeams(p)) || (p.team && d.teams.includes(p.team)) || (p.lineIds || []).some((l) => d.lines.includes(l)) || d.people.includes(p.id));
   }
 
   function renderForm() {
@@ -748,7 +748,7 @@ export function openAnnouncements(container, { me, startId = null, onExit, prefi
                      : "Every person with those roles, on every team.")]
                 : null,
               activeTeams.length ? [el("p", { class: "field-label" }, "Whole teams (everyone on them)"), el("div", { class: "chips" }, activeTeams.map((t) => chip("teams", t.id, `Team ${t.name}`)))] : null,
-              activeLines.length ? [el("p", { class: "field-label" }, "Lines (people whose home line it is)"), el("div", { class: "chips" }, activeLines.map((l) => chip("lines", l.id, l.name)))] : null,
+              activeLines.length ? [el("p", { class: "field-label" }, "Lines (the people on that line this shift)"), el("div", { class: "chips" }, activeLines.map((l) => chip("lines", l.id, l.name)))] : null,
               el("p", { class: "field-label" }, "People"),
               d.people.map((id) => el("div", { class: "import-row" }, el("span", { class: "gap-term" }, personName(id)), el("button", { class: "link-btn", type: "button", onclick: () => toggle("people", id) }, "Remove"))),
               ui.peopleError

@@ -2,7 +2,7 @@
 // Every action is checked again on the server (admins only), so hiding buttons here is just tidiness.
 
 import { el, friendlyError, spinner, banner, toast, confirmSheet, picker } from "./ui.js";
-import { data, onDataChange, lineName } from "./data.js";
+import { data, onDataChange } from "./data.js";
 import {
   callAdminListEmployees,
   callAdminCreateEmployee,
@@ -25,7 +25,7 @@ function roleNames(roles) {
 const teamName = (id) => (id ? data.teams?.find((t) => t.id === id)?.name || "?" : "");
 // "#1004 · Operator · Team A · Line 2" (before roles are confirmed: the job title instead).
 function personLine(p) {
-  return [`#${p.employeeNumber}`, p.rolesConfirmed ? roleNames(p.roles) : p.position, p.team ? `Team ${teamName(p.team)}` : "", p.homeLineId ? lineName(p.homeLineId) : "", p.trainingName ? "🎓 linked" : ""].filter(Boolean).join(" · ");
+  return [`#${p.employeeNumber}`, p.rolesConfirmed ? roleNames(p.roles) : p.position, p.team ? `Team ${teamName(p.team)}` : "", p.trainingName ? "🎓 linked" : ""].filter(Boolean).join(" · ");
 }
 
 // Departments + reports to (launch list 1): the org part of a person, from adminOrg.
@@ -183,7 +183,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
   // `keep` = same roles, team, and home line as the last one (Save & add another).
   function startAdd(keep = null) {
     if (!keep) ui.justAdded = [];
-    ui.draft = { number: ui.nextNumber, name: "", roles: keep?.roles || ["operator"], team: keep?.team || "", homeLineId: keep?.homeLineId || "", department: keep?.department || "", head: false, reportsTo: "", supervisesTeams: [] };
+    ui.draft = { number: ui.nextNumber, name: "", roles: keep?.roles || ["operator"], team: keep?.team || "", department: keep?.department || "", head: false, reportsTo: "", supervisesTeams: [] };
     show("add");
   }
 
@@ -191,7 +191,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
     const p = person();
     ui.draft = {
       number: p.employeeNumber, name: p.name, position: p.position || "", roles: p.rolesConfirmed ? [...p.roles] : [...p.suggestedRoles],
-      team: p.team || "", homeLineId: p.homeLineId || "", trainingName: p.trainingName || "",
+      team: p.team || "", trainingName: p.trainingName || "",
       department: orgOf(p).department || "", head: orgOf(p).deptHead === true, reportsTo: orgOf(p).override || "", supervisesTeams: [...(orgOf(p).supervisesTeams || [])],
     };
     show("edit");
@@ -229,7 +229,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
           : spinner("Loading roles…")];
 
     // Read at save time (the inputs update the draft as you type).
-    const fields = () => ({ name: d.name, roles: d.roles, team: d.team || null, homeLineId: d.homeLineId || null, ...(existing ? { position: d.position || "", trainingName: d.trainingName || null } : {}) });
+    const fields = () => ({ name: d.name, roles: d.roles, team: d.team || null, ...(existing ? { position: d.position || "", trainingName: d.trainingName || null } : {}) });
     // `again` = add this person and keep the form open for the next one.
     async function save(e, again = false) {
       e?.preventDefault();
@@ -245,7 +245,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
       if (again) {
         ui.justAdded.unshift({ name: d.name.trim(), number: r.employeeNumber, pin: r.tempPin });
         toast(`${d.name.trim()} added — #${r.employeeNumber}`);
-        startAdd({ roles: d.roles, team: d.team, homeLineId: d.homeLineId });
+        startAdd({ roles: d.roles, team: d.team });
         document.getElementById("f-name")?.focus();
         return;
       }
@@ -284,7 +284,6 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
     const auto = existing ? orgOf(existing) : {};
     const others = (ui.people || []).filter((x) => x.active && (!existing || x.employeeNumber !== existing.employeeNumber));
     const teams = (data.teams || []).filter((t) => t.active !== false || t.id === d.team);
-    const lines = (data.lines || []).filter((l) => l.active !== false || l.id === d.homeLineId);
 
     return [
       backBar(existing ? existing.name : "People", () => show(existing ? "person" : "list")),
@@ -344,8 +343,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
           : el("p", { class: "card-note" }, "Department and reports to couldn't load — save the rest, then try again."),
         el("label", { class: "field-label", for: "f-team" }, "Team"),
         picker({ id: "f-team", title: "Team", value: d.team, placeholder: "No team", options: [{ value: "", label: "No team" }, ...teams.map((t) => ({ value: t.id, label: `Team ${t.name}` }))], onChange: (v) => { d.team = v; render(); } }),
-        el("label", { class: "field-label", for: "f-home" }, "Home line"),
-        picker({ id: "f-home", title: "Home line", value: d.homeLineId, placeholder: "No home line", options: [{ value: "", label: "No home line" }, ...lines.map((l) => ({ value: l.id, label: l.name }))], onChange: (v) => { d.homeLineId = v; render(); } }),
+        // No home line (Decision 104): people are put on lines each shift on the Crew Board (Who's here today → Stations).
         // Links this person to their training record, so their own refreshers due show in "Needs you" on Home.
         existing && trainingRoster.length
           ? [el("label", { class: "field-label", for: "f-training" }, "Training record (name on the training roster)"),
@@ -440,7 +438,7 @@ export function openAdmin(container, { myEmployeeNumber, onExit }) {
       p.loginEnabled
         ? el("button", { class: "btn secondary", type: "button", onclick: () => resetPin(), disabled: ui.busy || !p.active }, "🔑 Reset PIN")
         : el("button", { class: "btn", type: "button", onclick: () => enableLogin(), disabled: ui.busy || !p.active || !p.rolesConfirmed }, p.rolesConfirmed ? "🔑 Enable login" : "🔑 Enable login (confirm role first)"),
-      el("button", { class: "btn secondary", type: "button", onclick: startEdit, disabled: ui.busy }, "✎ Edit name, roles, team, home line, department"),
+      el("button", { class: "btn secondary", type: "button", onclick: startEdit, disabled: ui.busy }, "✎ Edit name, roles, team, department"),
       isMe
         ? null
         : el(

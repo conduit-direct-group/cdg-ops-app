@@ -76,7 +76,7 @@ function cleanAnnouncement(data, known, bucketPath, today) {
 }
 
 // Audience -> employee numbers of everyone on (active) who matches.
-// employees: [{ id, roles, team, supervisesTeams, homeLineId, active }]
+// employees: [{ id, roles, team, supervisesTeams, lineIds (the lines they're on this shift — Decision 104), active }]
 function matchAudience(audience, employees) {
   const on = employees.filter((e) => e.active !== false);
   const limit = audience.roleTeams || [];
@@ -85,18 +85,16 @@ function matchAudience(audience, employees) {
     audience.everyone === true ||
     ((e.roles || []).some((r) => (audience.roles || []).includes(r)) && onRoleTeams(e)) ||
     (e.team && (audience.teams || []).includes(e.team)) ||
-    (e.homeLineId && (audience.lines || []).includes(e.homeLineId)) ||
+    (e.lineIds || []).some((l) => (audience.lines || []).includes(l)) ||
     (audience.people || []).includes(e.id);
   return on.filter(hit).map((e) => e.id).sort();
 }
 
-// A supervisor's crew: people on the same team; if the supervisor has no team, the same home line.
-// No team and no home line: no crew (set it in Admin → People).
+// A supervisor's crew: people on the same team. No team: no crew (set it in Admin → People). No home lines (Decision 104).
 function crewOf(supervisor, employees) {
   if (!supervisor) return [];
   const on = employees.filter((e) => e.active !== false && e.id !== supervisor.id);
   if (supervisor.team) return on.filter((e) => e.team === supervisor.team).map((e) => e.id);
-  if (supervisor.homeLineId) return on.filter((e) => e.homeLineId === supervisor.homeLineId).map((e) => e.id);
   return [];
 }
 
@@ -148,7 +146,7 @@ function isOverdue(a, today) {
 }
 
 // Sign-off status of one person on one announcement. sig = their signature for the current version, or null.
-// person = { id, name, loginEnabled, team, homeLineId }
+// person = { id, name, loginEnabled, team, lineIds }
 function personStatus(person, sig) {
   if (sig) return { state: sig.method === "in-person" ? "in-person" : "signed", ...person, sig };
   return { state: person.loginEnabled ? "not-signed" : "no-login", ...person, sig: null };

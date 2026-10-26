@@ -7,6 +7,7 @@
 
 import { el, friendlyError, spinner, emptyState, banner, toast, collapsible } from "./ui.js";
 import { data, onDataChange } from "./data.js";
+import { myShiftLines } from "./crew.js";
 import {
   TEST_MODE, callStartLineLog, callAddLineRound, callSaveLineNotes, callTapPlantItem, callSignLineLog, callReviewLineLog, callLineLogReviewers,
 } from "./firebase.js";
@@ -76,7 +77,8 @@ function due(log, now, every) {
 const dueText = (d) => (d.overdue ? `overdue by ${d.minutes} min` : d.minutes <= 1 ? "due now" : `next due in ${d.minutes} min`);
 
 // ---- Home items (Decision 66) -----------------------------------------------------------------------------------
-// Operators: their line (home line, or the line this tablet logs) — gray "next check due 10:30 AM", red when overdue.
+// Operators: the lines they're on this shift (Crew Board — no home lines, Decision 104), else the line this tablet
+// logs — gray "next check due 10:30 AM", red when overdue.
 // Leads/supervisors: one line for all lines (the soonest due, or which are overdue); lines that are down are left out.
 // Supervisors: logs waiting for their review.
 export function lineCheckItems(roles, onOpen) {
@@ -102,9 +104,10 @@ export function lineCheckItems(roles, onOpen) {
       if (review.length) out.push({ key: "linecheck-review", icon: "📈", title: `Line logs to review: ${review.map((g) => `${g.lineName} (${g.shift?.name})`).join(", ")}`, detail: "supervisor review", state: "due", onOpen: () => onOpen(review[0].lineId, review[0].id) });
     }
   } else {
-    const mine = data.myself?.homeLineId || stored(LINE_KEY);
-    const x = status.find((s) => s.l.id === mine);
-    if (x) out.push(item([x], `Line check · ${x.l.name}`));
+    const assigned = myShiftLines()?.today || [];
+    const mine = assigned.length ? assigned : [stored(LINE_KEY)].filter(Boolean);
+    const list = status.filter((s) => mine.includes(s.l.id));
+    if (list.length) out.push(item(list, list.length === 1 ? `Line check · ${list[0].l.name}` : "Line checks"));
   }
   return out;
 }

@@ -5,9 +5,10 @@
 // The SharePoint workbook isn't connected yet — Export to Excel gives the rows for each tab.
 
 import { el, friendlyError, spinner, emptyState, banner, toast, picker, choose, collapsible } from "./ui.js";
+import { myShiftLines } from "./crew.js";
 import { data } from "./data.js";
 import { TEST_MODE, callShiftReport, callSaveShiftReport, callSaveShiftEntry, callExportShiftReports, callSignoffPeople, callMarkShiftNone, callShiftReportVerifiers } from "./firebase.js";
-import { signOff, signedNote } from "./signoff.js";
+import { signOff, signedNote, isLineTablet } from "./signoff.js";
 import { offlineSign } from "./outbox.js";
 import { openReportForm } from "./issues.js";
 import { dueByShiftEnd } from "./shift.js";
@@ -38,14 +39,16 @@ function signTag(r, now = Date.now()) {
 }
 
 // Home → Needs you (Line Leads, Supervisors): this shift's report for their line — the line tablet's line, else the
-// line they last picked, else their home line. Gray until the last hour, red after, green once signed. The status is
+// line the Crew Board put them on this shift, else the line they last picked (no home lines — Decision 104). Gray until
+// the last hour, red after, green once signed. The status is
 // read from the server in the background (every 2 minutes at most) and the Home redraws when it arrives.
 const home = { lineId: null, at: 0, busy: false, report: null, events: 0, feet: 0, error: false };
 
-function homeLine(myself) {
+function homeLine() {
   const lines = (data.lines || []).filter((l) => l.active !== false);
-  const pick = [stored(LINE_KEY), myself?.homeLineId].find((id) => id && lines.some((l) => l.id === id));
-  return pick || null;
+  const today = myShiftLines()?.now?.[0] || myShiftLines()?.today?.[0] || null;
+  const order = isLineTablet() ? [stored(LINE_KEY), today] : [today, stored(LINE_KEY)];
+  return order.find((id) => id && lines.some((l) => l.id === id)) || null;
 }
 
 function rememberHome(view) {
@@ -68,7 +71,7 @@ async function refreshHome(lineId, onRedraw) {
 
 export function downtimeItems(roles, myself, onOpen, onRedraw) {
   if (!roles.some((r) => HOME_ROLES.includes(r))) return [];
-  const lineId = homeLine(myself);
+  const lineId = homeLine();
   const base = { key: "downtime", icon: "⏱", onOpen };
   if (!lineId) { const due = dueByShiftEnd(); return [{ ...base, title: "Downtime & scrap shift report", detail: `pick your line to start · ${due.detail}`, state: due.state }]; }
   if (home.lineId !== lineId || Date.now() - home.at > HOME_REFRESH_MS || (home.report?.endMs && Date.now() > home.report.endMs)) refreshHome(lineId, onRedraw);

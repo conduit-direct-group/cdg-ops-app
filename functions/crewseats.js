@@ -3,7 +3,8 @@
 //
 // The station setup is company data, loaded by an admin (Admin → Crew Board stations) into meta/crewStations — never
 // in the code:  { levels: [lowest … highest], stations: [{ id, name, kind: "line" | "winder" | "support", line?,
-//   covers, idealLevel (words from the sheet), minLevel, assistLevel?, sops: ["0005", …] }], allShift: [station ids],
+//   lines: ["Line 1", …] (the lines it works — none for support stations; older files: line), covers, idealLevel
+//   (words from the sheet), minLevel, assistLevel?, sops: ["0005", …] }], allShift: [station ids],
 //   rotation: { blocks: ["Hours 1–4", …], letters: [{ letter, level, stations: [one per block] }], note },
 //   callOffs: { steps: [{ station, text }], lineOperatorOut } }
 //
@@ -28,10 +29,12 @@ function cleanSetup(raw) {
     if (stations.some((x) => x.id === s.id)) return { error: `Two stations have the id ${s.id}.` };
     const st = {
       id: s.id, name: clean(s.name, 60), kind: ["line", "winder", "support"].includes(s.kind) ? s.kind : "support",
-      line: clean(s.line, 40) || null, covers: clean(s.covers, MAX.text), idealLevel: clean(s.idealLevel, 60),
+      lines: [...new Set([...(Array.isArray(s.lines) ? s.lines : []), s.line].map((x) => clean(x, 40)).filter(Boolean))].slice(0, 10),
+      covers: clean(s.covers, MAX.text), idealLevel: clean(s.idealLevel, 60),
       minLevel: clean(s.minLevel, 40), assistLevel: clean(s.assistLevel, 40) || null,
       sops: (Array.isArray(s.sops) ? s.sops : []).map((x) => clean(String(x), 20)).filter(Boolean).slice(0, MAX.sops),
     };
+    st.line = st.lines[0] || null; // the winder check uses one line
     if (!st.name) return { error: `Station ${s.id} needs a name.` };
     if (levelRank(levels, st.minLevel) < 0) return { error: `${st.name}: the lowest level "${st.minLevel}" isn't in the levels list.` };
     if (st.assistLevel && levelRank(levels, st.assistLevel) < 0) return { error: `${st.name}: "${st.assistLevel}" isn't in the levels list.` };
@@ -144,4 +147,21 @@ function myStations(setup, seats = {}, cells = {}, emp) {
   };
 }
 
-module.exports = { normLevel, levelRank, cleanSetup, seatIds, stationOf, schedule, fit, warnings, blockAt, myStations };
+// No permanent home line (Chris, 10-26-2026, Decision 104): people are on the lines of the stations the lead seated them
+// at this shift. lineDocs: [{ id, name }] (a station's line names match the line's name, any case).
+// → { now: { emp: [lineId] } (this rotation block), today: { emp: [lineId] } (any block), onLineNow: { lineId: [emp] } }
+function shiftLines(setup, seats = {}, cells = {}, block = -1, lineDocs = []) {
+  const idOf = new Map(lineDocs.map((l) => [String(l.name || "").trim().toLowerCase(), l.id]));
+  const linesOf = (stationId) => (stationOf(setup, stationId)?.lines || []).map((n) => idOf.get(n.toLowerCase())).filter(Boolean);
+  const now = {};
+  const today = {};
+  const onLineNow = {};
+  for (const [emp, row] of Object.entries(schedule(setup, seats, cells))) {
+    today[emp] = [...new Set(row.flatMap(linesOf))];
+    now[emp] = block >= 0 ? linesOf(row[block]) : [];
+    for (const l of now[emp]) (onLineNow[l] = onLineNow[l] || []).push(emp);
+  }
+  return { now, today, onLineNow };
+}
+
+module.exports = { normLevel, levelRank, cleanSetup, seatIds, stationOf, schedule, fit, warnings, blockAt, myStations, shiftLines };

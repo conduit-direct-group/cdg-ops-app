@@ -35,9 +35,9 @@ test("Production reports by shift: Operator → team Line Lead → team Supervis
   const people = [
     P("pm", "Pat", ["supervisor", "admin", "plant-manager"], { department: "production" }),
     P("supA", "Sam", ["supervisor"], { department: "production", team: "a" }),
-    P("leadA1", "Lee", ["lead"], { department: "production", team: "a", homeLineId: "line-1" }),
-    P("leadA2", "Lou", ["lead"], { department: "production", team: "a", homeLineId: "line-2" }),
-    P("opA", "Olive", ["operator"], { department: "production", team: "a", homeLineId: "line-2" }),
+    P("leadA1", "Lee", ["lead"], { department: "production", team: "a" }),
+    P("leadA2", "Lou", ["lead"], { department: "production", team: "a" }),
+    P("opA", "Olive", ["operator"], { department: "production", team: "a" }),
     P("opB", "Otto", ["operator"], { department: "production", team: "b" }),
     P("leadC", "Lana", ["lead"], { department: "production", team: "c" }),
     P("opNoTeam", "Ned", ["operator"], { department: "production" }),
@@ -46,7 +46,7 @@ test("Production reports by shift: Operator → team Line Lead → team Supervis
   assert.deepStrictEqual(r.get("pm"), { reportsTo: null, source: "top" }); // the Production Manager is Production's head
   assert.strictEqual(r.get("supA").reportsTo, "pm");
   assert.strictEqual(r.get("leadA1").reportsTo, "supA");
-  assert.strictEqual(r.get("opA").reportsTo, "leadA2"); // same team, same home line first
+  assert.strictEqual(r.get("opA").reportsTo, "leadA1"); // same team (no home lines — Decision 104)
   assert.strictEqual(r.get("opB").reportsTo, "pm"); // team B has no lead or supervisor
   assert.strictEqual(r.get("leadC").reportsTo, "pm"); // team C has no supervisor
   assert.strictEqual(r.get("opNoTeam").reportsTo, "pm");

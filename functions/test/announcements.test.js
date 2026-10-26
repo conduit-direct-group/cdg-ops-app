@@ -3,14 +3,14 @@ const assert = require("node:assert");
 const a = require("../announcements");
 
 const people = [
-  { id: "1001", roles: ["admin"], team: null, homeLineId: null },
-  { id: "2001", roles: ["operator"], team: "team-a", homeLineId: "line-1" },
-  { id: "2002", roles: ["operator"], team: "team-b", homeLineId: "line-2" },
-  { id: "2003", roles: ["operator"], team: "team-a", homeLineId: "line-2", active: false },
-  { id: "3001", roles: ["supervisor"], team: "team-a", homeLineId: null },
-  { id: "3002", roles: ["supervisor"], team: null, homeLineId: "line-2" },
-  { id: "3003", roles: ["supervisor"], team: null, homeLineId: null },
-  { id: "4001", roles: ["office"], team: null, homeLineId: null },
+  { id: "1001", roles: ["admin"], team: null, lineIds: [] },
+  { id: "2001", roles: ["operator"], team: "team-a", lineIds: ["line-1"] },
+  { id: "2002", roles: ["operator"], team: "team-b", lineIds: ["line-2"] },
+  { id: "2003", roles: ["operator"], team: "team-a", lineIds: ["line-2"], active: false },
+  { id: "3001", roles: ["supervisor"], team: "team-a", lineIds: [] },
+  { id: "3002", roles: ["supervisor"], team: null, lineIds: ["line-2"] },
+  { id: "3003", roles: ["supervisor"], team: null, lineIds: [] },
+  { id: "4001", roles: ["office"], team: null, lineIds: [] },
 ];
 const known = { roles: ["admin", "operator", "supervisor", "office"], teams: ["team-a", "team-b"], lines: ["line-1", "line-2"] };
 const ours = (url) => (url.startsWith("https://firebasestorage.googleapis.com/v0/b/cdg/o/uploads") ? "uploads/x" : null);
@@ -49,16 +49,16 @@ test("audience: everyone, or any mix of roles, teams, lines, people — never so
   assert.deepStrictEqual(a.matchAudience({ lines: ["line-2"], people: ["1001", "2003"] }, people), ["1001", "2002", "3002"]);
 });
 
-test("a supervisor's crew is their team, else their home line, else nobody", () => {
+test("a supervisor's crew is their team, else nobody (no home lines)", () => {
   const by = Object.fromEntries(people.map((p) => [p.id, p]));
   assert.deepStrictEqual(a.crewOf(by["3001"], people), ["2001"]);
-  assert.deepStrictEqual(a.crewOf(by["3002"], people), ["2002"]);
+  assert.deepStrictEqual(a.crewOf(by["3002"], people), []); // no team: no crew (Decision 104)
   assert.deepStrictEqual(a.crewOf(by["3003"], people), []);
 });
 
 test("trackers: the poster plus supervisors with crew in the audience; scope by role", () => {
   assert.deepStrictEqual(a.trackersFor("4001", ["2001"], people), ["3001", "4001"]);
-  assert.deepStrictEqual(a.trackersFor("1001", ["2002", "4001"], people), ["1001", "3002"]);
+  assert.deepStrictEqual(a.trackersFor("1001", ["2002", "4001"], people), ["1001"]); // 3002 has no team, so no crew
   const ann = { createdBy: "4001" };
   assert.strictEqual(a.trackScope({ id: "4001", roles: ["office"] }, ann), "all");
   assert.strictEqual(a.trackScope({ id: "9", roles: ["plant-manager"] }, ann), "all");

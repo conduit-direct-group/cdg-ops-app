@@ -701,7 +701,7 @@ export function openTeams(container, { onExit }) {
           el("div", { class: "person-list" }, list.map((p) =>
             el("div", { class: "person-row static" },
               el("span", { class: "person-name" }, p.name),
-              el("span", { class: "person-meta" }, [`#${p.employeeNumber}`, p.roles.length ? roleNames(p.roles) : p.position, p.homeLineId ? lineName(p.homeLineId) : ""].filter(Boolean).join(" · "))))),
+              el("span", { class: "person-meta" }, [`#${p.employeeNumber}`, p.roles.length ? roleNames(p.roles) : p.position].filter(Boolean).join(" · "))))),
         ];
       },
       starters: () => STARTING_TEAMS, startersTitle: "Add teams A, B, C, D",

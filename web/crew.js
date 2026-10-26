@@ -101,6 +101,14 @@ function refreshMine(onRedraw) {
     });
 }
 
+// The lines I'm on this shift (no home lines — Decision 104): { now: [lineId], today: [lineId] }, or null when the lead
+// hasn't seated me (or it isn't known yet). Uses the same 5-minute check as "Your station today".
+export function myShiftLines(onRedraw) {
+  refreshMine(onRedraw);
+  const v = mine.view;
+  return v?.seated ? { now: v.linesNow || [], today: v.linesToday || [] } : null;
+}
+
 export function stationPanel({ onOpen, onSop, onRedraw }) {
   refreshMine(onRedraw);
   const v = mine.view;

@@ -4,14 +4,15 @@ const m = require("../messaging");
 
 // Made-up people: Team A on shift, Team B off; one with no team.
 const people = [
-  { id: "9001", name: "Lead Larry", team: "a", homeLineId: "l1", roles: ["lead"] },
-  { id: "9002", name: "Op One", team: "a", homeLineId: "l1", roles: ["operator"] },
-  { id: "9003", name: "Op Two", team: "a", homeLineId: "l2", roles: ["operator"] },
-  { id: "9004", name: "Op Three", team: "b", homeLineId: "l1", roles: ["operator"] },
-  { id: "9005", name: "Test Coverer", team: "b", homeLineId: "l2", roles: ["operator"] },
-  { id: "9006", name: "Office Olive", team: null, homeLineId: null, roles: ["office"] },
+  { id: "9001", name: "Lead Larry", team: "a", roles: ["lead"] },
+  { id: "9002", name: "Op One", team: "a", roles: ["operator"] },
+  { id: "9003", name: "Op Two", team: "a", roles: ["operator"] },
+  { id: "9004", name: "Op Three", team: "b", roles: ["operator"] },
+  { id: "9005", name: "Test Coverer", team: "b", roles: ["operator"] },
+  { id: "9006", name: "Office Olive", team: null, roles: ["office"] },
 ];
-const ctx = { teamOnShift: "a", marks: { 9002: { status: "here" }, 9003: { status: "out" }, 9005: { status: "here" } } };
+// Today's line assignments (Crew Board, Decision 104) — no home lines.
+const ctx = { teamOnShift: "a", marks: { 9002: { status: "here" }, 9003: { status: "out" }, 9005: { status: "here" } }, lineNow: { 9002: ["l1"], 9005: ["l1", "l2"] } };
 
 test("messaging: only Line Lead and above start messages", () => {
   assert.ok(m.canStart(["lead"]) && m.canStart(["supervisor"]) && m.canStart(["plant-manager"]) && m.canStart(["admin"]));
@@ -47,7 +48,8 @@ test("messaging: group messages reach only those on shift and not absent; coveri
   const off = m.deliver(people, { type: "team", id: "b" }, "9001", ctx);
   assert.deepStrictEqual([off.recipients, off.total], [["9005"], 2]); // Team B is off; the coverer is here covering
   const line = m.deliver(people, { type: "line", id: "l1" }, "9001", ctx);
-  assert.deepStrictEqual([line.recipients, line.total], [["9002"], 2]); // 9004 off shift
+  assert.deepStrictEqual([line.recipients, line.total], [["9002", "9005"], 2]); // whoever is on Line 1 now, covering included
+  assert.deepStrictEqual(m.deliver(people, { type: "line", id: "l3" }, "9001", ctx).total, 0); // no one on Line 3 yet
   const role = m.deliver(people, { type: "role", id: "operator" }, "9001", ctx);
   assert.deepStrictEqual([role.recipients, role.total], [["9002", "9005"], 4]);
   const all = m.deliver(people, { type: "all", id: "all" }, "9001", ctx);

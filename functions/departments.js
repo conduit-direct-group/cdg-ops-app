@@ -79,12 +79,12 @@ function headOf(dept, people) {
   return on.find((p) => p.department === PRODUCTION && has(p, "plant-manager")) || on.find((p) => has(p, "plant-manager")) || null;
 }
 
-// Someone on the same team with a role, in Production, not this person; same home line first. A Supervisor
+// Someone on the same team with a role, in Production, not this person. A Supervisor
 // counts for their own team and every team they supervise.
 const covers = (x, team, role) => x.team === team || (role === "supervisor" && (x.supervisesTeams || []).includes(team));
 function teamMate(p, role, people) {
   const list = people.filter((x) => x.active !== false && x.id !== p.id && x.department === PRODUCTION && has(x, role) && p.team && covers(x, p.team, role));
-  return list.find((x) => p.homeLineId && x.homeLineId === p.homeLineId) || list.sort((a, b) => a.name.localeCompare(b.name))[0] || null;
+  return list.sort((a, b) => a.name.localeCompare(b.name))[0] || null;
 }
 
 // Who each person reports to: Map emp → { reportsTo: emp | null, source: "override" | "auto" | "top" | "missing" }.

@@ -20,7 +20,7 @@ import { lineCheckItems } from "./linecheck.js";
 import { db, TEST_MODE, callAdminListEmployees, callAnnouncementSummary } from "./firebase.js";
 import { siloItems, siloCard } from "./silos.js";
 import { downtimeItems } from "./downtime.js";
-import { crewItems, crewCard } from "./crew.js";
+import { crewItems, crewCard, myShiftLines } from "./crew.js";
 import { reelItems, reelCard } from "./reels.js";
 import { incidentItems, incidentCard } from "./incidents.js";
 import { collection, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
@@ -301,12 +301,14 @@ function needsItems(ctx, roles) {
   if (machines) items.push(...stationItems(roles, go.station));
   if (machines) items.push(...lineCheckItems(roles, go.lineCheck));
 
-  // Machine checklists (14-day) — people who work with the machines; operators/leads with a home line: that line.
+  // Machine checklists (14-day) — people who work with the machines; operators/leads the Crew Board put on lines this
+  // shift: those lines (no home lines — Decision 104). Not seated yet: every line.
   if (machines && data.checklistUnits && data.lines && data.checklistTemplates) {
-    const home = roles.some((r) => ["operator", "lead"].includes(r)) && !roles.some((r) => ISSUE_ROLES.includes(r)) ? data.myself?.homeLineId || null : null;
-    const late = overdueUnits().filter((u) => !home || u.lineId === home || u.lineId === null);
+    const assigned = roles.some((r) => ["operator", "lead"].includes(r)) && !roles.some((r) => ISSUE_ROLES.includes(r)) ? myShiftLines(redraw)?.today || [] : [];
+    const mineLine = (u) => !assigned.length || u.lineId === null || assigned.includes(u.lineId);
+    const late = overdueUnits().filter(mineLine);
     // Green only when nothing is overdue and every sign-off is verified (two-step sign-off); verify by the end of the shift.
-    const waiting = checklistUnits().filter((u) => pendingFor(u).length && (!home || u.lineId === home || u.lineId === null));
+    const waiting = checklistUnits().filter((u) => pendingFor(u).length && mineLine(u));
     const due = dueByShiftEnd();
     items.push(late.length
       ? { key: "checklists", icon: "📋", title: `Machine checklists overdue: ${late.length}`, detail: late.slice(0, 2).map(unitLabel).join(" · ") + (late.length > 2 ? ` +${late.length - 2}` : ""), state: "late",

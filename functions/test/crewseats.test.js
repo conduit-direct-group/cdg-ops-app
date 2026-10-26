@@ -73,6 +73,20 @@ test("step 3: my stations for the shift — all-shift seat, rotation letter, a l
   assert.strictEqual(c.myStations(setup, seats, {}, "9099"), null);
 });
 
+test("lines come from today's seats: a station can cover several lines; support stations none (no home line)", () => {
+  const { setup } = c.cleanSetup({ ...raw, stations: raw.stations.map((s) => (s.id === "chief" ? { ...s, line: undefined, lines: ["Line 1", "Line 2"] } : s)) });
+  assert.deepStrictEqual(setup.stations.find((s) => s.id === "chief").lines, ["Line 1", "Line 2"]);
+  assert.strictEqual(setup.stations.find((s) => s.id === "spool-1").line, "Line 1"); // older files: line → lines
+  const lineDocs = [{ id: "l1", name: "Line 1" }, { id: "l2", name: "line 2" }];
+  const seats = { chief: "9001", rover: "9004", A: "9002", B: "9003" };
+  const r = c.shiftLines(setup, seats, {}, 0, lineDocs);
+  assert.deepStrictEqual(r.now, { 9001: ["l1", "l2"], 9004: [], 9002: ["l1"], 9003: ["l2"] });
+  assert.deepStrictEqual(r.today[9002], ["l1"]); // A: spool-1 (Line 1) then bins (no line)
+  assert.deepStrictEqual(r.today[9003], ["l2", "l1"]); // B: spool-2 then spool-1
+  assert.deepStrictEqual(r.onLineNow, { l1: ["9001", "9002"], l2: ["9001", "9003"] });
+  assert.deepStrictEqual(c.shiftLines(setup, seats, {}, -1, lineDocs).now[9002], []); // outside the shift
+});
+
 test("step 3: the block running now splits the shift evenly", () => {
   const start = 0, end = 12 * 3600000;
   assert.strictEqual(c.blockAt(start, end, 3, 0), 0);

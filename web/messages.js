@@ -294,6 +294,7 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
     if (f.type !== "all" && !f.id) { Object.assign(ui, { message: "Pick who it's for.", messageKind: "error" }); return render(); }
     if (!navigator.onLine) { Object.assign(ui, { message: friendlyError({ code: "offline" }), messageKind: "error", retry: send }); return render(); }
     const pv = ui.preview;
+    if (f.type === "line" && pv?.noOneOnLine) { Object.assign(ui, { message: `No one is assigned to ${pv.name} yet this shift. Seat people on the Crew Board first.`, messageKind: "error", retry: null }); return render(); }
     if (f.type === "person" && pv && pv.reach === 0) {
       const why = pv.why === "absent" ? "absent" : "off shift";
       if (!(await confirmSheet({ title: `${pv.name} is ${why} today.`, text: "They will not receive this. Send it anyway? It will show “Not delivered”.", confirmLabel: "Send anyway", danger: true }))) return;
@@ -317,7 +318,9 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
     const reach = !pv ? null
       : f.type === "person"
         ? pv.reach ? el("p", { class: "message" }, `✓ ${pv.name} is on shift now.`) : el("p", { class: "message error" }, `${pv.name} is ${pv.why === "absent" ? "absent" : "off shift"} today. They will not receive this.`)
-        : el("p", { class: "message" }, pv.total ? `Will reach ${pv.reach} of ${pv.total} — only people on shift and not absent get it.` : "No one is in that group yet.");
+        : f.type === "line" && pv.noOneOnLine
+          ? el("p", { class: "message error" }, `No one is assigned to ${pv.name} yet this shift.`)
+          : el("p", { class: "message" }, pv.total ? `Will reach ${pv.reach} of ${pv.total} — only people on shift and not absent get it.` : "No one is in that group yet.");
     return [
       el("button", { class: "link-btn", type: "button", onclick: () => go("list") }, "← Messages"),
       el("h1", {}, "✎ New message"),
@@ -333,7 +336,7 @@ export function openMessages(container, { me, onExit, backLabel = "Home", onMain
           el("span", { class: "card-note" }, "Sounds like a machine problem — you can also send it to Maintenance."),
           el("button", { class: "btn secondary", type: "button", onclick: () => onMaintenance(machineIn(f.text), f.text) }, "🚨 Send as Maintenance Request")) : null,
         banner(ui),
-        el("button", { class: "btn", type: "submit", disabled: ui.busy }, ui.busy ? "Sending…" : "Send")),
+        el("button", { class: "btn", type: "submit", disabled: ui.busy || (f.type === "line" && !!pv?.noOneOnLine) }, ui.busy ? "Sending…" : "Send")),
       notices(),
     ];
   }

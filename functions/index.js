@@ -197,7 +197,7 @@ function requireName(value) {
   return name;
 }
 
-// Team (Admin → Teams) and home line (Admin → Lines & machines): optional; when set, must exist and be on.
+// Team (Admin → Teams): optional; when set, must exist and be on. (No home lines — Decision 104.)
 async function optionalRef(collection, value, label) {
   if (value == null || value === "") return null;
   const id = String(value);
@@ -307,7 +307,7 @@ exports.adminCreateEmployee = onCall(async (req) => {
   const employee = {
     name: requireName(req.data?.name), roles: await requireRoles(req.data?.roles), active: true,
     team: await optionalRef(teams, req.data?.team, "team"), shift: await optionalRef(shifts, req.data?.shift, "shift"),
-    homeLineId: await optionalRef(lines, req.data?.homeLineId, "line"),
+    homeLineId: null, // no home lines (Decision 104) — people are put on lines each shift on the Crew Board
   };
   const tempPin = pin.randomTempPin();
   const hashed = await pin.hashPin(tempPin);
@@ -377,7 +377,6 @@ exports.adminUpdateEmployee = onCall(async (req) => {
   }
   if (req.data?.team !== undefined) changes.team = await optionalRef(teams, req.data.team, "team");
   if (req.data?.shift !== undefined) changes.shift = await optionalRef(shifts, req.data.shift, "shift");
-  if (req.data?.homeLineId !== undefined) changes.homeLineId = await optionalRef(lines, req.data.homeLineId, "line");
   // Their entry on the training roster (by name), so their own training reminders show on Home.
   if (req.data?.trainingName !== undefined) {
     changes.trainingName = req.data.trainingName ? records.cleanOptional(req.data.trainingName, 60) : null;
@@ -401,7 +400,7 @@ exports.adminUpdateEmployee = onCall(async (req) => {
   });
   await syncAuthUser(employeeNumber, employee, pinTemp);
   if (changes.active === false) await auth.revokeRefreshTokens(uidFor(employeeNumber));
-  if (changes.roles || changes.team !== undefined || changes.homeLineId !== undefined || changes.active === true) await refreshAnnouncementLists();
+  if (changes.roles || changes.team !== undefined || changes.active === true) await refreshAnnouncementLists();
   return { ok: true };
 });
 
@@ -2054,7 +2053,7 @@ async function peopleList() {
   const login = new Set(s.docs.map((d) => d.id));
   return e.docs.map((d) => ({
     id: d.id, name: d.get("name") || `Employee ${d.id}`, roles: d.get("roles") || [], team: d.get("team") || null,
-    homeLineId: d.get("homeLineId") || null, active: d.get("active") !== false, loginEnabled: login.has(d.id),
+    active: d.get("active") !== false, loginEnabled: login.has(d.id),
     supervisesTeams: d.get("supervisesTeams") || [], position: d.get("position") || "", trainingName: d.get("trainingName") || null,
   }));
 }
@@ -2101,9 +2100,9 @@ exports.announcementPeople = onCall(async (req) => {
   if (!annLib.canPost(roleDocs, me.roles) && !hasRole(me.roles, annLib.SEE_ALL_ROLES)) {
     throw new HttpsError("permission-denied", "Your role can't post announcements. An admin can turn it on in Admin → Roles.");
   }
-  const people = (await peopleList()).filter((p) => p.active);
+  const people = withShiftLines((await peopleList()).filter((p) => p.active), await shiftLineAssignments(isTest(req)));
   people.sort((x, y) => x.name.localeCompare(y.name));
-  return { people: people.map(({ id, name, roles: r, team, supervisesTeams, homeLineId, loginEnabled }) => ({ id, name, roles: r, team, supervisesTeams, homeLineId, loginEnabled })) };
+  return { people: people.map(({ id, name, roles: r, team, supervisesTeams, lineIds, loginEnabled }) => ({ id, name, roles: r, team, supervisesTeams, lineIds, loginEnabled })) };
 });
 
 // Post { title, body, priority, ackBy, endDate?, file?, audience, keepForNewHires } or edit (same plus { id }).
@@ -2111,7 +2110,8 @@ exports.announcementPeople = onCall(async (req) => {
 exports.postAnnouncement = onCall(async (req) => {
   const me = await requireMember(req);
   const test = isTest(req);
-  const [roleSnaps, teamSnaps, lineSnaps, people] = await Promise.all([roles.get(), teams.get(), lines.get(), peopleList()]);
+  const [roleSnaps, teamSnaps, lineSnaps, everyone, onLines] = await Promise.all([roles.get(), teams.get(), lines.get(), peopleList(), shiftLineAssignments(test)]);
+  const people = withShiftLines(everyone, onLines); // a line audience = who is on that line this shift (Decision 104)
   const live = (snaps) => snaps.docs.filter((d) => d.get("active") !== false).map((d) => d.id);
   const roleDocs = roleSnaps.docs.map((d) => ({ id: d.id, ...d.data() }));
   const known = { roles: live(roleSnaps), teams: live(teamSnaps), lines: live(lineSnaps) };
@@ -2296,7 +2296,7 @@ async function trackingFor(me, test, id) {
     const sig = sigs.find((s) => s.emp === emp && s.version === version);
     const older = sigs.filter((s) => s.emp === emp && s.version < version).reduce((n, s) => Math.max(n, s.version), 0);
     const status = annLib.personStatus(
-      { id: emp, name: p.name, loginEnabled: p.loginEnabled, team: p.team || null, homeLineId: p.homeLineId || null, active: p.active !== false, olderVersion: older || null },
+      { id: emp, name: p.name, loginEnabled: p.loginEnabled, team: p.team || null, active: p.active !== false, olderVersion: older || null },
       sig ? { at: ms(sig.at), method: sig.method, device: sig.device?.label || "", recordedByName: sig.recordedByName || "", note: sig.note || "" } : null
     );
     return status;
@@ -2314,7 +2314,7 @@ exports.announcementTracking = onCall(async (req) => {
   return {
     id: snap.id, title: a.title, version: a.version || 1, priority: a.priority, ackBy: a.ackBy, endDate: a.endDate || null,
     ended: annLib.isEnded(a, plantToday()), overdue: annLib.isOverdue(a, plantToday()), createdByName: a.createdByName || "",
-    createdAt: ms(a.createdAt), scope, noCrew: scope === "crew" && !meRecord?.team && !meRecord?.homeLineId,
+    createdAt: ms(a.createdAt), scope, noCrew: scope === "crew" && !meRecord?.team,
     people: list, counts: annLib.countUp(list), versions, readOnly, today: plantToday(),
     canInPerson: hasRole(me.roles, annLib.IN_PERSON_ROLES),
     canEdit: !readOnly && (a.createdBy === me.employeeNumber || me.roles.includes("admin")),
@@ -2363,7 +2363,7 @@ exports.announcementSummary = onCall(async (req) => {
     for (const p of list) if (p.state === "not-signed" || p.state === "no-login") { behind.add(p.id); if (overdue) behindOverdue.add(p.id); }
     return { id: d.id, title: a.title, priority: a.priority, ackBy: a.ackBy, overdue, test: d.ref.parent.id.startsWith("test_"), ...annLib.countUp(list) };
   }).filter((x) => x.total > 0);
-  return { scope, items, behind: behind.size, behindOverdue: behindOverdue.size, noCrew: scope === "crew" && !meRecord?.team && !meRecord?.homeLineId };
+  return { scope, items, behind: behind.size, behindOverdue: behindOverdue.size, noCrew: scope === "crew" && !meRecord?.team };
 });
 
 // Who can sign on this device's sign-off sheet (line tablets: the crew signs one after another, no signing in):
@@ -2389,8 +2389,9 @@ exports.signoffPeople = onCall(async (req) => {
 // now matches, and supervisors' tracking follows their crew. Never fails the change that called it.
 async function refreshAnnouncementLists() {
   try {
-    const people = await peopleList();
+    const everyone = await peopleList();
     for (const test of [false, true]) {
+      const people = withShiftLines(everyone, await shiftLineAssignments(test));
       const snaps = await annCol(test).where("ended", "==", false).get();
       for (const d of snaps.docs) {
         const a = d.data();
@@ -3066,7 +3067,8 @@ exports.addLineRound = onCall(async (req) => {
   if (r.round.flags.length) {
     const people = await peopleList();
     const leads = people.filter((p) => p.active && p.roles.includes("lead"));
-    const onLine = leads.filter((p) => p.homeLineId === r.l.lineId).map((p) => p.id);
+    const onNow = (await shiftLineAssignments(test)).now; // who the Crew Board put on that line (Decision 104)
+    const onLine = leads.filter((p) => (onNow[p.id] || []).includes(r.l.lineId)).map((p) => p.id);
     const to = test ? [me.employeeNumber] : onLine.length ? onLine : leads.map((p) => p.id);
     const what = r.round.flags.map((id) => r.fields.find((f) => f.id === id)?.label).filter(Boolean).join(", ");
     alerted = await pushTo(to, { title: `${test ? "[TEST] " : ""}⚠ ${r.l.lineName}: check out of spec`, body: `${me.name}: ${what}`, url: `/?linelog=${ref.id}`, urgent: true });
@@ -4601,7 +4603,7 @@ async function orgData() {
   const roleName = new Map(roleSnaps.docs.map((d) => [d.id, d.get("name")]));
   const people = empSnaps.docs.map((d) => ({
     id: d.id, name: d.get("name") || `Employee ${d.id}`, roles: d.get("roles") || [], team: d.get("team") || null,
-    homeLineId: d.get("homeLineId") || null, active: d.get("active") !== false, position: d.get("position") || "",
+    active: d.get("active") !== false, position: d.get("position") || "",
     department: d.get("department") || null, deptHead: d.get("deptHead") === true, reportsTo: d.get("reportsTo") || null,
     supervisesTeams: d.get("supervisesTeams") || [],
   }));
@@ -5278,7 +5280,21 @@ exports.writeupRefused = onCall(async (req) => {
 // the station setup, no people list. Anyone signed in; only their own stations.
 // ---------------------------------------------------------------------------
 
-// { noShift } | { shift, seated: false } | { shift, seated: true, seat, allShift, blocks: [{ label, station }], current }
+// Who is on which line this shift (no home lines — Decision 104): from the Crew Board seats and the block running now.
+// → { now: { emp: [lineId] }, today: { emp: [lineId] }, onLineNow: { lineId: [emp] } } (empty before anyone is seated)
+async function shiftLineAssignments(test) {
+  const s = await crewShift(test);
+  const setup = s?.saved?.seats ? await crewSetupNow() : null;
+  if (!s || !setup) return { now: {}, today: {}, onLineNow: {} };
+  const lineSnaps = await lines.get();
+  const block = crewSeatsLib.blockAt(s.now.startMs, s.now.endMs, Math.max(1, setup.rotation.blocks.length), Date.now());
+  return crewSeatsLib.shiftLines(setup, s.saved.seats, s.saved.cells || {}, block, lineSnaps.docs.map((d) => ({ id: d.id, name: d.get("name") })));
+}
+// People with the lines they're on this shift (lineIds), for line audiences.
+const withShiftLines = (people, onLines) => people.map((p) => ({ ...p, lineIds: onLines.today[p.id] || [] }));
+
+// { noShift } | { shift, seated: false } | { shift, seated: true, seat, allShift, blocks: [{ label, station }], current,
+//   linesNow, linesToday (line ids) }
 exports.crewMyStation = onCall(async (req) => {
   const me = await requireMember(req);
   const test = isTest(req);
@@ -5288,7 +5304,10 @@ exports.crewMyStation = onCall(async (req) => {
   const setup = s.saved?.seats ? await crewSetupNow() : null;
   const mine = setup ? crewSeatsLib.myStations(setup, s.saved.seats, s.saved.cells || {}, me.employeeNumber) : null;
   if (!mine) return { test, shift, seated: false };
-  return { test, shift, seated: true, ...mine, current: crewSeatsLib.blockAt(s.now.startMs, s.now.endMs, mine.blocks.length, Date.now()) };
+  const current = crewSeatsLib.blockAt(s.now.startMs, s.now.endMs, mine.blocks.length, Date.now());
+  const lineSnaps = await lines.get();
+  const on = crewSeatsLib.shiftLines(setup, s.saved.seats, s.saved.cells || {}, current, lineSnaps.docs.map((d) => ({ id: d.id, name: d.get("name") })));
+  return { test, shift, seated: true, ...mine, current, linesNow: on.now[me.employeeNumber] || [], linesToday: on.today[me.employeeNumber] || [] };
 });
 
 // ---------------------------------------------------------------------------
@@ -5450,8 +5469,8 @@ const messagesSeen = (test) => col("messagesSeen", test);
 
 // The shift on now, for the delivery check: { teamOnShift, marks }.
 async function messageShiftContext(test) {
-  const s = await crewShift(test);
-  return { teamOnShift: s?.teamId || null, marks: s?.saved?.marks || {} };
+  const [s, onLines] = await Promise.all([crewShift(test), shiftLineAssignments(test)]);
+  return { teamOnShift: s?.teamId || null, marks: s?.saved?.marks || {}, lineNow: onLines.now };
 }
 
 // Active people (practice accounts only on the test site), shaped for messaging.js.
@@ -5504,7 +5523,8 @@ exports.messagePreview = onCall(async (req) => {
   if (error) throw new HttpsError("invalid-argument", error);
   const [people, ctx] = await Promise.all([messagePeople(test), messageShiftContext(test)]);
   const d = messagingLib.deliver(people, to, me.employeeNumber, ctx);
-  return { total: d.total, reach: d.recipients.length, why: d.why, name: to.type === "person" ? people.find((p) => p.id === to.id)?.name || "" : "" };
+  const label = to.type === "line" ? await messageTargetLabel(to, people) : "";
+  return { total: d.total, reach: d.recipients.length, why: d.why, name: to.type === "person" ? people.find((p) => p.id === to.id)?.name || "" : label, noOneOnLine: to.type === "line" && !d.total };
 });
 
 // Line Lead and above: { to, text } → { id, delivered, total, why }
@@ -5520,6 +5540,7 @@ exports.messageSend = onCall(async (req) => {
   const label = await messageTargetLabel(to, people);
   if (!label || (to.type === "person" && !people.some((p) => p.id === to.id && p.id !== me.employeeNumber))) throw new HttpsError("invalid-argument", "Pick who it's for from the list.");
   const d = messagingLib.deliver(people, to, me.employeeNumber, ctx);
+  if (to.type === "line" && !d.total) throw new HttpsError("failed-precondition", `No one is assigned to ${label} yet this shift.`);
   if (!d.total) throw new HttpsError("failed-precondition", "No one is in that group yet.");
   const ref = col("messages", test).doc();
   await ref.set({

@@ -6,6 +6,8 @@
 // message is sent — anything else is never delivered (not held, not queued). People with no team are always on shift.
 // Covering: someone marked Here on a shift that isn't their team's is covering — they get team, line, and role
 // messages for that shift (team messages to the team on shift included), never anyone's one-on-one.
+// Lines (Decision 104): nobody has a home line — a line message goes to whoever the Crew Board put on that line for the
+// block running now (ctx.lineNow { emp: [lineId] }). No one on it yet: the message isn't sent.
 //
 //   messages/{auto}   rootId (own id for a new message), conv ("{rootId}__{participant}" for replies; "" for a root),
 //                     kind "new" | "reply", fromEmp, fromName, fromRole, to { type, id, label }, text, atMs,
@@ -62,7 +64,7 @@ function audience(people, to, fromEmp, ctx) {
     case "person": return pick((p) => p.id === to.id);
     // Team messages to the team on shift reach the people covering that shift too.
     case "team": return pick((p) => p.team === to.id || (to.id === ctx.teamOnShift && standing(p, ctx) === "covering"));
-    case "line": return pick((p) => p.homeLineId === to.id);
+    case "line": return pick((p) => (ctx.lineNow?.[p.id] || []).includes(to.id));
     case "role": return pick((p) => (p.roles || []).includes(to.id));
     default: return pick(() => true);
   }
