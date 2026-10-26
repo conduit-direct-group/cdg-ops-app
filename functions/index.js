@@ -48,6 +48,7 @@ const annTasksLib = require("./anntasks");
 const crewSeatsLib = require("./crewseats");
 const writeupsLib = require("./writeups");
 const retentionLib = require("./retentionrules");
+const messagingLib = require("./messaging");
 const crypto = require("node:crypto");
 const { getMessaging } = require("firebase-admin/messaging");
 const { defineSecret } = require("firebase-functions/params");
@@ -540,6 +541,11 @@ exports.adminSaveRole = onCall(async (req) => {
       if (typeof d.postTrucks !== "boolean") throw new HttpsError("invalid-argument", "postTrucks must be true or false.");
       extra.postTrucks = d.postTrucks;
     }
+    // { startMessages: true|false } — may start messages (Decision 103). Unset = Line Lead, Supervisor, Production Manager, Admin.
+    if (d.startMessages !== undefined) {
+      if (typeof d.startMessages !== "boolean") throw new HttpsError("invalid-argument", "startMessages must be true or false.");
+      extra.startMessages = d.startMessages;
+    }
     // { editMachines: true|false } — may add and edit machine parts & specs (Machines). Unset = Maintenance and Admin.
     if (d.editMachines !== undefined) {
       if (typeof d.editMachines !== "boolean") throw new HttpsError("invalid-argument", "editMachines must be true or false.");
@@ -964,6 +970,7 @@ exports.voteFix = onCall(async (req) => {
     return { helpfulYes: yes, helpfulNo: no };
   });
 });
+
 
 // Admins, one-time (safe to run again): copy the old Line Fix Library into the new app (Decisions 25, 28).
 // Reads the old library (read-only — it is never changed), creates fix categories, copies photos/videos
@@ -5382,6 +5389,9 @@ async function runRetention(nowMs = Date.now()) {
   if (p.annSigs != null) await step("annSigs", async () => {
     add("annSigs", await retentionSweep("announcementSigs", "at", at(p.annSigs), O.announcementSigs, {}));
   });
+  if (p.messages != null) await step("messages", async () => {
+    add("messages", await retentionSweep("messages", "atMs", retentionLib.cutoffMs(nowMs, p.messages), O.messages, {}));
+  });
   if (p.writeups != null) await step("writeups", async () => {
     add("writeups", await retentionSweep("writeups", "date", day(p.writeups), O.writeups, {}));
   });
@@ -5447,4 +5457,192 @@ exports.adminSaveRetention = onCall(async (req) => {
   await retentionDoc.set({ periods: { [cat.key]: days }, updatedBy: me.employeeNumber, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
   await auditLog.add({ type: "updated", kind: "record retention", recordId: cat.key, by: me.employeeNumber, at: FieldValue.serverTimestamp(), from: before, to: days });
   return { ok: true, days };
+});
+
+// ---------------------------------------------------------------------------
+// In-app messaging (Decision 102; rules in messaging.js). Delivery is decided here when a message is sent — the shift
+// on now (rotation, or the team picked on Who's here today) and that shift's Here / Out marks. Phones read only the
+// messages delivered to them or sent by them (firestore.rules); every write goes through these functions.
+// ---------------------------------------------------------------------------
+
+const messagesSeen = (test) => col("messagesSeen", test);
+
+// The shift on now, for the delivery check: { teamOnShift, marks }.
+async function messageShiftContext(test) {
+  const [s, onLines] = await Promise.all([crewShift(test), shiftLineAssignments(test)]);
+  return { teamOnShift: s?.teamId || null, marks: s?.saved?.marks || {}, lineNow: onLines.now };
+}
+
+// Active people (practice accounts only on the test site), shaped for messaging.js.
+async function messagePeople(test) {
+  return (await peopleList()).filter((p) => p.active && (test || !deptLib.isPracticeAccount(p.name)));
+}
+
+// Who starts messages: Line Lead and above, or any role an Admin turned on in Admin → Roles (Decision 103).
+async function canStartMessages(me) {
+  const snap = await roles.get();
+  return messagingLib.canStartWith(snap.docs.map((d) => ({ id: d.id, ...d.data() })), me.roles);
+}
+async function requireMessageStarter(me) {
+  if (!(await canStartMessages(me))) throw new HttpsError("permission-denied", "Your role doesn't start messages. You can reply to messages you get.");
+}
+
+// What the target is called ("Team A", "Line 2", "Supervisors", "Everyone", a person's name).
+async function messageTargetLabel(to, people) {
+  if (to.type === "all") return "Everyone";
+  if (to.type === "person") return people.find((p) => p.id === to.id)?.name || `#${to.id}`;
+  if (to.type === "team") { const t = await teams.doc(to.id).get(); return t.exists ? `Team ${t.get("name") || to.id}` : null; }
+  if (to.type === "line") { const l = await lines.doc(to.id).get(); return l.exists ? l.get("name") || to.id : null; }
+  const r = await roles.doc(to.id).get();
+  return r.exists ? `Everyone who is ${r.get("name") || to.id}` : null;
+}
+
+// Screen setup: { canStart, hr, people, teams, lines, roles, noticeSeen, noTeam (Admins: who has no team yet) }
+exports.messageStart = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const [people, teamSnaps, lineSnaps, roleSnaps, mine] = await Promise.all([messagePeople(test), teams.get(), lines.get(), roles.get(), employees.doc(me.employeeNumber).get()]);
+  const teamName = new Map(teamSnaps.docs.map((d) => [d.id, d.get("name") || d.id]));
+  const start = messagingLib.canStartWith(roleSnaps.docs.map((d) => ({ id: d.id, ...d.data() })), me.roles);
+  return {
+    test, canStart: start, hr: me.hr, noticeSeen: !!mine.get("messagingNoticeAt"),
+    people: (start || me.hr) ? people.filter((p) => p.id !== me.employeeNumber).map((p) => ({ emp: p.id, name: p.name, team: p.team ? teamName.get(p.team) || "" : "" })).sort((a, b) => a.name.localeCompare(b.name)) : [],
+    teams: start ? teamSnaps.docs.filter((d) => d.get("active") !== false).map((d) => ({ id: d.id, name: `Team ${d.get("name") || d.id}` })) : [],
+    lines: start ? lineSnaps.docs.filter((d) => d.get("active") !== false).map((d) => ({ id: d.id, name: d.get("name") || d.id })) : [],
+    roles: start ? roleSnaps.docs.filter((d) => d.get("active") !== false).map((d) => ({ id: d.id, name: d.get("name") || d.id })) : [],
+    noTeam: me.roles.includes("admin") ? people.filter((p) => !p.team).map((p) => p.name).sort() : [],
+  };
+});
+
+// Before sending: who it would reach now. { to } → { total, reach, why, name }
+exports.messagePreview = onCall(async (req) => {
+  const me = await requireMember(req);
+  await requireMessageStarter(me);
+  const test = isTest(req);
+  const { to, error } = messagingLib.cleanTo(req.data?.to);
+  if (error) throw new HttpsError("invalid-argument", error);
+  const [people, ctx] = await Promise.all([messagePeople(test), messageShiftContext(test)]);
+  const d = messagingLib.deliver(people, to, me.employeeNumber, ctx);
+  const label = to.type === "line" ? await messageTargetLabel(to, people) : "";
+  return { total: d.total, reach: d.recipients.length, why: d.why, name: to.type === "person" ? people.find((p) => p.id === to.id)?.name || "" : label, noOneOnLine: to.type === "line" && !d.total };
+});
+
+// Line Lead and above: { to, text } → { id, delivered, total, why }
+exports.messageSend = onCall(async (req) => {
+  const me = await requireMember(req);
+  await requireMessageStarter(me);
+  const test = isTest(req);
+  const { to, error } = messagingLib.cleanTo(req.data?.to);
+  if (error) throw new HttpsError("invalid-argument", error);
+  const t = messagingLib.cleanText(req.data?.text);
+  if (t.error) throw new HttpsError("invalid-argument", t.error);
+  const [people, ctx] = await Promise.all([messagePeople(test), messageShiftContext(test)]);
+  const label = await messageTargetLabel(to, people);
+  if (!label || (to.type === "person" && !people.some((p) => p.id === to.id && p.id !== me.employeeNumber))) throw new HttpsError("invalid-argument", "Pick who it's for from the list.");
+  const d = messagingLib.deliver(people, to, me.employeeNumber, ctx);
+  if (to.type === "line" && !d.total) throw new HttpsError("failed-precondition", `No one is assigned to ${label} yet this shift.`);
+  if (!d.total) throw new HttpsError("failed-precondition", "No one is in that group yet.");
+  const ref = col("messages", test).doc();
+  await ref.set({
+    rootId: ref.id, conv: "", kind: "new", fromEmp: me.employeeNumber, fromName: me.name, fromRole: messagingLib.startRole(me.roles),
+    to: { ...to, label }, text: t.text, atMs: Date.now(), at: FieldValue.serverTimestamp(),
+    recipients: d.recipients, total: d.total, notDelivered: d.notDelivered, why: d.why, ...(test ? { test: true } : {}),
+  });
+  if (d.recipients.length) {
+    await pushTo(test ? [me.employeeNumber] : d.recipients, { title: `${test ? "[TEST] " : ""}💬 ${me.name}`, body: t.text.slice(0, 140), url: "/?messages=1" });
+  }
+  return { id: ref.id, delivered: d.recipients.length, total: d.total, why: d.why };
+});
+
+// Reply in a conversation: { rootId, participant (the starter names who), text } → { id, delivered, why }.
+// The starter replies to one participant; anyone who received the message replies to its starter only.
+exports.messageReply = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const t = messagingLib.cleanText(req.data?.text);
+  if (t.error) throw new HttpsError("invalid-argument", t.error);
+  const rootId = String(req.data?.rootId || "");
+  if (!/^[A-Za-z0-9]{1,40}$/.test(rootId)) throw new HttpsError("invalid-argument", "Pick a message.");
+  const root = await col("messages", test).doc(rootId).get();
+  if (!root.exists) throw new HttpsError("not-found", "That message is gone (messages are kept 90 days).");
+  const r = root.data();
+  let toEmp;
+  let participant;
+  if (r.fromEmp === me.employeeNumber) {
+    participant = String(req.data?.participant || "");
+    if (!(r.recipients || []).includes(participant)) throw new HttpsError("invalid-argument", "Pick someone who got this message.");
+    toEmp = participant;
+  } else {
+    if (!(r.recipients || []).includes(me.employeeNumber)) throw new HttpsError("permission-denied", "You can reply only to messages you got.");
+    participant = me.employeeNumber;
+    toEmp = r.fromEmp;
+  }
+  const [people, ctx] = await Promise.all([messagePeople(test), messageShiftContext(test)]);
+  const person = people.find((p) => p.id === toEmp);
+  const d = messagingLib.deliverOne(person, ctx);
+  const ref = col("messages", test).doc();
+  await ref.set({
+    rootId, conv: messagingLib.conv(rootId, participant), kind: "reply", fromEmp: me.employeeNumber, fromName: me.name, fromRole: messagingLib.startRole(me.roles),
+    to: { type: "person", id: toEmp, label: person?.name || r.fromName }, text: t.text, atMs: Date.now(), at: FieldValue.serverTimestamp(),
+    recipients: d.recipients, total: 1, notDelivered: d.recipients.length ? 0 : 1, why: d.why, ...(test ? { test: true } : {}),
+  });
+  if (d.recipients.length) {
+    await pushTo(test ? [me.employeeNumber] : d.recipients, { title: `${test ? "[TEST] " : ""}💬 ${me.name}`, body: t.text.slice(0, 140), url: "/?messages=1" });
+  }
+  return { id: ref.id, delivered: d.recipients.length, why: d.why };
+});
+
+// Read: { convs: [conversation keys] } → marks them seen now (own record only; entries older than 90 days drop off).
+exports.messagesSeenNow = onCall(async (req) => {
+  const me = await requireMember(req);
+  const test = isTest(req);
+  const convs = (Array.isArray(req.data?.convs) ? req.data.convs : []).filter((c) => typeof c === "string" && /^[A-Za-z0-9_]{1,90}$/.test(c)).slice(0, 50);
+  if (!convs.length) return { ok: true };
+  const ref = messagesSeen(test).doc(me.employeeNumber);
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const cutoff = Date.now() - 90 * 86400000;
+    const seen = Object.fromEntries(Object.entries(snap.exists ? snap.get("seen") || {} : {}).filter(([, ms]) => ms > cutoff));
+    for (const c of convs) seen[c] = Date.now();
+    tx.set(ref, { emp: me.employeeNumber, seen });
+  });
+  return { ok: true };
+});
+
+// The HR notice was shown: employees/{me}.messagingNoticeAt.
+exports.messagingNoticeSeen = onCall(async (req) => {
+  const me = await requireMember(req);
+  await employees.doc(me.employeeNumber).update({ messagingNoticeAt: FieldValue.serverTimestamp() });
+  return { ok: true };
+});
+
+// HR access: one person's messages (sent and received, last 90 days), only with a reason — every view logged.
+// { emp, reason } → { messages }
+exports.hrReviewMessages = onCall(async (req) => {
+  const me = await requireHr(req);
+  const test = isTest(req);
+  const emp = String(req.data?.emp || "");
+  const person = await employees.doc(emp).get();
+  if (!person.exists || emp === me.employeeNumber) throw new HttpsError("invalid-argument", "Pick the person.");
+  const { reason, error } = messagingLib.cleanReason(req.data?.reason);
+  if (error) throw new HttpsError("invalid-argument", error);
+  const c = col("messages", test);
+  const [got, sent] = await Promise.all([c.where("recipients", "array-contains", emp).get(), c.where("fromEmp", "==", emp).get()]);
+  const byId = new Map([...got.docs, ...sent.docs].map((d) => [d.id, d]));
+  const empName = person.get("name") || `#${emp}`;
+  await col("messageReviews", test).add({ by: me.employeeNumber, byName: me.name, emp, empName, reason, atMs: Date.now(), at: FieldValue.serverTimestamp() });
+  await auditLog.add({ type: "viewed messages", kind: "messages", recordId: emp, by: me.employeeNumber, at: FieldValue.serverTimestamp(), reason, count: byId.size, ...(test ? { test: true } : {}) });
+  const messages = [...byId.values()].map((d) => {
+    const m = d.data();
+    return { id: d.id, fromName: m.fromName, fromEmp: m.fromEmp, to: m.to, text: m.text, atMs: m.atMs, delivered: (m.recipients || []).includes(emp) || m.fromEmp === emp, kind: m.kind };
+  }).sort((a, b) => b.atMs - a.atMs);
+  return { empName, messages };
+});
+
+// HR access: the log of message reviews (last 50).
+exports.hrMessageReviewLog = onCall(async (req) => {
+  await requireHr(req);
+  const test = isTest(req);
+  const snap = await col("messageReviews", test).orderBy("atMs", "desc").limit(50).get();
+  return { reviews: snap.docs.map((d) => ({ id: d.id, byName: d.get("byName"), empName: d.get("empName"), reason: d.get("reason"), atMs: d.get("atMs") })) };
 });

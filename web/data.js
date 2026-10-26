@@ -199,6 +199,7 @@ export function startData(me) {
   stopFns.push(watchMerged("shopLists", shopQuery("shopTasks"), shopQuery("test_shopTasks"), (a, b) => (b.startMs || 0) - (a.startMs || 0)));
   stopFns.push(watchMySigs(me));
   stopFns.push(watchMyOpens(me));
+  stopFns.push(watchMessages(me));
   stopFns.push(watchPlantStatus());
   if (me.safetyWatcher) {
     const urgent = (name) => query(collection(db, name), where("urgent", "==", true));
@@ -264,6 +265,19 @@ function watchAnnTasks(me) {
     sources.push({ key: "recent announcement tasks", source: query(c, where("createdAt", ">=", new Date(Date.now() - 30 * 86400000))), test: TEST_MODE });
   }
   return watchUnion("annTasks", sources, sort);
+}
+
+// Messages (Decision 102): the ones delivered to me and the ones I sent, and what I've read. Messages are made where
+// they're sent, so the test site reads only test_ copies.
+function watchMessages(me) {
+  const c = collection(db, TEST_MODE ? "test_messages" : "messages");
+  const seen = collection(db, TEST_MODE ? "test_messagesSeen" : "messagesSeen");
+  const stopA = watchUnion("messages", [
+    { key: "messages to me", source: query(c, where("recipients", "array-contains", me.emp)), test: TEST_MODE },
+    { key: "messages I sent", source: query(c, where("fromEmp", "==", me.emp)), test: TEST_MODE },
+  ], (a, b) => (a.atMs || 0) - (b.atMs || 0));
+  const stopB = watchUnion("messagesSeen", [{ key: "messages I read", source: query(seen, where("emp", "==", me.emp)), test: TEST_MODE }], () => 0);
+  return () => { stopA(); stopB(); };
 }
 
 // Important announcements I opened (the crew doesn't sign those) — per person, on every device. Opening one on the

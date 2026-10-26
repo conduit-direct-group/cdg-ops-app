@@ -12,6 +12,7 @@ import { overdueUnits, unitLabel, checklistUnits, pendingFor } from "./checklist
 import { dueByShiftEnd } from "./shift.js";
 import { myOpenRequests } from "./requests.js";
 import { announcementItems, announcementBar, annTaskItems } from "./announcements.js";
+import { messageBar } from "./messages.js";
 import { handoffItems } from "./handoff.js";
 import { shopItems } from "./shoptasks.js";
 import { stationItems } from "./stations.js";
@@ -405,7 +406,10 @@ export function dashboard(ctx) {
   // Announcements still to read sit right under the name (Chris, 10-23-2026), live as they come in.
   const annBar = announcementBar(ctx.emp, ctx.go.announcement, needRow);
 
-  return { status, viewAs, annBar, needs, quick, cards };
+  // New messages, right under the announcements (Decision 102).
+  const msgBar = ctx.go.messages ? messageBar(ctx.emp, ctx.go.messages, needRow) : null;
+
+  return { status, viewAs, annBar, msgBar, needs, quick, cards };
 }
 
 // Lines down for the Open issues button — from the same summary as the plant status bar.
