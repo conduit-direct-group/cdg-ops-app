@@ -142,5 +142,16 @@ function cleanChoices(raw, what, { optional = false } = {}) {
   return out.length ? { list: out } : { error: `Add at least one of the ${what}.` };
 }
 
-module.exports = { DECIDE_ROLES, WINDERS, DECISIONS, STARTING_REASONS, STARTING_SIZES, STARTING_SDRS, DEFAULT_COLOR, slug, canDecide, cleanFlag,
+// The winder's machine (Decision 120): the one machine on that line whose name says that winder ("Winder 2",
+// "L1 Winder 2"), or null when there's no such machine set up. machines = [{ id, name, lineId, active }].
+function winderMachine(machines, lineId, winder) {
+  const n = /(\d+)/.exec(winder || "")?.[1];
+  if (!n) return null;
+  const re = new RegExp(`winder\\s*#?\\s*${n}\\b`, "i");
+  const found = (machines || []).filter((m) => m.active !== false && m.lineId === lineId && re.test(m.name || ""));
+  return found.length === 1 ? found[0].id : null;
+}
+
+module.exports = {
+  winderMachine, DECIDE_ROLES, WINDERS, DECISIONS, STARTING_REASONS, STARTING_SIZES, STARTING_SDRS, DEFAULT_COLOR, slug, canDecide, cleanFlag,
   colorName, withColor, cleanMerge, mergedColors, cleanDecision, cleanReclaim, dueAfterNextShift, cleanReasons, cleanChoices };

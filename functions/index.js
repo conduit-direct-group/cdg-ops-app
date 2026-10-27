@@ -43,6 +43,7 @@ const offlineLib = require("./offline");
 const { AsyncLocalStorage } = require("node:async_hooks");
 const deptLib = require("./departments");
 const docsLib = require("./documents");
+const historyLib = require("./history");
 const crewLib = require("./crew");
 const verifyLib = require("./verify");
 const annTasksLib = require("./anntasks");
@@ -394,7 +395,8 @@ exports.adminUpdateEmployee = onCall(async (req) => {
   const { employee, pinTemp } = await db.runTransaction(async (tx) => {
     const [empSnap, secretSnap] = await tx.getAll(employees.doc(employeeNumber), pinSecrets.doc(employeeNumber));
     if (!empSnap.exists) throw new HttpsError("not-found", `No employee ${employeeNumber}.`);
-    tx.update(empSnap.ref, { ...changes, updatedAt: FieldValue.serverTimestamp() });
+    keepHistory(tx, empSnap.ref, empSnap.data(), changes, adminNumber);
+    tx.update(empSnap.ref, { ...changes, updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber });
     audit(tx, "updated", employeeNumber, adminNumber, { changes });
     return { employee: { ...empSnap.data(), ...changes }, pinTemp: secretSnap.get("mustChangePin") === true };
   });
@@ -474,6 +476,20 @@ function auditRecord(tx, type, kind, recordId, by, extra = {}) {
   tx.create(auditLog.doc(), { type, kind, recordId, by, at: FieldValue.serverTimestamp(), ...extra });
 }
 
+// Decision 120 (Chris, 10-27-2026): nothing is overwritten without a record. Saves the old and new value of each field
+// that changes, who, and when (server time) in changeHistory (test site: test_changeHistory) — see history.js.
+// before = the record as it was; after = the fields being written (action "delete": the whole record goes).
+function keepHistory(tx, ref, before, after, by, { byName = null, test = false, action = "update" } = {}) {
+  const d = historyLib.diff(before, action === "delete" ? null : after);
+  if (d) tx.create(col("changeHistory", test).doc(), { collection: ref.parent.id, docId: ref.id, action, old: d.old, new: d.new, by: by || null, byName, at: FieldValue.serverTimestamp() });
+}
+// The same, outside a transaction (settings pages): reads the record just before it's written.
+async function keepHistoryNow(ref, after, by, { byName = null, test = false } = {}) {
+  const snap = await ref.get();
+  const d = historyLib.diff(snap.exists ? snap.data() : null, after);
+  if (d) await col("changeHistory", test).add({ collection: ref.parent.id, docId: ref.id, action: "update", old: d.old, new: d.new, by: by || null, byName, at: FieldValue.serverTimestamp() });
+}
+
 function requireText(value, label, max = 60) {
   const text = records.cleanName(value, max);
   if (!text) throw new HttpsError("invalid-argument", `${label} is required (${max} characters max).`);
@@ -508,8 +524,9 @@ async function saveNamedRecord(collection, kind, req, extraCheck, extraFields = 
       auditRecord(tx, "created", kind, id, adminNumber, { name, ...extra });
     } else {
       if (!snap.exists) throw new HttpsError("not-found", "That record no longer exists.");
-      const changes = { name, ...extra, updatedAt: FieldValue.serverTimestamp() };
+      const changes = { name, ...extra, updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber };
       if (active !== undefined) changes.active = active;
+      keepHistory(tx, ref, snap.data(), changes, adminNumber);
       tx.update(ref, changes);
       auditRecord(tx, "updated", kind, id, adminNumber, { name, ...extra, ...(active !== undefined ? { active } : {}) });
     }
@@ -650,8 +667,9 @@ exports.adminSaveMachine = onCall(async (req) => {
     const ref = machines.doc(req.data.id);
     const snap = await tx.get(ref);
     if (!snap.exists) throw new HttpsError("not-found", "That machine no longer exists.");
-    const changes = { name, type, lineId, ...details, updatedAt: FieldValue.serverTimestamp() };
+    const changes = { name, type, lineId, ...details, updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber };
     if (active !== undefined) changes.active = active;
+    keepHistory(tx, ref, snap.data(), changes, adminNumber);
     tx.update(ref, changes);
     auditRecord(tx, "updated", "machine", req.data.id, adminNumber, { name, lineId, ...(active !== undefined ? { active } : {}) });
     return req.data.id;
@@ -967,7 +985,7 @@ exports.voteFix = onCall(async (req) => {
     const votes = { ...(snap.get("votes") || {}), [me.employeeNumber]: req.data?.helpful === true };
     const yes = Object.values(votes).filter(Boolean).length + (snap.get("legacyHelpfulYes") || 0);
     const no = Object.values(votes).filter((v) => !v).length + (snap.get("legacyHelpfulNo") || 0);
-    tx.update(snap.ref, { votes, helpfulYes: yes, helpfulNo: no });
+    tx.update(snap.ref, { votes, helpfulYes: yes, helpfulNo: no, lastVoteAt: FieldValue.serverTimestamp(), lastVoteBy: me.employeeNumber });
     return { helpfulYes: yes, helpfulNo: no };
   });
 });
@@ -994,7 +1012,7 @@ exports.adminImportOldLibrary = onCall({ timeoutSeconds: 540, memory: "2GiB" }, 
     const id = records.idFromName(name) || `cat-${categoryIds.size + 1}`;
     categoryIds.set(name, id);
     await fixCategories.doc(id).set(
-      { name, machineTypes: fixesLib.machineTypesForOldCategory(name), active: true, updatedAt: FieldValue.serverTimestamp() },
+      { name, machineTypes: fixesLib.machineTypesForOldCategory(name), active: true, updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber },
       { merge: true }
     );
   }
@@ -1104,7 +1122,7 @@ exports.adminImportOldLibrary = onCall({ timeoutSeconds: 540, memory: "2GiB" }, 
 // Searches that found no fixes (like the old library): { term }. Anyone signed in; the app sends it
 // once per search, 1.5 s after typing stops. Admins read the list (firestore.rules) to see what's missing.
 exports.logSearchGap = onCall(async (req) => {
-  await requireMember(req);
+  const me = await requireMember(req);
   if (isTest(req)) return { ok: true }; // test-site searches aren't counted
   const term = fixesLib.cleanSearchTerm(req.data?.term);
   if (!term) return { ok: false };
@@ -1113,9 +1131,9 @@ exports.logSearchGap = onCall(async (req) => {
     const snap = await tx.get(ref);
     if (snap.exists) {
       // Searched again: count it, and bring it back if it had been marked done (the fix still isn't found).
-      tx.update(ref, { count: FieldValue.increment(1), lastAt: FieldValue.serverTimestamp(), done: false });
+      tx.update(ref, { count: FieldValue.increment(1), lastAt: FieldValue.serverTimestamp(), lastBy: me.employeeNumber, done: false });
     } else {
-      tx.create(ref, { term, count: 1, firstAt: FieldValue.serverTimestamp(), lastAt: FieldValue.serverTimestamp(), done: false });
+      tx.create(ref, { term, count: 1, firstAt: FieldValue.serverTimestamp(), firstBy: me.employeeNumber, lastAt: FieldValue.serverTimestamp(), lastBy: me.employeeNumber, done: false });
     }
   });
   return { ok: true };
@@ -1129,7 +1147,7 @@ exports.adminMarkSearchGap = onCall(async (req) => {
   await db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     if (!snap.exists) throw new HttpsError("not-found", "That search is no longer on the list.");
-    tx.update(ref, { done });
+    tx.update(ref, { done, markedAt: FieldValue.serverTimestamp(), markedBy: adminNumber });
     auditRecord(tx, done ? "marked-done" : "marked-not-done", "search", ref.id, adminNumber, { term: snap.get("term") });
   });
   return { ok: true };
@@ -1165,7 +1183,7 @@ exports.adminBulkAddFixes = onCall(async (req) => {
     if (!existingIds.has(fix.categoryId) && !newCategories.has(fix.categoryId)) {
       newCategories.add(fix.categoryId);
       batch.set(fixCategories.doc(fix.categoryId), {
-        name: categoryName, machineTypes: fixesLib.machineTypesForOldCategory(categoryName), active: true, updatedAt: now,
+        name: categoryName, machineTypes: fixesLib.machineTypesForOldCategory(categoryName), active: true, updatedAt: now, updatedBy: adminNumber,
       }, { merge: true });
     }
     batch.create(fixes.doc(), {
@@ -1314,7 +1332,7 @@ exports.reportProblem = onCall({ secrets: [odooKey] }, async (req) => {
     await ref.set({
       odooId: null, open: true, source: "app", test: true,
       title: `[TEST] ${report.lineDown ? "⛔ LINE DOWN" : "🚨 Machine issue"} – ${machine.id} ${machine.name}`,
-      machineId: machine.id, lineDown: report.lineDown, unsafe: report.unsafe, severity: report.severity,
+      machineId: machine.id, lineId: machine.lineId || null, lineDown: report.lineDown, unsafe: report.unsafe, severity: report.severity,
       priority: odoo.SEVERITY[report.severity].priority, description: report.description, actions: report.actions,
       failureCategory: report.failureCategory, rootCause: report.rootCause, photos: report.photos,
       stage: "New Request", reportedBy: reporter, reportedByEmp: me.employeeNumber, reportedAt: FieldValue.serverTimestamp(),
@@ -1347,7 +1365,7 @@ exports.reportProblem = onCall({ secrets: [odooKey] }, async (req) => {
   await issueRef.set({
     odooId, open: true, source: "app",
     title: `${report.lineDown ? "⛔ LINE DOWN" : "🚨 Machine issue"} – ${machine.id} ${machine.name}`,
-    machineId: machine.id, lineDown: report.lineDown, unsafe: report.unsafe, severity: report.severity,
+    machineId: machine.id, lineId: machine.lineId || null, lineDown: report.lineDown, unsafe: report.unsafe, severity: report.severity,
     priority: odoo.SEVERITY[report.severity].priority, description: report.description, actions: report.actions,
     failureCategory: report.failureCategory, rootCause: report.rootCause, photos: report.photos,
     stage: "New Request", reportedBy: reporter, reportedByEmp: me.employeeNumber,
@@ -1394,7 +1412,7 @@ exports.markIssueFixed = onCall({ secrets: [odooKey] }, async (req) => {
   await ref.update({ open: false, stage: "Repaired", closedAt: FieldValue.serverTimestamp(), closedBy: name, closedByEmp: me.employeeNumber, fixNote: note });
   await logSignoffNow(false, { kind: "issue-fixed", refId: ref.id, version: signoffsLib.contentVersion({ odooId: snap.get("odooId"), title: snap.get("title"), note }), emp: me.employeeNumber, name, method: "app" });
   const machineId = snap.get("machineId");
-  if (machineId) await machines.doc(machineId).set({ lastRepairDate: today }, { merge: true }).catch(() => {});
+  if (machineId) await machines.doc(machineId).set({ lastRepairDate: today, lastRepairAt: FieldValue.serverTimestamp(), lastRepairBy: me.employeeNumber, lastRepairIssue: ref.id }, { merge: true }).catch(() => {});
   await auditLog.add({ type: "fixed", kind: "issue", recordId: ref.id, by: me.employeeNumber, at: FieldValue.serverTimestamp(), note });
   await writePlantStatus(false);
   return { ok: true };
@@ -1438,10 +1456,25 @@ async function syncFromOdoo(key) {
     fields: ISSUE_FIELDS, limit: 500,
   });
   const openIds = new Set(open.map((r) => `odoo-${r.id}`));
-  const writes = open.map((r) => issues.doc(`odoo-${r.id}`).set({ ...issueFromRequest(r), open: true }, { merge: true }));
+  const [stillOpen, machineSnaps] = await Promise.all([issues.where("open", "==", true).get(), machines.get()]);
+  const lineOf = new Map(machineSnaps.docs.map((m) => [m.id, m.get("lineId") || null]));
+  const was = new Map(stillOpen.docs.map((d) => [d.id, d.data()]));
+  // Decision 120: what a sync changes on an issue the app already has is kept, like a person's edit.
+  const SYNC = "system:odoo-sync";
+  const history = (ref, before, next) => {
+    const d = before && historyLib.diff(before, next);
+    if (d) writes.push(col("changeHistory", false).add({ collection: "issues", docId: ref.id, action: "update", old: d.old, new: d.new, by: SYNC, byName: "Odoo sync", at: FieldValue.serverTimestamp() }));
+  };
+  const writes = [];
+  for (const r of open) {
+    const ref = issues.doc(`odoo-${r.id}`);
+    const next = { ...issueFromRequest(r), open: true };
+    next.lineId = lineOf.get(next.machineId) ?? null;
+    history(ref, was.get(ref.id), next);
+    writes.push(ref.set(next, { merge: true }));
+  }
 
   // 2. Issues the app still shows as open but Odoo has closed (or deleted).
-  const stillOpen = await issues.where("open", "==", true).get();
   const gone = stillOpen.docs.filter((d) => !openIds.has(d.id));
   if (gone.length) {
     const closed = await odoo.odooCall(key, "maintenance.request", "search_read", {
@@ -1451,7 +1484,9 @@ async function syncFromOdoo(key) {
     const byId = new Map(closed.map((r) => [r.id, r]));
     for (const d of gone) {
       const r = byId.get(d.get("odooId"));
-      writes.push(d.ref.set({ ...(r ? issueFromRequest(r) : {}), open: false, closedAt: r?.close_date ? new Date(`${r.close_date}T12:00:00Z`) : FieldValue.serverTimestamp() }, { merge: true }));
+      const next = { ...(r ? issueFromRequest(r) : {}), open: false, closedAt: r?.close_date ? new Date(`${r.close_date}T12:00:00Z`) : FieldValue.serverTimestamp() };
+      history(d.ref, d.data(), next);
+      writes.push(d.ref.set(next, { merge: true }));
     }
   }
 
@@ -1461,14 +1496,17 @@ async function syncFromOdoo(key) {
     fields: ["equipment_id", "maintenance_type", "close_date"], limit: 5000,
   });
   const dates = odoo.lastDatesByMachine(done);
-  const machineSnaps = await machines.get();
   for (const m of machineSnaps.docs) {
     const d = dates[m.id];
     if (!d) continue;
     const update = {};
     if (d.pm && d.pm !== m.get("lastPmDate")) update.lastPmDate = d.pm;
     if (d.repair && d.repair !== m.get("lastRepairDate")) update.lastRepairDate = d.repair;
-    if (Object.keys(update).length) writes.push(m.ref.update(update));
+    if (Object.keys(update).length) {
+      const d = historyLib.diff(m.data(), update);
+      if (d) writes.push(col("changeHistory", false).add({ collection: "machines", docId: m.id, action: "update", old: d.old, new: d.new, by: SYNC, byName: "Odoo sync", at: FieldValue.serverTimestamp() }));
+      writes.push(m.ref.update({ ...update, datesSyncedAt: FieldValue.serverTimestamp() }));
+    }
   }
 
   await Promise.all(writes);
@@ -1669,7 +1707,9 @@ exports.adminSetChecklistMedia = onCall(async (req) => {
     if (!(before.items || []).some((i) => i.id === itemIdIn)) throw new HttpsError("not-found", "That item is no longer on the checklist.");
     const after = { ...before, items: before.items.map((i) => (i.id === itemIdIn ? { ...i, photos, videos } : i)) };
     trashTemplateFiles(tx, before, after, ref.id, adminNumber);
-    tx.update(ref, { items: after.items, updatedAt: FieldValue.serverTimestamp() });
+    const was = before.items.find((i) => i.id === itemIdIn);
+    keepHistory(tx, ref, { [`media.${itemIdIn}`]: { photos: was.photos || [], videos: was.videos || [] } }, { [`media.${itemIdIn}`]: { photos, videos } }, adminNumber);
+    tx.update(ref, { items: after.items, updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber });
     auditRecord(tx, "updated-media", "checklist", ref.id, adminNumber, { itemId: itemIdIn, photos: photos.length, videos: videos.length });
   });
   return { ok: true };
@@ -1995,7 +2035,8 @@ exports.adminSaveRequestType = onCall(async (req) => {
     const snap = await tx.get(ref);
     if (isNew && snap.exists) throw new HttpsError("already-exists", `"${type.name}" already exists.`);
     if (!isNew && !snap.exists) throw new HttpsError("not-found", "That request type no longer exists.");
-    tx.set(ref, { ...type, updatedAt: FieldValue.serverTimestamp(), ...(isNew ? { createdAt: FieldValue.serverTimestamp() } : {}) }, { merge: true });
+    if (!isNew) keepHistory(tx, ref, snap.data(), type, adminNumber);
+    tx.set(ref, { ...type, updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber, ...(isNew ? { createdAt: FieldValue.serverTimestamp() } : {}) }, { merge: true });
     auditRecord(tx, isNew ? "created" : "updated", "request type", id, adminNumber, { name: type.name, routeRoles: type.routeRoles, routePeople: type.routePeople, urgent: type.urgent, active: type.active });
   });
   return { id };
@@ -2043,10 +2084,18 @@ async function requireSignature(data) {
 function logSignoff(tx, test, entry) {
   const gap = signoffsLib.missing(entry);
   if (gap) throw new HttpsError("internal", gap);
-  const signedAtMs = offlineSend.getStore()?.signedAtMs;
+  const sent = offlineSend.getStore() || {};
+  const signedAtMs = sent.signedAtMs;
   tx.create(col("signoffs", test).doc(), {
-    ...entry, at: FieldValue.serverTimestamp(), ...(signedAtMs ? { signedAtMs, offline: true } : {}), ...(test ? { test: true } : {}),
+    ...entry, at: FieldValue.serverTimestamp(), ...(signedAtMs ? { signedAtMs, offline: true } : {}),
+    // Decision 120: the device's own time, always kept; flagged when its clock is ahead or it arrived much later.
+    ...(sent.deviceAtMs ? { deviceAtMs: sent.deviceAtMs } : {}), ...(sent.clockFlag ? { clockFlag: sent.clockFlag } : {}),
+    ...(test ? { test: true } : {}),
   });
+  if (sent.clockFlag) {
+    tx.create(auditLog.doc(), { type: "clock flag", kind: "sign-off", recordId: entry.refId || null, by: entry.emp, at: FieldValue.serverTimestamp(),
+      flag: sent.clockFlag, deviceAtMs: sent.deviceAtMs, signoffKind: entry.kind, device: entry.device?.label || null, ...(test ? { test: true } : {}) });
+  }
 }
 // The same, outside a transaction (actions that aren't a PIN sign-off: request done, issue fixed, fix approved …).
 async function logSignoffNow(test, entry) {
@@ -2068,9 +2117,11 @@ function signable(handler) {
     const ref = col("outboxReceipts", isTest(req)).doc(clientId);
     const prior = await ref.get();
     if (prior.exists) return { ...(prior.get("result") || {}), already: true };
-    const signedAtMs = offlineLib.cleanSignedAt(req.data?.signedAtMs, Date.now());
-    const result = await offlineSend.run({ signedAtMs }, () => handler(req));
-    await ref.set({ result: result ?? null, atMs: Date.now(), signedAtMs, by: req.auth?.uid || null, ...(isTest(req) ? { test: true } : {}) });
+    const now = Date.now();
+    const signedAtMs = offlineLib.cleanSignedAt(req.data?.signedAtMs, now);
+    const { deviceAtMs, clockFlag } = offlineLib.clockCheck(req.data?.signedAtMs, now);
+    const result = await offlineSend.run({ signedAtMs, deviceAtMs, clockFlag }, () => handler(req));
+    await ref.set({ result: result ?? null, atMs: Date.now(), signedAtMs, deviceAtMs, clockFlag, by: req.auth?.uid || null, ...(isTest(req) ? { test: true } : {}) });
     return result;
   };
 }
@@ -2211,6 +2262,7 @@ exports.postAnnouncement = onCall(async (req) => {
         replacedAt: now, replacedBy: me.employeeNumber,
       });
     }
+    keepHistory(tx, ref, cur, announcement, me.employeeNumber, { byName: me.name, test });
     tx.update(ref, { ...announcement, version, audienceEmps, trackers, updatedAt: now, editedBy: me.employeeNumber, editedByName: me.name, ...(changed ? { editedAt: now } : {}) });
     auditRecord(tx, "updated", "announcement", editId, me.employeeNumber, { title: announcement.title, version, signAgain: changed, test });
     return { changed, version, doc: { ...cur, ...announcement } };
@@ -2448,7 +2500,7 @@ async function refreshAnnouncementLists() {
         const audienceEmps = annLib.refreshedAudience(a, people);
         const trackers = annLib.trackersFor(a.createdBy, audienceEmps, people);
         if (audienceEmps.join() !== (a.audienceEmps || []).join() || trackers.join() !== (a.trackers || []).join()) {
-          await d.ref.update({ audienceEmps, trackers });
+          await d.ref.update({ audienceEmps, trackers, listsRefreshedAt: FieldValue.serverTimestamp() });
         }
       }
     }
@@ -2605,7 +2657,8 @@ exports.saveHandoffDraft = onCall(async (req) => {
     if (error) throw new HttpsError("invalid-argument", error);
     const v = formsLib.cleanValues(h.sections, h.lines, req.data?.values);
     if (v.error) throw new HttpsError("invalid-argument", v.error);
-    tx.update(snap.ref, { ...header, values: v.values, updatedAt: FieldValue.serverTimestamp() });
+    keepHistory(tx, snap.ref, h, { ...header, ...historyLib.spread("values", h.values, v.values) }, me.employeeNumber, { byName: me.name, test });
+    tx.update(snap.ref, { ...header, values: v.values, updatedAt: FieldValue.serverTimestamp(), updatedBy: me.employeeNumber });
   });
   return { ok: true };
 });
@@ -2653,7 +2706,8 @@ exports.discardHandoff = onCall(async (req) => {
   const test = isTest(req);
   await db.runTransaction(async (tx) => {
     const snap = await ownDraft(tx, test, req.data?.id, me);
-    tx.update(snap.ref, { status: "discarded", updatedAt: FieldValue.serverTimestamp() });
+    tx.update(snap.ref, { status: "discarded", discardedBy: me.employeeNumber, discardedByName: me.name, discardedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+    auditRecord(tx, "discarded", "handoff", snap.id, me.employeeNumber, { test });
   });
   return { ok: true };
 });
@@ -2971,6 +3025,7 @@ exports.saveStationList = onCall(async (req) => {
     const snap = await openStationList(tx, test, req.data?.id);
     const v = formsLib.cleanValues(snap.get("sections"), [], req.data?.values);
     if (v.error) throw new HttpsError("invalid-argument", v.error);
+    keepHistory(tx, snap.ref, snap.data(), historyLib.spread("values", snap.get("values"), v.values), me.employeeNumber, { byName: me.name, test });
     tx.update(snap.ref, { values: v.values, updatedBy: me.employeeNumber, updatedAt: FieldValue.serverTimestamp() });
   });
   return { ok: true };
@@ -3134,7 +3189,7 @@ exports.addLineRound = onCall(async (req) => {
 
 // Notes / issues for the line this shift: { id, notes }.
 exports.saveLineNotes = onCall(async (req) => {
-  await requireMember(req);
+  const me = await requireMember(req);
   const test = isTest(req);
   const notes = typeof req.data?.notes === "string" ? req.data.notes.trim().slice(0, 4000) : "";
   const ref = lineLogCol(test).doc(String(req.data?.id || ""));
@@ -3142,7 +3197,8 @@ exports.saveLineNotes = onCall(async (req) => {
     const snap = await tx.get(ref);
     if (!snap.exists) throw new HttpsError("not-found", "That line log no longer exists.");
     if (snap.get("operatorSign")) throw new HttpsError("failed-precondition", "This log was already signed at end of shift.");
-    tx.update(ref, { notes, updatedAt: FieldValue.serverTimestamp() });
+    keepHistory(tx, ref, snap.data(), { notes }, me.employeeNumber, { byName: me.name, test });
+    tx.update(ref, { notes, updatedAt: FieldValue.serverTimestamp(), updatedBy: me.employeeNumber, updatedByName: me.name });
   });
   return { ok: true };
 });
@@ -3243,7 +3299,7 @@ exports.saveRefDoc = onCall(async (req) => {
     const rev = url ? (cur.rev || 0) + 1 : cur.rev || 1;
     const doc = {
       name, active, updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber, updatedByName: me.name,
-      ...(url ? { url, kind, fileName, rev, history: [...(cur.history || []), { rev, url, fileName, at: new Date(), by: me.name }] } : {}),
+      ...(url ? { url, kind, fileName, rev, history: [...(cur.history || []), { rev, url, fileName, at: new Date(), by: me.name, byEmp: me.employeeNumber }] } : {}),
     };
     tx.set(ref, doc, { merge: true });
     if (!id && dept) tx.set(docDeptsDoc, { departments: { [`refdoc:${ref.id}`]: dept } }, { merge: true });
@@ -3415,6 +3471,7 @@ exports.adminSaveRotation = onCall(async (req) => {
   const [teamSnaps, shiftForm] = await Promise.all([teams.get(), formTemplates.doc(formsLib.SHIFT_FORM).get()]);
   const { teams: rows, error } = rotationLib.cleanRotation(req.data?.teams, teamSnaps.docs.filter((t) => t.get("active") !== false).map((t) => t.id), (shiftForm.get("shifts") || []).map((s) => s.id));
   if (error) throw new HttpsError("invalid-argument", error);
+  await keepHistoryNow(rotationDoc, { teams: rows }, adminNumber);
   await rotationDoc.set({ teams: rows, updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber });
   await auditLog.add({ type: "updated", kind: "shift rotation", recordId: "rotation", by: adminNumber, at: FieldValue.serverTimestamp(), teams: rows });
   return { ok: true };
@@ -3582,16 +3639,21 @@ exports.saveIncidentFollowUp = onCall(async (req) => {
     if (snap.get("status") === "closed") throw new HttpsError("failed-precondition", "That report is closed.");
     const started = req.data?.start === true || whys.some(Boolean) || !!rootCause;
     const { status } = await refreshIncident(tx, test, ref, snap.get("status"), started);
-    tx.update(ref, { whys, rootCause, status, updatedAt: FieldValue.serverTimestamp(), updatedBy: me.employeeNumber, updatedByName: me.name });
     if (osha && !me.hr) throw new HttpsError("permission-denied", "The injury record needs HR access.");
+    const oshaRef = ref.collection("private").doc("osha");
+    const was = osha ? (await tx.get(oshaRef)).data() || {} : null;
     // Signed reports (Decision 108): who was hurt and the body part are what the Supervisor and witnesses signed.
     if (osha && (snap.get("supervisorSigned") || snap.get("witnessSignatures"))) {
-      const was = (await tx.get(ref.collection("private").doc("osha"))).data() || {};
       if ((osha.injuredName || "") !== (was.injuredName || "") || (osha.bodyPart || "") !== (was.bodyPart || "")) {
         throw new HttpsError("failed-precondition", "Who was hurt and the body part were signed — they can't be changed now. Add a note in the root cause instead.");
       }
     }
-    if (osha && ["injury", "first-aid"].includes(snap.get("type"))) tx.set(ref.collection("private").doc("osha"), { ...osha, updatedAt: FieldValue.serverTimestamp(), updatedBy: me.employeeNumber });
+    keepHistory(tx, ref, snap.data(), { whys, rootCause, status }, me.employeeNumber, { byName: me.name, test });
+    tx.update(ref, { whys, rootCause, status, updatedAt: FieldValue.serverTimestamp(), updatedBy: me.employeeNumber, updatedByName: me.name });
+    if (osha && ["injury", "first-aid"].includes(snap.get("type"))) {
+      keepHistory(tx, oshaRef, was, osha, me.employeeNumber, { byName: me.name, test });
+      tx.set(oshaRef, { ...osha, updatedAt: FieldValue.serverTimestamp(), updatedBy: me.employeeNumber });
+    }
     auditRecord(tx, "followed-up", "incident", ref.id, me.employeeNumber, { status, test });
     return { status };
   });
@@ -3864,6 +3926,7 @@ exports.adminSaveCallSheet = onCall(async (req) => {
   const adminNumber = await requireAdmin(req);
   const { sheet, error } = callLib.cleanSheet(req.data);
   if (error) throw new HttpsError("invalid-argument", error);
+  await keepHistoryNow(db.collection("meta").doc("callSheet"), sheet, adminNumber);
   await db.collection("meta").doc("callSheet").set({ ...sheet, updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber });
   await auditLog.add({ type: "updated", kind: "call sheet", recordId: "callSheet", by: adminNumber, at: FieldValue.serverTimestamp(), entries: sheet.entries.length, onCall: sheet.onCall.length });
   return { ok: true };
@@ -3910,7 +3973,7 @@ async function getReel(tx, test, id) {
 exports.flagReel = onCall(async (req) => {
   const me = await requireMember(req);
   const test = isTest(req);
-  const [settings, lineSnaps, shiftForm] = await Promise.all([reelSettings(), lines.get(), formTemplates.doc(formsLib.SHIFT_FORM).get()]);
+  const [settings, lineSnaps, shiftForm, machineSnaps] = await Promise.all([reelSettings(), lines.get(), formTemplates.doc(formsLib.SHIFT_FORM).get(), machines.get()]);
   const activeLines = lineSnaps.docs.filter((l) => l.get("active") !== false);
   const known = test ? [...settings.colors, ...settings.testColors] : settings.colors;
   const { reel, error } = reelsLib.cleanFlag(req.data, { reasons: settings.reasons, colors: known, lineIds: activeLines.map((l) => l.id), isOurFile: isOurUpload });
@@ -3922,6 +3985,7 @@ exports.flagReel = onCall(async (req) => {
   await db.runTransaction(async (tx) => {
     tx.create(ref, {
       ...reel, lineName: activeLines.find((l) => l.id === reel.lineId).get("name"), status: "flagged",
+      machineId: reelsLib.winderMachine(machineSnaps.docs.map((m) => ({ id: m.id, ...m.data() })), reel.lineId, reel.winder), // Decision 120
       flagged: { at: FieldValue.serverTimestamp(), atMs: now, by: me.employeeNumber, byName: me.name, shiftId: shift?.shift.id || null, shiftName: shift?.shift.name || null },
       flaggedDate: plantToday(), flaggedAtMs: now, dueMs: reelsLib.dueAfterNextShift(shift, now),
       search: reelSearch(reel),
@@ -4010,6 +4074,7 @@ exports.adminSaveReelSettings = onCall(async (req) => {
     if (error) throw new HttpsError("invalid-argument", error);
     next[k] = list;
   }
+  await keepHistoryNow(reelSettingsDoc, next, adminNumber);
   await reelSettingsDoc.set({ ...next, updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber });
   await auditLog.add({ type: "updated", kind: "qc hold lists", recordId: "reelSettings", by: adminNumber, at: FieldValue.serverTimestamp() });
   return { ok: true };
@@ -4102,6 +4167,7 @@ exports.adminSaveSiloSettings = onCall(async (req) => {
     if (peopleError) throw new HttpsError("invalid-argument", peopleError);
     extra.alertPeople = people;
   }
+  await keepHistoryNow(siloSettingsDoc, { silos, ...extra }, adminNumber);
   await siloSettingsDoc.set({ silos, ...extra, updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber }, { merge: true });
   await auditLog.add({ type: "updated", kind: "silo alerts", recordId: "siloSettings", by: adminNumber, at: FieldValue.serverTimestamp(), silos, ...extra });
   return { ok: true };
@@ -4145,6 +4211,7 @@ exports.saveTruck = onCall(async (req) => {
     if (id) {
       const snap = await tx.get(list.doc(id));
       if (!snap.exists || snap.get("status") === "removed") throw new HttpsError("not-found", "That truck is no longer on the board.");
+      keepHistory(tx, snap.ref, snap.data(), truck, me.employeeNumber, { byName: me.name, test });
       tx.update(snap.ref, { ...truck, updatedAt: FieldValue.serverTimestamp(), updatedBy: me.employeeNumber, updatedByName: me.name });
       auditRecord(tx, "updated", "truck", id, me.employeeNumber, { label: trucksLib.label(truck), test });
       return { id };
@@ -4220,7 +4287,9 @@ exports.undoTruck = onCall(async (req) => {
     const snap = await tx.get(ref);
     if (!snap.exists) throw new HttpsError("not-found", "That truck is no longer on the board.");
     if (!trucksLib.canUndo(snap.data(), Date.now())) throw new HttpsError("failed-precondition", "Undo is only for 5 minutes after the tap.");
-    tx.update(ref, { status: "expected", doneAt: FieldValue.delete(), doneAtMs: FieldValue.delete(), doneBy: FieldValue.delete(), doneByName: FieldValue.delete() });
+    const undo = { status: "expected", doneAt: FieldValue.delete(), doneAtMs: FieldValue.delete(), doneBy: FieldValue.delete(), doneByName: FieldValue.delete() };
+    keepHistory(tx, ref, snap.data(), undo, me.employeeNumber, { byName: me.name, test });
+    tx.update(ref, { ...undo, undoneBy: me.employeeNumber, undoneByName: me.name, undoneAt: FieldValue.serverTimestamp() });
     auditRecord(tx, "undo", "truck", ref.id, me.employeeNumber, { label: trucksLib.label(snap.data()), was: snap.get("doneByName"), test });
     return { ok: true };
   });
@@ -4291,9 +4360,9 @@ exports.adminImportFloorMap = onCall({ memory: "512MiB" }, async (req) => {
   const now = FieldValue.serverTimestamp();
   const writes = [
     (b) => b.set(db.collection("floorMap").doc("layout"), { ...layout, importedAt: now, importedBy: adminNumber }),
-    ...stations.map((s) => (b) => b.set(floorStations.doc(s.id), { ...s, active: true, updatedAt: now }, { merge: true })),
+    ...stations.map((s) => (b) => b.set(floorStations.doc(s.id), { ...s, active: true, updatedAt: now, updatedBy: adminNumber, mapRev: rev }, { merge: true })),
     ...existing.docs.filter((d) => !stations.some((s) => s.id === d.id)).map((d) => (b) => b.update(d.ref, { active: false, updatedAt: now })),
-    ...Object.entries(sops).map(([k, s]) => (b) => b.set(sopsCol.doc(k), { ...s, updatedAt: now })),
+    ...Object.entries(sops).map(([k, s]) => (b) => b.set(sopsCol.doc(k), { ...s, updatedAt: now, updatedBy: adminNumber, mapRev: rev })),
   ];
   for (let i = 0; i < writes.length; i += 400) {
     const batch = db.batch();
@@ -4314,8 +4383,9 @@ exports.adminSetStationMachine = onCall(async (req) => {
     const [st, m] = await Promise.all([tx.get(stationRef), machineId ? tx.get(machines.doc(machineId)) : null]);
     if (!st.exists) throw new HttpsError("not-found", "That station isn't on the map.");
     if (machineId && !m.exists) throw new HttpsError("not-found", `There's no machine ${machineId}.`);
-    tx.update(stationRef, { machineId, updatedAt: FieldValue.serverTimestamp() });
-    auditRecord(tx, "linked", "map station", stationRef.id, adminNumber, { label: st.get("label"), machineId });
+    keepHistory(tx, stationRef, st.data(), { machineId }, adminNumber);
+    tx.update(stationRef, { machineId, updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber });
+    auditRecord(tx, "linked", "map station", stationRef.id, adminNumber, { label: st.get("label"), machineId, was: st.get("machineId") || null });
   });
   return { ok: true };
 });
@@ -4351,7 +4421,7 @@ exports.adminEnsureOdooEquipment = onCall({ secrets: [odooKey] }, async (req) =>
 // Training (the training team's trainer app, in CDG Ops) — see training-api.js.
 // ---------------------------------------------------------------------------
 
-Object.assign(exports, trainingApi({ db, auditLog, requireMember, requireAdmin, isTest, col, requireDocEditor, saveLoadRevision }));
+Object.assign(exports, trainingApi({ db, auditLog, requireMember, requireAdmin, isTest, col, requireDocEditor, saveLoadRevision, keepHistory, keepHistoryNow, historyLib }));
 
 // ---------------------------------------------------------------------------
 // Downtime & Scrap shift report (Chris, 10-22-2026). Rules in downtime.js. Line Leads and Supervisors enter each
@@ -4493,6 +4563,7 @@ exports.saveShiftReport = onCall(async (req) => {
   await db.runTransaction(async (tx) => {
     const cur = await tx.get(ref);
     if (cur.exists && cur.get("signed")) throw new HttpsError("failed-precondition", "This shift report was just signed.");
+    if (cur.exists) keepHistory(tx, ref, cur.data(), { team, size: product.size, sdr: product.sdr, productSize: product.productSize, changeover, comments }, me.employeeNumber, { byName: me.name, test });
     tx.set(ref, {
       ...fields, team, size: product.size, sdr: product.sdr, productSize: product.productSize, changeover, comments,
       updatedAtMs: Date.now(), updatedBy: me.employeeNumber, ...(cur.exists ? {} : { createdAtMs: Date.now(), createdBy: me.employeeNumber }),
@@ -4523,26 +4594,36 @@ exports.saveShiftEntry = onCall(async (req) => {
       const issue = await col("issues", test).doc(fields.issueId).get();
       if (!issue.exists) throw new HttpsError("not-found", "That Maintenance Request isn't here any more — pick it again.");
       fields.issueTitle = `${issue.get("odooId") ? `#${issue.get("odooId")} ` : ""}${String(issue.get("title") || "").slice(0, 120)}`;
+      if (kind === "downtime" && !fields.machineId && issue.get("machineId")) fields.machineId = issue.get("machineId"); // the request's machine
     }
   }
   return db.runTransaction(async (tx) => {
     const report = await tx.get(reportRef);
     if (!report.exists) throw new HttpsError("failed-precondition", "Save the product size first.");
     if (report.get("signed")) throw new HttpsError("failed-precondition", "This shift report is signed — it can't be changed.");
+    if (fields?.machineId) {
+      const m = await tx.get(machines.doc(fields.machineId));
+      if (!m.exists || m.get("lineId") !== report.get("lineId")) throw new HttpsError("invalid-argument", "Pick a machine on this line.");
+      fields.machineName = m.get("name") || "";
+    }
     const ref = req.data?.id ? entries.doc(String(req.data.id)) : entries.doc();
+    let cur = null;
     if (req.data?.id) {
-      const cur = await tx.get(ref);
+      cur = await tx.get(ref);
       if (!cur.exists || cur.get("reportId") !== reportRef.id) throw new HttpsError("not-found", "That entry isn't on this report any more.");
     }
     if (!fields) {
+      keepHistory(tx, ref, cur.data(), null, me.employeeNumber, { byName: me.name, test, action: "delete" });
       tx.delete(ref);
       auditRecord(tx, "removed", `shift ${kind}`, ref.id, me.employeeNumber, { reportId: reportRef.id, test });
       return { id: ref.id, removed: true };
     }
     const r = report.data();
+    if (cur) keepHistory(tx, ref, cur.data(), fields, me.employeeNumber, { byName: me.name, test });
     tx.set(ref, {
       ...fields, reportId: reportRef.id, date: r.date, lineId: r.lineId, lineNumber: r.lineNumber, shiftId: r.shiftId, team: r.team,
-      ...(req.data?.id ? {} : { productSize: r.productSize, atMs: Date.now() }), by: me.employeeNumber, byName: me.name, updatedAtMs: Date.now(),
+      // The person who added it stays the author; an edit records who changed it (Decision 120).
+      ...(cur ? { updatedBy: me.employeeNumber, updatedByName: me.name } : { productSize: r.productSize, atMs: Date.now(), by: me.employeeNumber, byName: me.name }), updatedAtMs: Date.now(),
       ...(test ? { test: true } : {}),
     }, { merge: true });
     // An entry added after "None this shift" was tapped: it isn't none any more.
@@ -4764,8 +4845,14 @@ exports.adminSaveOrg = onCall(async (req) => {
       const deptName = departments.find((dep) => dep.id === org.department)?.name || org.department;
       throw new HttpsError("already-exists", `${current.name} is the ${deptName} head. Replace ${current.name}?`, { currentHead: { emp: current.id, name: current.name } });
     }
-    if (current) tx.update(employees.doc(current.id), { deptHead: false });
-    tx.update(employees.doc(emp), { department: org.department, deptHead: org.head, reportsTo: org.reportsTo || FieldValue.delete(), supervisesTeams: org.supervisesTeams, canPost: org.canPost });
+    const stamp = { updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber };
+    if (current) {
+      keepHistory(tx, employees.doc(current.id), { deptHead: true }, { deptHead: false }, adminNumber);
+      tx.update(employees.doc(current.id), { deptHead: false, ...stamp });
+    }
+    const orgChange = { department: org.department, deptHead: org.head, reportsTo: org.reportsTo || FieldValue.delete(), supervisesTeams: org.supervisesTeams, canPost: org.canPost };
+    keepHistory(tx, employees.doc(emp), all.docs.find((d) => d.id === emp).data(), orgChange, adminNumber);
+    tx.update(employees.doc(emp), { ...orgChange, ...stamp });
     auditRecord(tx, "updated", "department", emp, adminNumber, { department: org.department, head: org.head, reportsTo: org.reportsTo, supervisesTeams: org.supervisesTeams, canPost: org.canPost, replaced: current?.id || null });
     return { ok: true, replaced: current ? current.name : null };
   });
@@ -4784,6 +4871,7 @@ exports.adminSaveDepartments = onCall(async (req) => {
     const snap = await employees.doc(to).get();
     if (!snap.exists || snap.get("active") === false) throw new HttpsError("invalid-argument", "Pick who department heads report to from the list.");
   }
+  await keepHistoryNow(departmentsDoc, { departments, headsReportTo: to }, adminNumber);
   await departmentsDoc.set({ departments, headsReportTo: to, updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber });
   await auditLog.add({ type: "updated", kind: "departments", recordId: "departments", by: adminNumber, at: FieldValue.serverTimestamp(), departments: departments.map((dep) => dep.name), headsReportTo: to });
   return { ok: true };
@@ -4895,6 +4983,7 @@ exports.crewMark = onCall(async (req) => {
     // Marked Out: off any station seat (Crew Board step 2).
     const seats = { ...(saved?.seats || {}) };
     for (const [k, v] of Object.entries(seats)) if (marks[v]?.status !== "here") delete seats[k];
+    if (saved) keepHistory(tx, s.ref, saved, { ...historyLib.spread("marks", saved.marks, marks), ...historyLib.spread("seats", saved.seats, seats) }, me.employeeNumber, { byName: me.name, test });
     tx.set(s.ref, { ...crewRecord(s, saved, { teamId: s.teamId, teamName: team.get("name") || s.teamId, added, marks, by: me.employeeNumber, test }), seats });
     auditRecord(tx, "marked", "attendance", s.ref.id, me.employeeNumber, { emps: changed, status: mark?.status || null, test });
     return { ok: true, count: changed.length, counts: crewLib.counts(list, marks) };
@@ -4936,6 +5025,7 @@ exports.crewSetup = onCall(async (req) => {
       delete marks[remove];
       if (saved?.seats) for (const [k, v] of Object.entries(saved.seats)) if (v === remove) delete saved.seats[k]; // off their station too
     }
+    if (saved) keepHistory(tx, s.ref, saved, { teamId, added, ...historyLib.spread("marks", saved.marks, marks) }, me.employeeNumber, { byName: me.name, test });
     tx.set(s.ref, crewRecord(s, saved, { teamId, teamName: team.get("name") || teamId, added, marks, by: me.employeeNumber, test }));
     auditRecord(tx, "updated", "attendance", s.ref.id, me.employeeNumber, { teamId, add, remove, test });
     return { ok: true };
@@ -5278,6 +5368,7 @@ exports.crewSeat = onCall(async (req) => {
     if (emp) for (const [k, v] of Object.entries(seats)) if (v === emp) delete seats[k];
     if (seats[seat]) delete cells[seats[seat]];
     if (emp) { seats[seat] = emp; delete cells[emp]; } else delete seats[seat];
+    keepHistory(tx, s.ref, saved, { ...historyLib.spread("seats", saved.seats, seats), ...historyLib.spread("cells", saved.cells, cells) }, me.employeeNumber, { byName: me.name, test });
     tx.update(s.ref, { seats, cells, updatedAtMs: Date.now(), updatedBy: me.employeeNumber });
     auditRecord(tx, "seated", "crew station", s.ref.id, me.employeeNumber, { seat, emp, test });
     return crewSeatsLib.schedule(setup, seats, cells);
@@ -5314,6 +5405,7 @@ exports.crewCell = onCall(async (req) => {
     if (!sched[emp]) throw new HttpsError("failed-precondition", "Seat them first.");
     const row = [...sched[emp]];
     row[block] = station;
+    keepHistory(tx, s.ref, saved, { [`cells.${emp}`]: row }, me.employeeNumber, { byName: me.name, test });
     tx.update(s.ref, { [`cells.${emp}`]: row, updatedAtMs: Date.now(), updatedBy: me.employeeNumber });
     auditRecord(tx, "moved", "crew station", s.ref.id, me.employeeNumber, { emp, block, station, test });
   });
@@ -6058,7 +6150,8 @@ exports.docSetDepartment = onCall(async (req) => {
   const dept = req.data?.department ? String(req.data.department) : null;
   const ctx = await docContext();
   if (dept && !ctx.departments.some((d) => d.id === dept && d.active !== false)) throw new HttpsError("invalid-argument", "Pick a department from the list.");
-  await docDeptsDoc.set({ departments: { [key]: dept || FieldValue.delete() } }, { merge: true });
+  await keepHistoryNow(docDeptsDoc, { [`departments.${key}`]: dept || FieldValue.delete() }, adminNumber);
+  await docDeptsDoc.set({ departments: { [key]: dept || FieldValue.delete() }, updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber }, { merge: true });
   await auditLog.add({ type: "updated", kind: "document department", recordId: key, by: adminNumber, at: FieldValue.serverTimestamp(), department: dept });
   return { department: dept || docsLib.departmentOf(key, { ...ctx.set, [key]: undefined }, ctx.departments) };
 });

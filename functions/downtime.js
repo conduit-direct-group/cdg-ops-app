@@ -84,7 +84,9 @@ function cleanDowntime(raw) {
   const issueId = maintenance === "called" && typeof raw?.issueId === "string" && /^[A-Za-z0-9_-]{1,60}$/.test(raw.issueId) ? raw.issueId : null;
   const fix = longText(raw?.fix, 1000);
   if (fix.length < 3) return { error: "Say what was done to find and fix it." };
-  return { event: { minutes, over60: minutes > 60, reason: raw.reason, called, calledWho, maintenance, issueId, fix } };
+  // Which machine (Decision 120): optional M-number; the server checks it's on the report's line.
+  const machineId = typeof raw?.machineId === "string" && /^M-\d{3,}$/.test(raw.machineId) ? raw.machineId : null;
+  return { event: { minutes, over60: minutes > 60, reason: raw.reason, called, calledWho, maintenance, issueId, fix, machineId } };
 }
 
 function cleanScrap(raw) {

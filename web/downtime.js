@@ -148,7 +148,7 @@ export function openDowntime(container, { me, onExit, backLabel = "Home", onCrew
   async function saveEntry(kind) {
     const f = ui.form;
     const payload = kind === "downtime"
-      ? { minutes: f.minutes, reason: f.reason, called: f.called === true, calledWho: f.calledWho, maintenance: f.maintenance, issueId: f.maintenance === "called" ? f.issueId : null, fix: f.fix }
+      ? { minutes: f.minutes, reason: f.reason, machineId: f.machineId || null, called: f.called === true, calledWho: f.calledWho, maintenance: f.maintenance, issueId: f.maintenance === "called" ? f.issueId : null, fix: f.fix }
       : { feet: f.feet, reason: f.reason, notes: f.notes, tag: f.tag };
     if (kind === "scrap" && f.tag && (ui.view.scraps || []).some((s) => s.source === "reel" && s.tag && s.tag.toLowerCase() === f.tag.trim().toLowerCase())) {
       const go = await choose({ title: `Reel tag ${f.tag.trim()} is already counted from Flagged Reels. Add it again anyway?`, options: [{ value: "yes", label: "Yes — it's a different piece" }] });
@@ -321,6 +321,11 @@ export function openDowntime(container, { me, onExit, backLabel = "Home", onCrew
       Number(f.minutes) > 60 ? el("p", {}, el("span", { class: "tag" }, "Down more than 60 minutes")) : null,
       label("Reason"),
       picker({ id: "dt-reason", title: "Downtime reason", value: f.reason, placeholder: "Pick the reason…", options: ui.view.lists.downtimeReasons.map((x) => ({ value: x, label: x })), onChange: (v) => { f.reason = v; render(); } }),
+      // Which machine (Decision 120 — so downtime lines up with the machine data). Optional; a linked request fills it in.
+      label("Which machine? (optional)"),
+      picker({ id: "dt-machine", title: "Machine", value: f.machineId || "", placeholder: "Pick the machine…",
+        options: [{ value: "", label: "Not sure / the whole line" }, ...(data.machines || []).filter((m) => m.active !== false && m.lineId === report().lineId).map((m) => ({ value: m.id, label: `${m.id} · ${m.name}` }))],
+        onChange: (v) => { f.machineId = v || null; render(); } }),
       label("Was someone called?"), chips(["yes", "no"], f.called === true ? "yes" : f.called === false ? "no" : "", (v) => { f.called = v === "yes"; }, (x) => (x === "yes" ? "Yes" : "No")),
       f.called ? el("input", { class: "field", value: f.calledWho, maxlength: "60", placeholder: "Who? e.g. Production Manager, Maintenance ext 5", oninput: (e) => { f.calledWho = e.target.value; } }) : null,
       label("Maintenance needed?"), chips(MAINT.map((m) => m[0]), f.maintenance, (v) => { f.maintenance = v; }, (x) => MAINT.find((m) => m[0] === x)[1]),
@@ -346,15 +351,15 @@ export function openDowntime(container, { me, onExit, backLabel = "Home", onCrew
       el("strong", {}, `⏱ Downtime${events.length ? ` · ${fmtMinutes(total)}` : ""}`),
       events.length ? el("div", { class: "dt-list" }, events.map((e) => f?.id === e.id ? downtimeForm(f) : el("div", { class: "dt-entry" },
         el("strong", {}, `${fmtMinutes(e.minutes)} · ${e.reason}`),
-        el("span", { class: "dt-note" }, [e.fix, e.called ? `Called: ${e.calledWho}` : "", e.issueTitle ? `Maintenance: ${e.issueTitle}` : ""].filter(Boolean).join(" · ")),
+        el("span", { class: "dt-note" }, [e.machineId ? `${e.machineId}${e.machineName ? ` ${e.machineName}` : ""}` : "", e.fix, e.called ? `Called: ${e.calledWho}` : "", e.issueTitle ? `Maintenance: ${e.issueTitle}` : ""].filter(Boolean).join(" · ")),
         el("span", { class: "dt-tags" }, el("span", { class: "tag" }, `Contacted: ${e.contacted}`), el("span", { class: "tag" }, `Maintenance log: ${e.maintLog}`)),
         locked() || f ? null : el("span", { class: "dt-actions" },
-          el("button", { class: "link-btn", type: "button", onclick: () => { ui.form = { kind: "downtime", id: e.id, minutes: String(e.minutes), reason: e.reason, called: e.called, calledWho: e.calledWho || "", maintenance: e.maintenance, issueId: e.issueId || null, fix: e.fix }; render(); } }, "Edit"),
+          el("button", { class: "link-btn", type: "button", onclick: () => { ui.form = { kind: "downtime", id: e.id, minutes: String(e.minutes), reason: e.reason, machineId: e.machineId || null, called: e.called, calledWho: e.calledWho || "", maintenance: e.maintenance, issueId: e.issueId || null, fix: e.fix }; render(); } }, "Edit"),
           el("button", { class: "link-btn", type: "button", onclick: () => removeEntry("downtime", e) }, "Remove"))))) : null,
       f && !f.id ? downtimeForm(f) : null,
       !events.length && !f && !report().none?.downtime ? el("p", { class: "card-note" }, locked() ? "No downtime this shift." : "None yet — add each stop as it happens, or tap “No downtime this shift.”") : null,
       f ? null : noneRow("downtime", !events.length),
-      locked() || f ? null : el("button", { class: "btn secondary", type: "button", disabled: ui.busy || !report().saved, onclick: () => { ui.form = { kind: "downtime", minutes: "", reason: "", called: null, calledWho: "", maintenance: "", issueId: null, fix: "" }; render(); } }, "+ Add downtime"));
+      locked() || f ? null : el("button", { class: "btn secondary", type: "button", disabled: ui.busy || !report().saved, onclick: () => { ui.form = { kind: "downtime", minutes: "", reason: "", machineId: null, called: null, calledWho: "", maintenance: "", issueId: null, fix: "" }; render(); } }, "+ Add downtime"));
   }
 
   function scrapForm(f) {

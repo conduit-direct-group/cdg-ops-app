@@ -18,3 +18,13 @@ test("the time it was signed on the floor is kept only if believable", () => {
   assert.strictEqual(o.cleanSignedAt(undefined, now), null);
   assert.strictEqual(o.cleanSignedAt("abc", now), null);
 });
+
+test("clock check (Decision 120): device time kept, flagged when ahead or far apart — never dropped", () => {
+  const now = Date.UTC(2026, 9, 27, 15, 0, 0);
+  assert.deepStrictEqual(o.clockCheck(now - 30000, now), { deviceAtMs: now - 30000, clockFlag: null });
+  assert.deepStrictEqual(o.clockCheck(now + 60000, now), { deviceAtMs: now + 60000, clockFlag: null }); // a minute ahead is fine
+  assert.deepStrictEqual(o.clockCheck(now + 3600000, now), { deviceAtMs: now + 3600000, clockFlag: "device-ahead" });
+  assert.deepStrictEqual(o.clockCheck(now - 40 * 60000, now), { deviceAtMs: now - 40 * 60000, clockFlag: "far-apart" });
+  assert.deepStrictEqual(o.clockCheck(now - o.MAX_AGE_MS - 1, now).clockFlag, "far-apart");
+  assert.deepStrictEqual(o.clockCheck(undefined, now), { deviceAtMs: null, clockFlag: null });
+});

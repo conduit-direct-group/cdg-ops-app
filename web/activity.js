@@ -26,6 +26,12 @@ function describe(e, name) {
     const parts = Object.entries(e.removed || {}).filter(([, n]) => n > 0).map(([k, n]) => `${k} ${n}`);
     return `${action} record cleanup — removed ${parts.length ? parts.join(", ") : "nothing"}${e.errors ? ` (${e.errors} problem${e.errors === 1 ? "" : "s"} — see Record retention)` : ""}`;
   }
+  // Decision 120: a sign-off whose device clock was off, or that arrived long after it was signed.
+  if (e.type === "clock flag") {
+    const when = e.deviceAtMs ? new Date(e.deviceAtMs).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" }) : "?";
+    const why = e.flag === "device-ahead" ? "the device clock was ahead" : "it reached the server more than 10 minutes after it was signed";
+    return `⚠ clock check: a ${e.signoffKind || "sign-off"}${e.device ? ` on ${e.device}` : ""} says ${when} — ${why}${e.test ? " [TEST]" : ""}`;
+  }
   if (e.kind === "record retention" && e.type === "updated") {
     const days = (d) => (d == null ? "never delete" : `${d} days`);
     return `changed how long “${e.recordId}” records are kept: ${days(e.from)} → ${days(e.to)}`;

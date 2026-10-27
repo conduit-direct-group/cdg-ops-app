@@ -38,6 +38,7 @@ const TEST_COLLECTIONS = [
   ["test_changeoverEvents", "Downtime & scrap changeovers"],
   ["test_downtimeEvents", "Downtime & scrap downtime events"],
   ["test_scrapEntries", "Downtime & scrap scrap entries"],
+  ["test_changeHistory", "Change history (old values)"],
   ["test_attendance", "Who's here today"],
   ["test_annTasks", "Announcement tasks"],
 ];

@@ -19,7 +19,7 @@ test("changeover, downtime, and scrap entries are checked", () => {
   assert.deepStrictEqual(d.cleanChangeover({ minutes: "45", type: "Color" }), { changeover: { minutes: 45, type: "Color" } });
   assert.match(d.cleanChangeover({ minutes: "45", type: "Fast" }).error, /type/);
   const ok = d.cleanDowntime({ minutes: "90", reason: "Water", called: true, calledWho: " Alex ", maintenance: "called", issueId: "odoo-124", fix: "Cleared the float filter" });
-  assert.deepStrictEqual(ok.event, { minutes: 90, over60: true, reason: "Water", called: true, calledWho: "Alex", maintenance: "called", issueId: "odoo-124", fix: "Cleared the float filter" });
+  assert.deepStrictEqual(ok.event, { minutes: 90, over60: true, reason: "Water", called: true, calledWho: "Alex", maintenance: "called", issueId: "odoo-124", fix: "Cleared the float filter", machineId: null });
   assert.match(d.cleanDowntime({ minutes: "10", reason: "Water", called: true, maintenance: "none", fix: "x y z" }).error, /who/);
   assert.match(d.cleanDowntime({ minutes: "10", reason: "No reason given", maintenance: "none", fix: "abc" }).error, /reason/);
   assert.match(d.cleanDowntime({ minutes: "10", reason: "Water", fix: "abc" }).error, /maintenance/);

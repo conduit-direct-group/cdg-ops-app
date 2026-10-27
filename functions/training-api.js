@@ -22,7 +22,7 @@ const pin = require("./pin");
 const T = require("./training");
 const signoffsLib = require("./signoffs");
 
-module.exports = function trainingApi({ db, auditLog, requireMember, requireAdmin, isTest, col, requireDocEditor, saveLoadRevision }) {
+module.exports = function trainingApi({ db, auditLog, requireMember, requireAdmin, isTest, col, requireDocEditor, saveLoadRevision, keepHistory, keepHistoryNow, historyLib }) {
   const refCol = db.collection("trainingRef");
   const queueCol = db.collection("trainingWbQueue");
   const C = (name, test) => col(name, test);
@@ -201,8 +201,10 @@ module.exports = function trainingApi({ db, auditLog, requireMember, requireAdmi
         const extraRefs = fn.reads ? fn.reads(data) : [];
         const [snap, ...more] = await tx.getAll(ref, ...extraRefs);
         const p = personOf(snap, name, data);
+        const before = snap.exists ? snap.data() : null;
         const out = await fn(p, { data, shared, r, name, tx, more });
-        tx.set(ref, { ...p, name, updatedAt: FieldValue.serverTimestamp(), updatedBy: trainer.id });
+        if (before) keepHistory(tx, ref, before, historyLib.flatten(before, p), me.employeeNumber, { byName: trainer.name, test });
+        tx.set(ref, { ...p, name, updatedAt: FieldValue.serverTimestamp(), updatedBy: trainer.id, updatedByEmp: me.employeeNumber });
         return out;
       });
     }
@@ -255,8 +257,9 @@ module.exports = function trainingApi({ db, auditLog, requireMember, requireAdmi
         fn.reads = () => (trainer.employee ? [personRef(trainer.employee, test)] : []);
         await onPerson(fn);
         const sigs = C("trainingSigs", test);
-        await sigs.doc(sigId).set({ png: d.sig });
-        if (co) await sigs.doc(csigId).set({ png: d.csig });
+        const stamp = { at: FieldValue.serverTimestamp(), by: me.employeeNumber, trainerId: trainer.id, trainee: name };
+        await sigs.doc(sigId).set({ png: d.sig, ...stamp });
+        if (co) await sigs.doc(csigId).set({ png: d.csig, ...stamp });
         job = T.workbookJob({ op, name: d.name, code: d.code, level });
         break;
       }
@@ -423,6 +426,7 @@ module.exports = function trainingApi({ db, auditLog, requireMember, requireAdmi
         const keep = { rev: data.rev, roster: wb.roster.length ? wb.roster : data.roster, levels: wb.levels, safety: { ...(data.safety || {}), ...wb.safety }, refreshers: { ...(data.refreshers || {}), ...wb.refreshers }, trainerInfo: wb.trainerInfo || data.trainerInfo || [] };
         await C("trainingShared", test).doc("state").set({
           wbData: JSON.stringify(keep), ...(wb.oldNums === null ? {} : { wbOld: wb.oldNums }), lastLoaded: String(d.stamp || T.fmtDate(now)).slice(0, 40),
+          lastLoadedAt: FieldValue.serverTimestamp(), lastLoadedBy: me.employeeNumber, // server time beside the device's (Decision 120)
         }, { merge: true });
         result = { people: keep.roster.length };
         break;
@@ -435,13 +439,14 @@ module.exports = function trainingApi({ db, auditLog, requireMember, requireAdmi
         if (!guid.test(n.clientId)) throw new HttpsError("invalid-argument", "Client ID should look like 1a2b3c4d-…");
         if (!guid.test(n.tenantId) && !/^[a-z0-9.-]+\.[a-z]+$/i.test(n.tenantId)) throw new HttpsError("invalid-argument", "Tenant ID should look like 1a2b3c4d-… or cdg.onmicrosoft.com");
         if (!/^https:\/\/[^\s]+sharepoint\.com\//i.test(n.link) || n.link.length > 2000) throw new HttpsError("invalid-argument", "Workbook link should start with https://…sharepoint.com/");
-        await C("trainingShared", test).doc("state").set({ wbConfig: n }, { merge: true });
+        await keepHistoryNow(C("trainingShared", test).doc("state"), { wbConfig: n }, me.employeeNumber, { byName: trainer.name, test });
+        await C("trainingShared", test).doc("state").set({ wbConfig: n, wbConfigAt: FieldValue.serverTimestamp(), wbConfigBy: me.employeeNumber }, { merge: true });
         break;
       }
       // Coordinator saved the updates file for the workbook: { stamp }
       case "fileSaved": {
         requireCoordinator(trainer);
-        await C("trainingShared", test).doc("state").set({ fileDirty: 0, lastSaved: String(d.stamp || T.fmtDate(now)).slice(0, 40) }, { merge: true });
+        await C("trainingShared", test).doc("state").set({ fileDirty: 0, lastSaved: String(d.stamp || T.fmtDate(now)).slice(0, 40), lastSavedAt: FieldValue.serverTimestamp(), lastSavedBy: me.employeeNumber }, { merge: true });
         break;
       }
       // A tablet signed in to Microsoft wrote these queued changes to the workbook: { ids }
@@ -495,7 +500,7 @@ module.exports = function trainingApi({ db, auditLog, requireMember, requireAdmi
     b.set(refCol.doc("data"), { json: JSON.stringify(data), rev: String(data.rev || ""), importedAt: now, importedBy: adminNumber });
     for (const [id, part] of Object.entries(T.libPieces(lib))) b.set(refCol.doc(id), { json: JSON.stringify(part), importedAt: now });
     const e = req.data?.entra;
-    if (T.isObj(e)) b.set(refCol.doc("entra"), { clientId: String(e.clientId || "").slice(0, 100), tenantId: String(e.tenantId || "").slice(0, 100), link: String(e.link || "").slice(0, 2000) });
+    if (T.isObj(e)) b.set(refCol.doc("entra"), { clientId: String(e.clientId || "").slice(0, 100), tenantId: String(e.tenantId || "").slice(0, 100), link: String(e.link || "").slice(0, 2000), importedAt: now, importedBy: adminNumber });
     await b.commit();
     await auditLog.add({ type: "imported", kind: "training data", recordId: "trainingRef", by: adminNumber, at: now, modules: data.modules.length, roster: data.roster.length, rev });
     return { modules: data.modules.length, roster: data.roster.length, sops: Object.keys(lib.sops).length, guides: Object.keys(lib.guides).length, rev };
@@ -514,7 +519,7 @@ module.exports = function trainingApi({ db, auditLog, requireMember, requireAdmi
     const now = FieldValue.serverTimestamp();
     const writes = [];
     if (part === "people") {
-      for (const [id, png] of Object.entries(split.sigs)) writes.push((b) => b.set(C("trainingSigs", test).doc(id), { png }));
+      for (const [id, png] of Object.entries(split.sigs)) writes.push((b) => b.set(C("trainingSigs", test).doc(id), { png, importedAt: now, importedBy: adminNumber }));
       for (const [name, p] of Object.entries(split.people)) {
         const clean = T.cleanPerson(p);
         if (!clean) throw new HttpsError("invalid-argument", `${name}'s records in the backup don't look right.`);
@@ -560,7 +565,8 @@ module.exports = function trainingApi({ db, auditLog, requireMember, requireAdmi
       await savePin(id, req.data.pin, test);
       upd.hasPin = true;
     }
-    await ref.update({ ...upd, updatedAt: FieldValue.serverTimestamp() });
+    await keepHistoryNow(ref, Object.fromEntries(Object.entries(upd).filter(([k]) => k !== "hasPin")), adminNumber, { test });
+    await ref.update({ ...upd, updatedAt: FieldValue.serverTimestamp(), updatedBy: adminNumber });
     await auditLog.add({ type: "updated", kind: "trainer", recordId: id, by: adminNumber, at: FieldValue.serverTimestamp(), test,
       changes: Object.keys(upd).filter((k) => k !== "hasPin").concat(req.data.pin != null ? ["pin"] : []) });
     return { ok: true };

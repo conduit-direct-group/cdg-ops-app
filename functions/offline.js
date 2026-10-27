@@ -20,4 +20,18 @@ function cleanSignedAt(v, nowMs) {
   return Math.round(Math.min(n, nowMs));
 }
 
-module.exports = { MAX_AGE_MS, cleanClientId, cleanSignedAt };
+// Decision 120 (Chris, 10-27-2026): the device time is kept beside the server time, and flagged instead of dropped
+// when it looks wrong — "device-ahead" (the phone or tablet clock is ahead of the server by more than 2 minutes) or
+// "far-apart" (it reached the server more than 10 minutes after the device says it was done: offline a while, or a
+// clock that is behind). → { deviceAtMs (the device time as sent, or null), clockFlag (null when fine) }.
+const AHEAD_MS = 2 * 60000;
+const FAR_MS = 10 * 60000;
+function clockCheck(v, nowMs) {
+  const n = Number(v);
+  if (v === null || v === undefined || v === "" || !Number.isFinite(n)) return { deviceAtMs: null, clockFlag: null };
+  const deviceAtMs = Math.round(n);
+  const clockFlag = deviceAtMs > nowMs + AHEAD_MS ? "device-ahead" : nowMs - deviceAtMs > FAR_MS ? "far-apart" : null;
+  return { deviceAtMs, clockFlag };
+}
+
+module.exports = { MAX_AGE_MS, AHEAD_MS, FAR_MS, cleanClientId, cleanSignedAt, clockCheck };
