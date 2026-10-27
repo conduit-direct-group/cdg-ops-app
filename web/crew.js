@@ -9,6 +9,7 @@
 import { el, breakable, friendlyError, spinner, emptyState, banner, toast, picker, choose, confirmSheet, collapsible } from "./ui.js";
 import { callCrewMyStation, callCrewToday, callCrewMark, callCrewSetup, callCrewSeat, callCrewCell, callAdminCrewStations, callAdminSaveCrewStations } from "./firebase.js";
 import { clock } from "./shift.js";
+import { serverCheck } from "./batch.js";
 
 const VIEW_ROLES = ["operator", "lead", "supervisor", "plant-manager", "admin"];
 const HOME_ROLES = ["lead", "supervisor"];
@@ -20,23 +21,17 @@ const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 // ---- Home: one shared copy of this shift's crew, refreshed every 2 minutes --------------------------------------
 
-const home = { view: null, at: 0, error: false, loading: false, waiting: new Set() };
+const home = { view: null, at: 0, error: false };
 
-function refreshHome(onRedraw) {
-  if (onRedraw) home.waiting.add(onRedraw);
-  if (home.loading) return;
-  const fresh = Date.now() - home.at < HOME_REFRESH_MS && !(home.view?.shift && Date.now() >= home.view.shift.endMs);
-  if (fresh) return;
-  home.loading = true;
-  callCrewToday().then(({ data: v }) => { Object.assign(home, { view: v, error: false }); })
+// After the shift ends, check again — at most every 30 s, so a clock ahead of the server can't ask on every redraw.
+const refreshHome = serverCheck(
+  () => callCrewToday().then(({ data: v }) => { Object.assign(home, { view: v, error: false }); })
     .catch(() => { home.error = true; })
-    .finally(() => {
-      Object.assign(home, { at: Date.now(), loading: false });
-      const fns = [...home.waiting];
-      home.waiting.clear();
-      fns.forEach((f) => f());
-    });
-}
+    .finally(() => { home.at = Date.now(); }),
+  () => {
+    const ended = home.view?.shift && Date.now() >= home.view.shift.endMs && Date.now() - home.at > 30000;
+    return Date.now() - home.at < HOME_REFRESH_MS && !ended;
+  });
 function rememberHome(view) { Object.assign(home, { view, at: Date.now(), error: false }); }
 
 // The shift running now, when it's this Line Lead's / Supervisor's team: { team: { id, name }, date, endMs } or null.
@@ -89,24 +84,18 @@ export function crewCard(onOpen, onRedraw) {
 // the crew), or if it can't be checked — it's information, not a duty, so it has no status color.
 
 const STATION_REFRESH_MS = 5 * 60000;
-const mine = { view: null, at: 0, loading: false, waiting: new Set() };
+const mine = { view: null, at: 0 };
 
-function refreshMine(onRedraw) {
-  if (onRedraw) mine.waiting.add(onRedraw);
-  if (mine.loading) return;
-  const v = mine.view;
-  const blockMs = v?.seated ? (v.shift.endMs - v.shift.startMs) / v.blocks.length : 0;
-  const newBlock = v?.seated && Math.floor((Date.now() - v.shift.startMs) / blockMs) !== v.current;
-  if (Date.now() - mine.at < STATION_REFRESH_MS && !newBlock && !(v?.shift && Date.now() >= v.shift.endMs)) return;
-  mine.loading = true;
-  callCrewMyStation().then(({ data }) => { mine.view = data; }).catch(() => {})
-    .finally(() => {
-      Object.assign(mine, { at: Date.now(), loading: false });
-      const fns = [...mine.waiting];
-      mine.waiting.clear();
-      fns.forEach((f) => f());
-    });
-}
+// A new rotation block, or the shift ended, checks again — at most every 30 s.
+const refreshMine = serverCheck(
+  () => callCrewMyStation().then(({ data }) => { mine.view = data; }).catch(() => {}).finally(() => { mine.at = Date.now(); }),
+  () => {
+    const v = mine.view;
+    const blockMs = v?.seated ? (v.shift.endMs - v.shift.startMs) / v.blocks.length : 0;
+    const newBlock = v?.seated && Math.floor((Date.now() - v.shift.startMs) / blockMs) !== v.current;
+    const ended = v?.shift && Date.now() >= v.shift.endMs;
+    return Date.now() - mine.at < STATION_REFRESH_MS && !((newBlock || ended) && Date.now() - mine.at > 30000);
+  });
 
 // The lines I'm on this shift (no home lines — Decision 104): { now: [lineId], today: [lineId] }, or null when the lead
 // hasn't seated me (or it isn't known yet). Uses the same 5-minute check as "Your station today".

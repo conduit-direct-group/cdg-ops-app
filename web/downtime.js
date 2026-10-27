@@ -74,7 +74,9 @@ export function downtimeItems(roles, myself, onOpen, onRedraw) {
   const lineId = todaysLine();
   const base = { key: "downtime", icon: "⏱", onOpen };
   if (!lineId) { const due = dueByShiftEnd(); return [{ ...base, title: "Downtime & scrap shift report", detail: `pick your line to start · ${due.detail}`, state: due.state }]; }
-  if (home.lineId !== lineId || Date.now() - home.at > HOME_REFRESH_MS || (home.report?.endMs && Date.now() > home.report.endMs)) refreshHome(lineId, onRedraw);
+  // After the shift ends, check again — at most every 30 s (a device clock ahead of the server got the old report back
+  // and asked again on every redraw).
+  if (home.lineId !== lineId || Date.now() - home.at > HOME_REFRESH_MS || (home.report?.endMs && Date.now() > home.report.endMs && Date.now() - home.at > 30000)) refreshHome(lineId, onRedraw);
   const r = home.lineId === lineId ? home.report : null;
   const name = lines().find((l) => l.id === lineId)?.name || "";
   if (!r) return [{ ...base, title: `Downtime & scrap — ${name}`, detail: home.error ? "couldn't check — tap to open" : "checking…", state: "due" }];

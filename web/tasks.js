@@ -8,6 +8,7 @@ import { data } from "./data.js";
 import { callAnnTaskSigners, callReturnAnnTask, callTasksToConfirm } from "./firebase.js";
 import { signOff, signedNote } from "./signoff.js";
 import { offlineSign } from "./outbox.js";
+import { serverCheck } from "./batch.js";
 
 const HOUR = 3600000;
 // When it's due (older tasks have a due date only: the end of that day, plant time).
@@ -105,19 +106,10 @@ export function taskRow(t, me, { busy = false } = {}) {
 
 // ---- Home ---------------------------------------------------------------------------------------------------------
 // Tasks I can confirm right now come from the server (it knows who's on shift), checked every 2 minutes at most.
-const confirmCache = { list: null, at: 0, loading: false, waiting: new Set() };
-function refreshConfirm(onRedraw) {
-  if (onRedraw) confirmCache.waiting.add(onRedraw);
-  if (confirmCache.loading || Date.now() - confirmCache.at < 2 * 60000) return;
-  confirmCache.loading = true;
-  callTasksToConfirm().then(({ data: r }) => { confirmCache.list = r.tasks; }).catch(() => {})
-    .finally(() => {
-      Object.assign(confirmCache, { at: Date.now(), loading: false });
-      const fns = [...confirmCache.waiting];
-      confirmCache.waiting.clear();
-      fns.forEach((f) => f());
-    });
-}
+const confirmCache = { list: null, at: 0 };
+const refreshConfirm = serverCheck(
+  () => callTasksToConfirm().then(({ data: r }) => { confirmCache.list = r.tasks; }).catch(() => {}).finally(() => { confirmCache.at = Date.now(); }),
+  () => Date.now() - confirmCache.at < 2 * 60000);
 
 // Home items: my tasks (gray / red; waiting for confirmation), tasks to confirm, announcement tasks to assign.
 // open.announcement(annId), open.message(rootId)

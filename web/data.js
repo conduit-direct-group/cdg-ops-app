@@ -6,6 +6,7 @@
 
 import { db, TEST_MODE } from "./firebase.js";
 import { collection, doc, getDoc, onSnapshot, query, where } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
+import { batch } from "./batch.js";
 
 const LISTS = ["roles", "lines", "machines", "fixCategories", "checklistTemplates", "requestTypes", "teams", "machineTypes", "formTemplates", "refDocs"];
 
@@ -43,9 +44,8 @@ const lineDownFirst = (a, b) => (b.lineDown === true) - (a.lineDown === true) ||
 // Requests: not-done first, urgent first, newest first.
 const requestOrder = (a, b) => (a.status === "done") - (b.status === "done") || (b.urgent === true) - (a.urgent === true) || time(b.createdAt) - time(a.createdAt);
 
-function changed() {
-  for (const fn of listeners) fn();
-}
+// Every listener calls this; the screens redraw once per burst, not once per listener (batch.js).
+const changed = batch(() => { for (const fn of listeners) fn(); });
 
 function listen(source, onDocs, label) {
   return onSnapshot(
@@ -323,6 +323,7 @@ function watchPlantStatus() {
 }
 
 export function stopData() {
+  changed.cancel();
   stopFns.forEach((stop) => stop());
   stopFns = [];
   for (const k of Object.keys(parts)) delete parts[k];
