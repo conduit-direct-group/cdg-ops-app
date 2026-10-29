@@ -113,7 +113,7 @@ export function confirmSheet({ title, text = "", confirmLabel = "Yes", cancelLab
 // A full-width button showing the current choice and a large ▾. Tapping opens a sheet of big,
 // glove-sized options. `options` = [{ value, label }]. Calls onChange(value) with the pick.
 export function picker({ id = null, title, value, options, placeholder = "Pick one…", onChange }) {
-  const current = options.find((o) => o.value === value);
+  const current = options.find((o) => !o.heading && o.value === value);
   return el(
     "button",
     {
@@ -142,8 +142,10 @@ function openPickerSheet(title, value, options, onChange, onClose = null) {
   };
   const onKey = (e) => { if (e.key === "Escape") close(); };
   const pick = (v) => { close(true); if (v !== value) onChange(v); };
-  const list = options.map((o) =>
-    el("button", { class: o.value === value ? "picker-option on" : "picker-option", type: "button", onclick: () => pick(o.value) },
+  // An option { heading, note?, sub? } (no value) is a group title between the options, not something to pick.
+  const list = options.map((o) => o.heading
+    ? el("p", { class: o.sub ? "picker-heading sub" : "picker-heading" }, el("strong", {}, o.heading), o.note ? el("span", {}, ` — ${o.note}`) : null)
+    : el("button", { class: o.value === value ? "picker-option on" : "picker-option", type: "button", onclick: () => pick(o.value) },
       el("span", {}, breakable(o.label)), o.value === value ? el("span", { "aria-hidden": "true" }, "✔") : null)
   );
   const backdrop = el(
@@ -159,7 +161,7 @@ function openPickerSheet(title, value, options, onChange, onClose = null) {
   );
   document.addEventListener("keydown", onKey);
   document.body.append(backdrop);
-  (backdrop.querySelector(".picker-option.on") || list[0])?.focus();
+  (backdrop.querySelector(".picker-option.on") || backdrop.querySelector(".picker-option"))?.focus();
 }
 
 // ---- Collapsible section ------------------------------------------------------

@@ -365,6 +365,11 @@ details.more summary { display: flex; align-items: center; min-height: var(--tap
   transition: background var(--fast), border-color var(--fast);
 }
 .picker-option.on { background: var(--orange); border-color: var(--orange); color: var(--black); }
+.picker-heading { margin: var(--s3) 0 0; font-size: var(--text-small); color: var(--muted); }
+.picker-heading:first-child { margin-top: 0; }
+.picker-heading strong { color: var(--white); text-transform: uppercase; letter-spacing: 0.04em; }
+.picker-heading.sub { margin-top: var(--s1); }
+.picker-heading.sub strong { color: var(--muted); text-transform: none; letter-spacing: 0; }
 .picker-option:active { background: var(--surface-3); }
 
 /* ---- Collapsible section --------------------------------------------------- */

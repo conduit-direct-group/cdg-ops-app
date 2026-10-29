@@ -20,13 +20,27 @@
 //   Downtime Log    Date | Line # | Team | Product Size | Minutes | Reason | Notes | Maintenance Log Completed? | Someone Contacted?
 //   Scrap Log       Date | Line # | Team | Product Size | Scrap Feet | Reason | Notes
 
-// From the workbook's Lists tab (10-22-2026). "No reason given" is hidden (Chris: a reason is required); old rows keep it.
 const CHANGEOVER_TYPES = ["Full", "Pin/Mandrel", "Color", "SDR"];
-const DOWNTIME_REASONS = [
-  "Loss of Vacuum", "Loader/Receiver", "Water", "Ran Out of Material", "Operator", "Air Pressure", "Staffing", "Heat",
-  "Problems with Material", "Electrical", "Extruder", "Scheduled Maintenance", "Puller", "Winder", "Controlled Shutdown",
-  "Unknown", "Other",
+// Downtime reasons in groups (Decision 141, Chris 10-29-2026), shown on the screen this way. Planned shows on the report
+// but isn't a breakdown; Not downtime is kept but left out of totals; only Unplanned counts as downtime. Picking
+// Changeover saves a Changeover Log entry instead. "No reason given" is hidden (a reason is required); old rows keep it.
+const REASON_GROUPS = [
+  { id: "planned", name: "Planned", note: "shows on the report, not a breakdown", sets: [["", ["Scheduled Maintenance", "Controlled Shutdown", "Changeover", "Startup"]]] },
+  { id: "not-downtime", name: "Not downtime", note: "kept on record, left out of totals", sets: [["", ["Printer only – line running"]]] },
+  { id: "unplanned", name: "Unplanned", note: "real downtime", sets: [
+    ["Equipment", ["Extruder", "Puller", "Winder", "Loader/Receiver", "Loss of Vacuum", "Electrical", "Air Pressure", "Water (temp/level)", "Heat / temperature"]],
+    ["Material", ["Ran Out of Material", "Problems with Material"]],
+    ["People", ["Operator", "Staffing"]],
+    ["Other", ["Other", "Unknown"]],
+  ] },
 ];
+const DOWNTIME_REASONS = REASON_GROUPS.flatMap((g) => g.sets.flatMap(([, list]) => list));
+const CHANGEOVER_REASON = "Changeover";
+const REVIEW_REASON = "Unknown"; // flagged for the Supervisor to review
+// Renamed 10-29-2026: old entries keep the old name and stay in the same group; still accepted when an old entry is edited.
+const OLD_REASONS = { Water: "Water (temp/level)", Heat: "Heat / temperature", "No reason given": "Unknown" };
+const WRITEUP_WORDS = 5; // "at least one full sentence"
+// From the workbook's Lists tab (10-22-2026).
 const SCRAP_REASONS = [
   "Startup/Purge", "Color Change", "Sizing Out of Spec", "Material Defect", "Operator Error", "Contamination",
   "Equipment Malfunction", "Changeover Waste", "Water Temp/Level Issue", "Other",
@@ -72,18 +86,33 @@ function cleanChangeover(raw) {
   return { changeover: { minutes, type: raw.type } };
 }
 
-function cleanDowntime(raw) {
+// Planned / Not downtime / Unplanned for a reason, old names included (anything else counts as Unplanned, to be safe).
+function groupOf(reason) {
+  const name = OLD_REASONS[reason] || reason;
+  return (REASON_GROUPS.find((g) => g.sets.some(([, list]) => list.includes(name))) || REASON_GROUPS[2]).id;
+}
+const countsAsDowntime = (reason) => groupOf(reason) === "unplanned";
+const needsReview = (reason) => reason === REVIEW_REASON;
+
+// The "What happened" write-up: what went wrong and what was done to fix it, at least one full sentence.
+const words = (text) => String(text || "").trim().split(/\s+/).filter((w) => /[A-Za-z0-9]/.test(w)).length;
+const writeupDone = (text) => words(text) >= WRITEUP_WORDS;
+
+// prev = the entry being edited: an old entry keeps its old reason name ("Water", "Heat", "No reason given").
+function cleanDowntime(raw, prev = null) {
   const minutes = whole(raw?.minutes, 1, 1440);
   if (minutes === null) return { error: "Minutes down: a whole number, 1–1440." };
-  if (!DOWNTIME_REASONS.includes(raw?.reason)) return { error: "Pick the reason." };
+  if (raw?.reason === CHANGEOVER_REASON) return { error: "A changeover is saved in the Changeover Log — add it there, with its type." };
+  const keepsOld = !!prev && raw?.reason === prev.reason && Object.prototype.hasOwnProperty.call(OLD_REASONS, raw.reason);
+  if (!DOWNTIME_REASONS.includes(raw?.reason) && !keepsOld) return { error: "Pick the reason." };
   const called = raw?.called === true;
   const calledWho = called ? clean(raw?.calledWho, 60) : "";
   if (called && !calledWho) return { error: "Say who was called." };
   const maintenance = MAINTENANCE.includes(raw?.maintenance) ? raw.maintenance : null;
   if (!maintenance) return { error: "Was maintenance needed? Pick No, Fixed by our team, or Maintenance called." };
   const issueId = maintenance === "called" && typeof raw?.issueId === "string" && /^[A-Za-z0-9_-]{1,60}$/.test(raw.issueId) ? raw.issueId : null;
-  const fix = longText(raw?.fix, 1000);
-  if (fix.length < 3) return { error: "Say what was done to find and fix it." };
+  const fix = longText(raw?.fix, 1000); // the "What happened" write-up (the field kept its old name)
+  if (!writeupDone(fix)) return { error: `Write what happened — what went wrong and what was done to fix it, in at least one full sentence (${WRITEUP_WORDS}+ words).` };
   // Which machine (Decision 120): optional M-number; the server checks it's on the report's line.
   const machineId = typeof raw?.machineId === "string" && /^M-\d{3,}$/.test(raw.machineId) ? raw.machineId : null;
   return { event: { minutes, over60: minutes > 60, reason: raw.reason, called, calledWho, maintenance, issueId, fix, machineId } };
@@ -165,17 +194,31 @@ const SHEET_HEADERS = {
 
 // Before signing, downtime and scrap each need entries or a "None this shift" tap (Chris, 10-23-2026), so an empty
 // section means "nothing happened", not "forgot". counts = { downtime, scrap } (scrap includes flagged reels).
-// report.none = { downtime?: {by, byName, atMs}, scrap?: {…} }. Returns the plain message, or null when ready.
-function notReadyToSign(report, counts) {
+// report.none = { downtime?: {by, byName, atMs}, scrap?: {…} }. events = the downtime entries: every one needs its
+// "What happened" write-up first (Decision 141). Returns the plain message, or null when ready.
+function notReadyToSign(report, counts, events = []) {
   const left = [];
   if (!counts.downtime && !report.none?.downtime) left.push("downtime");
   if (!counts.scrap && !report.none?.scrap) left.push("scrap");
-  if (!left.length) return null;
-  return `Add the ${left.join(" and ")}, or tap “None this shift” for ${left.length === 1 ? "it" : "each"} — then sign.`;
+  if (left.length) return `Add the ${left.join(" and ")}, or tap “None this shift” for ${left.length === 1 ? "it" : "each"} — then sign.`;
+  const noWriteup = events.filter((e) => !writeupDone(e.fix)).length;
+  if (noWriteup) return `${noWriteup === 1 ? "1 downtime entry needs its" : `${noWriteup} downtime entries need their`} “What happened” write-up (at least one full sentence) — then sign.`;
+  return null;
+}
+
+// Minutes per group for the report: { unplanned, planned, notDowntime } — totals count Unplanned only.
+function minutesByGroup(events = []) {
+  const out = { unplanned: 0, planned: 0, notDowntime: 0 };
+  for (const e of events) {
+    const g = groupOf(e.reason);
+    out[g === "not-downtime" ? "notDowntime" : g] += e.minutes || 0;
+  }
+  return out;
 }
 
 module.exports = {
-  notReadyToSign,
+  notReadyToSign, minutesByGroup, groupOf, countsAsDowntime, needsReview, writeupDone,
+  REASON_GROUPS, CHANGEOVER_REASON, REVIEW_REASON, OLD_REASONS, WRITEUP_WORDS,
   CHANGEOVER_TYPES, DOWNTIME_REASONS, SCRAP_REASONS, ENTER_ROLES, SIGN_ROLES, REEL_TO_SCRAP, SHEET_HEADERS,
   reportId, productSize, lineNumber, canEnter, canSign, cleanProduct, cleanChangeover, cleanDowntime, cleanScrap,
   someoneContacted, maintenanceLog, downtimeNotes, reelScrap, duplicateTag, changeoverList, sheetRows,

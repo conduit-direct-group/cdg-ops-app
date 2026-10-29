@@ -18,6 +18,10 @@ const SIGN_ROLES = ["lead", "supervisor", "plant-manager"];
 const EXPORT_ROLES = ["supervisor", "plant-manager", "admin"];
 const LINE_KEY = "cdg.lineCheckLine"; // the line tablet's line (shared with the Line Check Log)
 const MAINT = [["none", "No"], ["team", "Fixed by our team"], ["called", "Maintenance called"]];
+// Decision 141: reasons in groups (the list comes from the server); Changeover goes to the Changeover Log instead.
+const CHANGEOVER_REASON = "Changeover";
+const GROUP_TAG = { planned: "Planned — not a breakdown", "not-downtime": "Not downtime — left out of totals" };
+const WRITEUP_HINT = "What went wrong and what was done to fix it — at least one full sentence.";
 
 export const usesDowntime = (roles) => roles.some((r) => DOWNTIME_ROLES.includes(r));
 const HOME_ROLES = ["lead", "supervisor"]; // Home "Needs you" item (Chris, 10-22-2026)
@@ -279,7 +283,7 @@ export function openDowntime(container, { me, onExit, backLabel = "Home", onCrew
 
   function changeoverForm(f) {
     const L = ui.view.lists;
-    return el("div", { class: "entry-form" },
+    return el("div", { class: "entry-form changeover-form" },
       label("Minutes"), num(f.minutes, (v) => { f.minutes = v; }, "min", "1440"),
       label("Type"), chips(L.changeoverTypes, f.type, (v) => { f.type = v; }),
       f.id ? null : [
@@ -311,6 +315,37 @@ export function openDowntime(container, { me, onExit, backLabel = "Home", onCrew
         onclick: () => { ui.form = { kind: "changeover", minutes: "", type: "", size: ui.head.size, otherSize: ui.head.otherSize, sdr: ui.head.sdr }; render(); } }, "+ Add changeover"));
   }
 
+  // The reason list in its groups (Planned / Not downtime / Unplanned, with Equipment, Material, People, Other). An old
+  // entry being edited keeps its old reason name (e.g. "Water") as a choice. Changeover only on a new entry.
+  function reasonOptions(f) {
+    const L = ui.view.lists;
+    const groups = L.reasonGroups || [{ id: "", name: "", sets: [["", L.downtimeReasons]] }];
+    const out = [];
+    for (const g of groups) {
+      if (g.name) out.push({ heading: g.name, note: g.note });
+      for (const [name, list] of g.sets) {
+        const items = list.filter((x) => x !== CHANGEOVER_REASON || !f.id);
+        if (name && items.length) out.push({ heading: name, sub: true });
+        out.push(...items.map((x) => ({ value: x, label: x === CHANGEOVER_REASON ? "Changeover — goes to the Changeover Log" : x })));
+      }
+    }
+    if (f.reason && !out.some((o) => o.value === f.reason)) out.push({ heading: "Old name", sub: true }, { value: f.reason, label: f.reason });
+    return out;
+  }
+
+  // Picking Changeover on a new downtime entry opens the changeover form instead, keeping the minutes.
+  function pickReason(f, v) {
+    if (v === CHANGEOVER_REASON && !f.id) {
+      ui.form = { kind: "changeover", minutes: f.minutes, type: "", size: ui.head.size, otherSize: ui.head.otherSize, sdr: ui.head.sdr };
+      toast("Changeovers go in the Changeover Log — pick the type");
+      render();
+      container.querySelector(".changeover-form")?.scrollIntoView({ block: "center" });
+      return;
+    }
+    f.reason = v;
+    render();
+  }
+
   function downtimeForm(f) {
     const issues = ui.view.issues || [];
     return el("div", { class: "entry-form" },
@@ -320,7 +355,8 @@ export function openDowntime(container, { me, onExit, backLabel = "Home", onCrew
         oninput: (e) => { const was = Number(f.minutes) > 60; f.minutes = e.target.value; if (was !== Number(f.minutes) > 60) { render(); container.querySelector("#dt-min")?.focus(); } } }),
       Number(f.minutes) > 60 ? el("p", {}, el("span", { class: "tag" }, "Down more than 60 minutes")) : null,
       label("Reason"),
-      picker({ id: "dt-reason", title: "Downtime reason", value: f.reason, placeholder: "Pick the reason…", options: ui.view.lists.downtimeReasons.map((x) => ({ value: x, label: x })), onChange: (v) => { f.reason = v; render(); } }),
+      picker({ id: "dt-reason", title: "Downtime reason", value: f.reason, placeholder: "Pick the reason…", options: reasonOptions(f), onChange: (v) => pickReason(f, v) }),
+      f.reason === "Unknown" ? el("p", { class: "hint" }, "⚑ Unknown is flagged for the Supervisor to review — say what you saw below.") : null,
       // Which machine (Decision 120 — so downtime lines up with the machine data). Optional; a linked request fills it in.
       label("Which machine? (optional)"),
       picker({ id: "dt-machine", title: "Machine", value: f.machineId || "", placeholder: "Pick the machine…",
@@ -337,7 +373,9 @@ export function openDowntime(container, { me, onExit, backLabel = "Home", onCrew
             : el("p", { class: "hint" }, "No open Maintenance Requests on this line."),
           el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: newRequest }, "🚨 New Maintenance Request"))
         : null,
-      label("What was done to find and fix it"), el("textarea", { class: "field", rows: "3", maxlength: "1000", placeholder: "e.g. Float filter clogged on vac tank — cleaned it", oninput: (e) => { f.fix = e.target.value; } }, f.fix),
+      label("What happened (required)"),
+      el("p", { class: "hint" }, WRITEUP_HINT),
+      el("textarea", { class: "field", rows: "4", maxlength: "1000", placeholder: "e.g. Vacuum dropped on the tank. The float filter was clogged, so we cleaned it and vacuum came back.", oninput: (e) => { f.fix = e.target.value; } }, f.fix),
       el("div", { class: "btn-row" },
         el("button", { class: "btn", type: "button", disabled: ui.busy, onclick: () => saveEntry("downtime") }, ui.busy ? "Saving…" : f.id ? "Save changes" : "Add downtime"),
         el("button", { class: "btn secondary", type: "button", disabled: ui.busy, onclick: () => { ui.form = null; render(); } }, "Cancel")));
@@ -346,13 +384,20 @@ export function openDowntime(container, { me, onExit, backLabel = "Home", onCrew
   function downtimeCard() {
     const events = ui.view.events || [];
     const f = ui.form?.kind === "downtime" ? ui.form : null;
-    const total = events.reduce((a, e) => a + e.minutes, 0);
+    // Totals count Unplanned only; Planned and Not downtime show on their own line (Decision 141).
+    const m = ui.view.downtimeMinutes || { unplanned: events.reduce((a, e) => a + e.minutes, 0), planned: 0, notDowntime: 0 };
+    const other = [m.planned ? `Planned ${fmtMinutes(m.planned)}` : "", m.notDowntime ? `Not downtime ${fmtMinutes(m.notDowntime)}` : ""].filter(Boolean);
     return el("section", { class: "card" },
-      el("strong", {}, `⏱ Downtime${events.length ? ` · ${fmtMinutes(total)}` : ""}`),
+      el("strong", {}, `⏱ Downtime${events.length ? ` · ${fmtMinutes(m.unplanned)}` : ""}`),
+      other.length ? el("p", { class: "card-note" }, `Not counted as downtime: ${other.join(" · ")}`) : null,
       events.length ? el("div", { class: "dt-list" }, events.map((e) => f?.id === e.id ? downtimeForm(f) : el("div", { class: "dt-entry" },
         el("strong", {}, `${fmtMinutes(e.minutes)} · ${e.reason}`),
         el("span", { class: "dt-note" }, [e.machineId ? `${e.machineId}${e.machineName ? ` ${e.machineName}` : ""}` : "", e.fix, e.called ? `Called: ${e.calledWho}` : "", e.issueTitle ? `Maintenance: ${e.issueTitle}` : ""].filter(Boolean).join(" · ")),
-        el("span", { class: "dt-tags" }, el("span", { class: "tag" }, `Contacted: ${e.contacted}`), el("span", { class: "tag" }, `Maintenance log: ${e.maintLog}`)),
+        el("span", { class: "dt-tags" },
+          GROUP_TAG[e.group] ? el("span", { class: "tag" }, GROUP_TAG[e.group]) : null,
+          e.review ? el("span", { class: "tag" }, "⚑ Supervisor to review") : null,
+          e.writeupDone === false && !locked() ? el("span", { class: "tag" }, "Needs “What happened” — tap Edit") : null,
+          el("span", { class: "tag" }, `Contacted: ${e.contacted}`), el("span", { class: "tag" }, `Maintenance log: ${e.maintLog}`)),
         locked() || f ? null : el("span", { class: "dt-actions" },
           el("button", { class: "link-btn", type: "button", onclick: () => { ui.form = { kind: "downtime", id: e.id, minutes: String(e.minutes), reason: e.reason, machineId: e.machineId || null, called: e.called, calledWho: e.calledWho || "", maintenance: e.maintenance, issueId: e.issueId || null, fix: e.fix }; render(); } }, "Edit"),
           el("button", { class: "link-btn", type: "button", onclick: () => removeEntry("downtime", e) }, "Remove"))))) : null,
@@ -393,19 +438,24 @@ export function openDowntime(container, { me, onExit, backLabel = "Home", onCrew
       locked() || f ? null : el("button", { class: "btn secondary", type: "button", disabled: ui.busy || !report().saved, onclick: () => { ui.form = { kind: "scrap", feet: "", reason: "", tag: "", notes: "" }; render(); } }, "+ Add scrap"));
   }
 
+  const reviewCount = () => (ui.view.events || []).filter((e) => e.review).length;
+
   function signCard() {
     const r = report();
     if (locked()) {
       return el("section", { class: "card" }, el("strong", {}, r.verified ? "Signed and verified" : "Signed — needs Verified"), el("p", {}, signTag(r)), r.comments ? el("p", { class: "dt-note" }, r.comments) : null,
         r.verified ? null : [
+          reviewCount() ? el("p", { class: "hint" }, `⚑ ${reviewCount() === 1 ? "1 downtime entry is" : `${reviewCount()} downtime entries are`} marked Unknown — read what happened before verifying.`) : null,
           el("button", { class: "btn big", type: "button", disabled: ui.busy, onclick: verify }, "✍ Verified"),
           el("p", { class: "hint" }, "A Supervisor verifies — or, with no Supervisor on shift, the Production Manager or a Line Lead. Not the person who signed it.")]);
     }
     const missing = [!(ui.view.events || []).length && !r.none?.downtime && "downtime", !(ui.view.scraps || []).length && !r.none?.scrap && "scrap"].filter(Boolean);
+    const noWriteup = (ui.view.events || []).filter((e) => e.writeupDone === false).length;
     return el("section", { class: "card" },
       el("strong", {}, "✍ Sign at end of shift"),
       lastHour(r) ? el("p", { class: "message error", role: "alert" }, `⚠ Last hour of the shift — fill it in and sign by ${fmtTime(r.endMs)}.`) : null,
       missing.length ? el("p", { class: "hint" }, `Before signing: add the ${missing.join(" and ")}, or tap “None this shift.”`) : null,
+      noWriteup ? el("p", { class: "hint" }, `Before signing: ${noWriteup === 1 ? "1 downtime entry needs its" : `${noWriteup} downtime entries need their`} “What happened” write-up — tap Edit on it.`) : null,
       label("Additional comments"),
       el("textarea", { class: "field", rows: "3", maxlength: "2000", placeholder: "Anything the next shift or the office should know", oninput: (e) => { ui.comments = e.target.value; } }, ui.comments ?? r.comments ?? ""),
       el("button", { class: "btn big", type: "button", disabled: ui.busy || !r.saved, onclick: sign }, "✍ Sign with PIN"));

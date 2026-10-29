@@ -4508,8 +4508,11 @@ async function shiftReportView(test, report) {
   return {
     report,
     changeovers: downtimeLib.changeoverList(report, changeovers.docs.map((d) => ({ id: d.id, ...d.data() }))),
+    // Totals count Unplanned only; Planned and Not downtime are shown on their own (Decision 141).
+    downtimeMinutes: downtimeLib.minutesByGroup(events.docs.map((d) => d.data())),
     events: events.docs.map((d) => ({ id: d.id, ...d.data() })).sort(byTime)
-      .map((e) => ({ ...e, contacted: downtimeLib.someoneContacted(e), maintLog: downtimeLib.maintenanceLog(e) })),
+      .map((e) => ({ ...e, contacted: downtimeLib.someoneContacted(e), maintLog: downtimeLib.maintenanceLog(e),
+        group: downtimeLib.groupOf(e.reason), review: downtimeLib.needsReview(e.reason), writeupDone: downtimeLib.writeupDone(e.fix) })),
     scraps: [...scraps.docs.map((d) => ({ id: d.id, source: "entry", ...d.data() })).sort(byTime), ...reelScraps],
     issues: openOnLine.docs.filter((d) => lineMachines.has(d.get("machineId")))
       .map((d) => ({ id: d.id, odooId: d.get("odooId") || null, title: String(d.get("title") || "").slice(0, 160), machineId: d.get("machineId") })),
@@ -4531,7 +4534,7 @@ exports.shiftReport = onCall(async (req) => {
   return {
     ...view, test,
     canSign: downtimeLib.canSign(me.roles),
-    lists: { changeoverTypes: downtimeLib.CHANGEOVER_TYPES, downtimeReasons: downtimeLib.DOWNTIME_REASONS, scrapReasons: downtimeLib.SCRAP_REASONS, sizes: settings.sizes, sdrs: settings.sdrs },
+    lists: { changeoverTypes: downtimeLib.CHANGEOVER_TYPES, downtimeReasons: downtimeLib.DOWNTIME_REASONS, reasonGroups: downtimeLib.REASON_GROUPS, writeupWords: downtimeLib.WRITEUP_WORDS, scrapReasons: downtimeLib.SCRAP_REASONS, sizes: settings.sizes, sdrs: settings.sdrs },
     recent: recentSnaps.docs.filter((d) => d.get("lineId") === report.lineId && d.id !== report.id)
       .map((d) => ({ id: d.id, date: d.get("date"), shiftName: d.get("shiftName"), team: d.get("team"), signed: !!d.get("signed"), verified: !!d.get("verified") }))
       .sort((a, b) => (a.id < b.id ? 1 : -1)),
@@ -4587,7 +4590,9 @@ exports.saveShiftEntry = onCall(async (req) => {
   const entries = col(ENTRY[kind][0], test);
   let fields = null;
   if (req.data?.remove !== true) {
-    const out = ENTRY[kind][1](req.data);
+    // An edited downtime entry may keep its old reason name (Decision 141 renames).
+    const prev = kind === "downtime" && req.data?.id ? (await entries.doc(String(req.data.id)).get()).data() || null : null;
+    const out = ENTRY[kind][1](req.data, prev);
     if (out.error) throw new HttpsError("invalid-argument", out.error);
     fields = out.changeover || out.event || out.scrap;
     if (fields.issueId) {
@@ -4653,7 +4658,7 @@ exports.signShiftReport = onCall(signable(async (req) => {
       tx.get(col("scrapEntries", test).where("reportId", "==", ref.id)),
       tx.get(col("changeoverEvents", test).where("reportId", "==", ref.id)),
     ]);
-    const notReady = downtimeLib.notReadyToSign(snap.data(), { downtime: events.size, scrap: scraps.size + reelList.length });
+    const notReady = downtimeLib.notReadyToSign(snap.data(), { downtime: events.size, scrap: scraps.size + reelList.length }, events.docs.map((d) => d.data()));
     if (notReady) throw new HttpsError("failed-precondition", notReady);
     const comments = req.data?.comments === undefined ? snap.get("comments") || "" : String(req.data.comments || "").replace(/\r\n/g, "\n").trim().slice(0, 2000);
     // Decision 108: the flagged-reel scrap is frozen into the report as signed (a reel decided later doesn't change it),

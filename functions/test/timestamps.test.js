@@ -58,9 +58,9 @@ test("device time is kept and flagged in the sign-off log, never dropped", () =>
 
 test("line on maintenance requests; machine on downtime and flagged reels", () => {
   assert.strictEqual((src.match(/machineId: machine\.id, lineId: machine\.lineId \|\| null/g) || []).length, 2);
-  const ok = downtime.cleanDowntime({ minutes: 5, reason: downtime.DOWNTIME_REASONS[0], called: false, maintenance: "none", fix: "cleaned it", machineId: "M-012" });
+  const ok = downtime.cleanDowntime({ minutes: 5, reason: downtime.DOWNTIME_REASONS[0], called: false, maintenance: "none", fix: "Vacuum hose came loose, cleaned it", machineId: "M-012" });
   assert.strictEqual(ok.event.machineId, "M-012");
-  assert.strictEqual(downtime.cleanDowntime({ minutes: 5, reason: downtime.DOWNTIME_REASONS[0], called: false, maintenance: "none", fix: "cleaned it", machineId: "bad" }).event.machineId, null);
+  assert.strictEqual(downtime.cleanDowntime({ minutes: 5, reason: downtime.DOWNTIME_REASONS[0], called: false, maintenance: "none", fix: "Vacuum hose came loose, cleaned it", machineId: "bad" }).event.machineId, null);
   const ms = [{ id: "M-020", name: "L1 Winder 1", lineId: "line-1" }, { id: "M-021", name: "L1 Winder 2", lineId: "line-1" }, { id: "M-030", name: "Winder 2", lineId: "line-2" }];
   assert.strictEqual(reels.winderMachine(ms, "line-1", "Winder 2"), "M-021");
   assert.strictEqual(reels.winderMachine(ms, "line-2", "Winder 2"), "M-030");
